@@ -1,3 +1,5 @@
+pub mod outgoing_reputation;
+
 pub mod reputation {
     use std::fmt::Display;
     use std::time::Instant;
