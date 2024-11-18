@@ -85,6 +85,7 @@ pub mod reputation {
     }
 
     /// The different possible endorsement signals on a htlc's update_add message.
+    #[derive(PartialEq, Eq, Copy, Clone)]
     pub enum EndorsementSignal {
         Unendorsed,
         Endorsed,
@@ -219,7 +220,7 @@ pub mod reputation {
     }
 
     /// A unique identifier for a htlc on a channel (payment hash may be repeated for mpp payments).
-    #[derive(Debug)]
+    #[derive(PartialEq, Eq, Hash, Debug, Clone, Copy)]
     pub struct HtlcRef {
         pub channel_id: u64,
         pub htlc_index: u64,
