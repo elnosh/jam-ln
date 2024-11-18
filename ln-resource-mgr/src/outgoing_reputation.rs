@@ -1,4 +1,5 @@
 pub mod forward_manager {
+    use std::collections::hash_map::Entry;
     use std::collections::HashMap;
     use std::sync::Mutex;
     use std::time::Instant;
@@ -36,6 +37,47 @@ pub mod forward_manager {
     }
 
     impl ReputationManager for ForwardManager {
+        fn add_channel(&self, channel_id: u64, capacity_msat: u64) -> Result<(), ReputationError> {
+            match self
+                .channels
+                .lock()
+                .map_err(|e| ReputationError::ErrUnknown(e.to_string()))?
+                .entry(channel_id)
+            {
+                Entry::Occupied(_) => Err(ReputationError::ErrChannelExists(channel_id)),
+                Entry::Vacant(v) => {
+                    let general_slot_count = 483 * self.params.general_slot_portion as u16 / 100;
+                    let general_liquidity_amount =
+                        capacity_msat * self.params.general_liquidity_portion as u64 / 100;
+
+                    v.insert(TrackedChannel {
+                        outgoing_reputation: ReputationTracker::new(
+                            self.params.reputation_params,
+                            general_slot_count,
+                            general_liquidity_amount,
+                        )?,
+                        incoming_revenue: DecayingAverage::new(
+                            self.params.reputation_params.revenue_window,
+                        ),
+                    });
+
+                    Ok(())
+                }
+            }
+        }
+
+        fn remove_channel(&self, channel_id: u64) -> Result<(), ReputationError> {
+            match self
+                .channels
+                .lock()
+                .map_err(|e| ReputationError::ErrUnknown(e.to_string()))?
+                .remove(&channel_id)
+            {
+                Some(_) => Ok(()),
+                None => Err(ReputationError::ErrChannelNotFound(channel_id)),
+            }
+        }
+
         fn get_forwarding_outcome(
             &self,
             forward: &ProposedForward,
