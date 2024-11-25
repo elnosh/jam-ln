@@ -1,3 +1,155 @@
+pub mod forward_manager {
+    use std::collections::HashMap;
+    use std::sync::Mutex;
+    use std::time::Instant;
+
+    use super::decaying_average::DecayingAverage;
+    use super::reputation_tracker::{ReputationParams, ReputationTracker};
+    use crate::reputation::{AllocatoinCheck, ReputationManager};
+    use crate::reputation::{
+        ForwardResolution, ForwardingOutcome, HtlcRef, ProposedForward, ReputationError,
+    };
+
+    struct TrackedChannel {
+        outgoing_reputation: ReputationTracker,
+        incoming_revenue: DecayingAverage,
+    }
+
+    pub struct ForwardManagerParams {
+        pub reputation_params: ReputationParams,
+        pub general_slot_portion: u8,
+        pub general_liquidity_portion: u8,
+    }
+
+    pub struct ForwardManager {
+        params: ForwardManagerParams,
+        channels: Mutex<HashMap<u64, TrackedChannel>>,
+    }
+
+    impl ForwardManager {
+        pub fn new(params: ForwardManagerParams) -> Self {
+            Self {
+                params,
+                channels: Mutex::new(HashMap::new()),
+            }
+        }
+    }
+
+    impl ReputationManager for ForwardManager {
+        fn get_forwarding_outcome(
+            &self,
+            forward: &ProposedForward,
+        ) -> Result<AllocatoinCheck, ReputationError> {
+            forward.validate()?;
+
+            let mut chan_lock = self
+                .channels
+                .lock()
+                .map_err(|e| ReputationError::ErrUnknown(e.to_string()))?;
+
+            // Get the incoming revenue threshold that the outgoing channel must meet.
+            let incoming_threshold = chan_lock
+                .get_mut(&forward.incoming_ref.channel_id)
+                .ok_or(ReputationError::ErrIncomingNotFound(
+                    forward.incoming_ref.channel_id,
+                ))?
+                .incoming_revenue
+                .value_at_instant(forward.added_at)?;
+
+            // Check reputation and resources available for the forward.
+            let outgoing_channel = &mut chan_lock
+                .get_mut(&forward.outgoing_channel_id)
+                .ok_or(ReputationError::ErrOutgoingNotFound(
+                    forward.outgoing_channel_id,
+                ))?
+                .outgoing_reputation;
+
+            Ok(AllocatoinCheck {
+                reputation_check: outgoing_channel.new_reputation_check(
+                    forward.added_at,
+                    incoming_threshold,
+                    &forward,
+                )?,
+                resource_check: outgoing_channel.general_bucket_resources(),
+            })
+        }
+
+        fn add_outgoing_hltc(
+            &self,
+            forward: &ProposedForward,
+        ) -> Result<AllocatoinCheck, ReputationError> {
+            // TODO: locks not atomic
+            let allocation_check = self.get_forwarding_outcome(&forward)?;
+
+            if let ForwardingOutcome::Forward(_) = allocation_check
+                .forwarding_outcome(forward.amount_out_msat, forward.incoming_endorsed)
+            {
+                let _ = self
+                    .channels
+                    .lock()
+                    .map_err(|e| ReputationError::ErrUnknown(e.to_string()))?
+                    .get_mut(&forward.outgoing_channel_id)
+                    .ok_or(ReputationError::ErrOutgoingNotFound(
+                        forward.outgoing_channel_id,
+                    ))?
+                    .outgoing_reputation
+                    .add_outgoing_htlc(forward)?;
+            }
+
+            Ok(allocation_check)
+        }
+
+        fn resolve_htlc(
+            &self,
+            outgoing_channel: u64,
+            incoming_ref: HtlcRef,
+            resolution: ForwardResolution,
+            resolved_instant: Instant,
+        ) -> Result<(), ReputationError> {
+            let mut chan_lock = self
+                .channels
+                .lock()
+                .map_err(|e| ReputationError::ErrUnknown(e.to_string()))?;
+
+            // Remove from outgoing channel, which will return the amount that we need to add to the incoming channel's
+            // revenue for forwarding the htlc.
+            let outgoing_channel_tracker = chan_lock
+                .get_mut(&outgoing_channel)
+                .ok_or(ReputationError::ErrOutgoingNotFound(outgoing_channel))?;
+
+            let in_flight = outgoing_channel_tracker
+                .outgoing_reputation
+                .remove_outgoing_htlc(
+                    outgoing_channel,
+                    incoming_ref,
+                    resolution,
+                    resolved_instant,
+                )?;
+
+            if resolution == ForwardResolution::Failed {
+                return Ok(());
+            }
+
+            // If the htlc was settled, update *both* the outgoing and incoming channel's revenue trackers.
+            let fee_i64 = i64::try_from(in_flight.fee_msat).unwrap_or(i64::MAX);
+
+            let _ = outgoing_channel_tracker
+                .incoming_revenue
+                .add_value(fee_i64, resolved_instant)?;
+
+            chan_lock
+                .get_mut(&incoming_ref.channel_id)
+                .ok_or(ReputationError::ErrIncomingNotFound(
+                    incoming_ref.channel_id,
+                ))?
+                .incoming_revenue
+                .add_value(fee_i64, resolved_instant)?;
+
+            Ok(())
+        }
+    }
+}
+
 mod reputation_tracker {
     use std::collections::hash_map::Entry;
     use std::collections::HashMap;
