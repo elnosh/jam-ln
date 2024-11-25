@@ -1,3 +1,6 @@
+pub use crate::outgoing_reputation::forward_manager::{ForwardManager, ForwardManagerParams};
+pub use crate::outgoing_reputation::reputation_tracker::ReputationParams;
+
 pub mod forward_manager {
     use std::collections::hash_map::Entry;
     use std::collections::HashMap;
