@@ -219,6 +219,16 @@ pub mod reputation {
         Failed,
     }
 
+    impl From<bool> for ForwardResolution {
+        fn from(settled: bool) -> Self {
+            if settled {
+                ForwardResolution::Settled
+            } else {
+                ForwardResolution::Failed
+            }
+        }
+    }
+
     /// A unique identifier for a htlc on a channel (payment hash may be repeated for mpp payments).
     #[derive(PartialEq, Eq, Hash, Debug, Clone, Copy)]
     pub struct HtlcRef {
