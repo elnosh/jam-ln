@@ -1,6 +1,7 @@
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
-use ln_simln_jamming::reputation_interceptor::JammingInterceptor;
+use ln_simln_jamming::sink_attack_interceptor::SinkInterceptor;
 use log::LevelFilter;
 use serde::{Deserialize, Serialize};
 use simln_lib::interceptors::LatencyIntercepor;
@@ -29,15 +30,26 @@ async fn main() -> anyhow::Result<()> {
     let SimNetwork { sim_network } =
         serde_json::from_str(&std::fs::read_to_string("./simln.json")?)?;
 
-    // Build interceptors for our desired channel topology.
-    let jamming_interceptor: Box<dyn Interceptor> =
-        Box::new(JammingInterceptor::new_for_network(&sim_network).unwrap()); // TODO: remove unwrap
-
     // Use the channel jamming interceptor and latency for simulated payments.
     let latency_interceptor: Box<dyn Interceptor> =
         Box::new(LatencyIntercepor::new_poisson(150.0)?);
 
-    let interceptors = Arc::new(vec![jamming_interceptor, latency_interceptor]);
+    // TODO: these should be shared with simln!!
+    let (shutdown, listener) = triggered::trigger();
+    let attack_interceptor: Box<dyn Interceptor> = Box::new(SinkInterceptor::new_for_network(
+        Instant::now(),
+        Duration::from_secs(60),
+        "51".to_string(),
+        "22".to_string(),
+        sim_network.clone(),
+        listener,
+        shutdown,
+    ));
+
+    let interceptors = Arc::new(vec![
+        latency_interceptor,
+        attack_interceptor,
+    ]);
 
     // Simulated channels for our simulated graph.
     let channels = sim_network
