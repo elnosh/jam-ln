@@ -45,6 +45,14 @@ pub mod reputation_interceptor {
         htlc: ProposedForward,
     }
 
+    struct HtlcResolve {
+        outgoing_channel_id: u64,
+        forwarding_node: PublicKey,
+        incoming_htlc: HtlcRef,
+        forward_resolution: ForwardResolution,
+        resolved_ins: Instant,
+    }
+
     /// Implements a network-wide interceptor that implements resource management for every forwarding node in the
     /// network.
     pub struct JammingInterceptor {
@@ -164,6 +172,34 @@ pub mod reputation_interceptor {
                 ))),
             }
         }
+
+        /// Removes a htlc from the jamming interceptor, reporting its success/failure to the inner state machine.
+        async fn inner_resolve_htlc(
+            &self,
+            resolved_htlc: HtlcResolve,
+        ) -> Result<(), Option<String>> {
+            match self
+                .network_nodes
+                .lock()
+                .unwrap()
+                .entry(resolved_htlc.forwarding_node)
+            {
+                Entry::Occupied(mut e) => e
+                    .get_mut()
+                    .0
+                    .resolve_htlc(
+                        resolved_htlc.outgoing_channel_id,
+                        resolved_htlc.incoming_htlc,
+                        resolved_htlc.forward_resolution,
+                        resolved_htlc.resolved_ins,
+                    )
+                    .map_err(|e| Some(format!("{e}"))),
+                Entry::Vacant(_) => Err(Some(format!(
+                    "Node: {} not found",
+                    resolved_htlc.forwarding_node
+                ))),
+            }
+        }
     }
 
     #[async_trait]
@@ -217,27 +253,17 @@ pub mod reputation_interceptor {
                 None => return Ok(()),
             };
 
-            match self
-                .network_nodes
-                .lock()
-                .unwrap()
-                .entry(res.forwarding_node)
-            {
-                Entry::Occupied(mut e) => e
-                    .get_mut()
-                    .0
-                    .resolve_htlc(
-                        outgoing_channel_id,
-                        HtlcRef {
-                            channel_id: res.incoming_htlc.channel_id.into(),
-                            htlc_index: res.incoming_htlc.index,
-                        },
-                        ForwardResolution::from(res.success),
-                        Instant::now(),
-                    )
-                    .map_err(|e| Some(format!("{e}"))),
-                Entry::Vacant(_) => Err(Some(format!("Node: {} not found", res.forwarding_node))),
-            }
+            self.inner_resolve_htlc(HtlcResolve {
+                outgoing_channel_id,
+                forwarding_node: res.forwarding_node,
+                incoming_htlc: HtlcRef {
+                    channel_id: res.incoming_htlc.channel_id.into(),
+                    htlc_index: res.incoming_htlc.index,
+                },
+                forward_resolution: ForwardResolution::from(res.success),
+                resolved_ins: Instant::now(),
+            })
+            .await
         }
 
         /// Returns an identifying name for the interceptor for logging, does not need to be unique.
