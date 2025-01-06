@@ -19,8 +19,8 @@ pub mod reputation_interceptor {
         ForwardManager, ForwardManagerParams, ReputationParams,
     };
     use ln_resource_mgr::reputation::{
-        AllocatoinCheck, EndorsementSignal, ForwardResolution, ForwardingOutcome, HtlcRef,
-        ProposedForward, ReputationError, ReputationManager,
+        EndorsementSignal, ForwardResolution, ForwardingOutcome, HtlcRef, ProposedForward,
+        ReputationError, ReputationManager,
     };
 
     pub const ENDORSEMENT_TYPE: u64 = 106823;
@@ -38,6 +38,11 @@ pub mod reputation_interceptor {
             }
             None => EndorsementSignal::Unendorsed,
         }
+    }
+
+    struct HtlcAdd {
+        forwarding_node: PublicKey,
+        htlc: ProposedForward,
     }
 
     /// Implements a network-wide interceptor that implements resource management for every forwarding node in the
@@ -100,19 +105,62 @@ pub mod reputation_interceptor {
             })
         }
 
-        fn get_interceptor_resp(
+        /// Adds a htlc forward to the jamming interceptor, performing forwarding checks and returning the decided
+        /// forwarding outcome for the htlc. Callers should fail if the outer result is an error, because an unexpected
+        /// error has occurred.
+        async fn inner_add_htlc(
             &self,
-            forwading_node: PublicKey,
-            htlc: &ProposedForward,
-        ) -> Result<(AllocatoinCheck, String), ReputationError> {
-            match self.network_nodes.lock().unwrap().entry(forwading_node) {
+            htlc_add: HtlcAdd,
+        ) -> Result<Result<HashMap<u64, Vec<u8>>, ForwardingError>, ReputationError> {
+            // If the forwarding node can't be found, we've hit a critical error and can't proceed.
+            let (allocation_check, alias) = match self
+                .network_nodes
+                .lock()
+                .unwrap()
+                .entry(htlc_add.forwarding_node)
+            {
                 Entry::Occupied(mut e) => {
                     let (node, alias) = e.get_mut();
-                    Ok((node.add_outgoing_hltc(htlc)?, alias.to_string()))
+                    (node.add_outgoing_hltc(&htlc_add.htlc)?, alias.to_string())
                 }
-                Entry::Vacant(_) => Err(ReputationError::ErrUnrecoverable(format!(
-                    "node not found: {}",
-                    forwading_node,
+                Entry::Vacant(_) => {
+                    return Err(ReputationError::ErrUnrecoverable(format!(
+                        "node not found: {}",
+                        htlc_add.forwarding_node,
+                    )))
+                }
+            };
+
+            // Once we have a forwarding decision, return successfully to the interceptor with the call.
+            let fwd_decision = allocation_check.forwarding_outcome(
+                htlc_add.htlc.amount_out_msat,
+                htlc_add.htlc.incoming_endorsed,
+            );
+
+            log::info!(
+                "Node {} forwarding: {} with outcome {}",
+                alias,
+                htlc_add.htlc,
+                fwd_decision,
+            );
+
+            match fwd_decision {
+                ForwardingOutcome::Forward(endorsement) => {
+                    let mut outgoing_records = HashMap::new();
+
+                    match endorsement {
+                        EndorsementSignal::Endorsed => {
+                            outgoing_records.insert(ENDORSEMENT_TYPE, vec![1]);
+                        }
+                        EndorsementSignal::Unendorsed => {
+                            outgoing_records.insert(ENDORSEMENT_TYPE, vec![0]);
+                        }
+                    }
+
+                    Ok(Ok(outgoing_records))
+                }
+                ForwardingOutcome::Fail(reason) => Ok(Err(ForwardingError::InterceptorError(
+                    format!("{:?}", reason),
                 ))),
             }
         }
@@ -134,7 +182,7 @@ pub mod reputation_interceptor {
                 }
             };
 
-            let htlc = &ProposedForward {
+            let htlc = ProposedForward {
                 incoming_ref: HtlcRef {
                     channel_id: req.incoming_htlc.channel_id.into(),
                     htlc_index: req.incoming_htlc.index,
@@ -148,51 +196,15 @@ pub mod reputation_interceptor {
                 incoming_endorsed: endorsement_from_records(&req.incoming_custom_records),
             };
 
-            // If we can't successfully perform a reputation check, error out the interceptor so that the simulation
-            // will fail - we do not expect failure here.
-            let (allocation_check, alias) =
-                match self.get_interceptor_resp(req.forwarding_node, htlc) {
-                    Ok(a) => a,
-                    Err(e) => {
-                        if let Err(e) = req.response.send(Err(Some(e.to_string()))).await {
-                            println!("Failed to send response: {:?}", e); // TODO: error handling
-                        }
-                        return;
-                    }
-                };
+            let resp = self
+                .inner_add_htlc(HtlcAdd {
+                    forwarding_node: req.forwarding_node,
+                    htlc,
+                })
+                .await
+                .map_err(|e| Some(e.to_string()));
 
-            // Once we have a forwarding decision, return successfully to the interceptor with the call.
-            let fwd_decision =
-                allocation_check.forwarding_outcome(htlc.amount_out_msat, htlc.incoming_endorsed);
-
-            log::info!(
-                "Node {} forwarding: {} with outcome {}",
-                alias,
-                htlc,
-                fwd_decision,
-            );
-
-            let resp = match fwd_decision {
-                ForwardingOutcome::Forward(endorsement) => {
-                    let mut outgoing_records = HashMap::new();
-
-                    match endorsement {
-                        EndorsementSignal::Endorsed => {
-                            outgoing_records.insert(ENDORSEMENT_TYPE, vec![1]);
-                        }
-                        EndorsementSignal::Unendorsed => {
-                            outgoing_records.insert(ENDORSEMENT_TYPE, vec![0]);
-                        }
-                    }
-
-                    Ok(outgoing_records)
-                }
-                ForwardingOutcome::Fail(reason) => {
-                    Err(ForwardingError::InterceptorError(format!("{:?}", reason)))
-                }
-            };
-
-            if let Err(e) = req.response.send(Ok(resp)).await {
+            if let Err(e) = req.response.send(resp).await {
                 // TODO: select
                 println!("Failed to send response: {:?}", e); // TODO: error handling
             }
