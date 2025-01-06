@@ -12,6 +12,7 @@ pub mod reputation_interceptor {
     use simln_lib::NetworkParser;
     use std::collections::hash_map::Entry;
     use std::collections::HashMap;
+    use std::ops::Sub;
     use std::sync::{Arc, Mutex};
     use std::time::{Duration, Instant};
 
@@ -51,6 +52,24 @@ pub mod reputation_interceptor {
         incoming_htlc: HtlcRef,
         forward_resolution: ForwardResolution,
         resolved_ins: Instant,
+    }
+
+    enum BootstrapEvent {
+        BootstrapAdd(HtlcAdd),
+        BootstrapResolve(HtlcResolve),
+    }
+
+    /// Provides details of a htlc forward that is used to bootstrap reputation values for the network.
+    pub struct BootstrapForward {
+        pub incoming_amt: u64,
+        pub outgoing_amt: u64,
+        pub incoming_expiry: u32,
+        pub outgoing_expiry: u32,
+        pub added_ns: u64,
+        pub settled_ns: u64,
+        pub forwarding_node: PublicKey,
+        pub channel_in_id: u64,
+        pub channel_out_id: u64,
     }
 
     /// Implements a network-wide interceptor that implements resource management for every forwarding node in the
@@ -111,6 +130,99 @@ pub mod reputation_interceptor {
             Ok(Self {
                 network_nodes: Arc::new(Mutex::new(network_nodes)),
             })
+        }
+
+        /// Creates a network from the set of edges provided and bootstraps the reputation of nodes in the network using
+        /// the historical forwards provided. Forwards are expected to be sorted by added_ns in ascending order.
+        pub async fn new_with_bootstrap(
+            edges: &Vec<NetworkParser>,
+            history: &[BootstrapForward],
+        ) -> Result<Self, BoxError> {
+            let mut interceptor =
+                Self::new_for_network(edges).map_err(|_| "could not create network")?;
+            interceptor.bootstrap_network_history(history).await?;
+            Ok(interceptor)
+        }
+
+        async fn bootstrap_network_history(
+            &mut self,
+            history: &[BootstrapForward],
+        ) -> Result<(), BoxError> {
+            // We'll get all instants relative to the last timestamp we're given, so we get an instant now and track
+            // the last timestamp in the set of forwards.
+            let start_ins = Instant::now();
+            let last_ts = history
+                .iter()
+                .max_by(|x, y| x.settled_ns.cmp(&y.settled_ns))
+                .ok_or("at least one entry required in bootstrap history")?
+                .settled_ns;
+
+            // Run through history and create instants relative to the current time, we'll have two events per forward
+            // so we can allocate accordingly.
+            let mut bootstrap_events = Vec::with_capacity(history.len() * 2);
+            for (i, h) in history.iter().enumerate() {
+                let incoming_ref = HtlcRef {
+                    channel_id: h.channel_in_id,
+                    htlc_index: i as u64,
+                };
+
+                bootstrap_events.push(BootstrapEvent::BootstrapAdd(HtlcAdd {
+                    forwarding_node: h.forwarding_node,
+                    htlc: ProposedForward {
+                        incoming_ref,
+                        outgoing_channel_id: h.channel_out_id,
+                        amount_in_msat: h.incoming_amt,
+                        amount_out_msat: h.outgoing_amt,
+                        expiry_in_height: h.incoming_expiry,
+                        expiry_out_height: h.outgoing_expiry,
+                        added_at: start_ins.sub(Duration::from_nanos(
+                            last_ts
+                                .checked_sub(h.added_ns)
+                                .ok_or(format!("added ts: {} > last ts: {last_ts}", h.added_ns))?,
+                        )),
+                        incoming_endorsed: EndorsementSignal::Unendorsed,
+                    },
+                }));
+
+                bootstrap_events.push(BootstrapEvent::BootstrapResolve(HtlcResolve {
+                    outgoing_channel_id: h.channel_out_id,
+                    forwarding_node: h.forwarding_node,
+                    incoming_htlc: incoming_ref,
+                    resolved_ins: start_ins.sub(Duration::from_nanos(
+                        last_ts
+                            .checked_sub(h.settled_ns)
+                            .ok_or(format!("settled ts: {} > last ts: {last_ts}", h.settled_ns))?,
+                    )),
+                    forward_resolution: ForwardResolution::Settled,
+                }));
+            }
+
+            // Sort all events by timestamp so that we can replay them "live". Fail on any error because we expect all
+            // htlcs to be able to replay through our bootstrapping network.
+            //
+            // TODO: queue?
+            bootstrap_events.sort_by_key(|event| match event {
+                BootstrapEvent::BootstrapAdd(htlc_add) => htlc_add.htlc.added_at,
+                BootstrapEvent::BootstrapResolve(htlc_resolve) => htlc_resolve.resolved_ins,
+            });
+
+            for e in bootstrap_events {
+                match e {
+                    BootstrapEvent::BootstrapAdd(htlc_add) => {
+                        self.inner_add_htlc(htlc_add)
+                            .await
+                            .map_err(|e| e.to_string())?
+                            .map_err(|e| e.to_string())?;
+                    }
+                    BootstrapEvent::BootstrapResolve(htlc_resolve) => {
+                        self.inner_resolve_htlc(htlc_resolve)
+                            .await
+                            .map_err(|e| e.unwrap_or("inner resolve htlc failed".to_string()))?;
+                    }
+                }
+            }
+
+            Ok(())
         }
 
         /// Adds a htlc forward to the jamming interceptor, performing forwarding checks and returning the decided
