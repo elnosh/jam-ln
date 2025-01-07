@@ -1,6 +1,7 @@
 pub mod outgoing_reputation;
 
 pub mod reputation {
+    use std::error::Error;
     use std::fmt::Display;
     use std::time::Instant;
 
@@ -9,14 +10,14 @@ pub mod reputation {
 
     #[derive(Debug)]
     pub enum ReputationError {
+        /// Indicates that the library has encountered an unrecoverable error.
+        ErrUnrecoverable(String),
         /// Indicates that the incoming channel was not found.
         ErrIncomingNotFound(u64),
         /// Indicates that the outgoing channel was not found.
         ErrOutgoingNotFound(u64),
         /// Indicates that the htlc reference provided was not found.
         ErrForwardNotFound(u64, HtlcRef),
-        /// Catchall unknown errors.
-        ErrUnknown(String),
         /// Decaying average updated with an instant that is after the last time it was updated.
         ErrUpdateInPast(Instant, Instant),
         /// Htlc has been added twice.
@@ -35,9 +36,12 @@ pub mod reputation {
         ErrChannelNotFound(u64),
     }
 
+    impl Error for ReputationError {}
+
     impl Display for ReputationError {
         fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
             match self {
+                ReputationError::ErrUnrecoverable(e) => write!(f, "unrecoverable error: {e}"),
                 ReputationError::ErrIncomingNotFound(chan_id) => {
                     write!(f, "incoming channel {chan_id} not found")
                 }
@@ -49,7 +53,6 @@ pub mod reputation {
                     "Outgoing htlc on {} with incoming ref {}:{} not found",
                     chan_id, htlc_ref.channel_id, htlc_ref.htlc_index
                 ),
-                ReputationError::ErrUnknown(e) => write!(f, "unknown error: {e}"),
                 ReputationError::ErrUpdateInPast(last, given) => {
                     write!(
                         f,

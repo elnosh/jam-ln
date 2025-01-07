@@ -44,7 +44,7 @@ pub mod forward_manager {
             match self
                 .channels
                 .lock()
-                .map_err(|e| ReputationError::ErrUnknown(e.to_string()))?
+                .map_err(|e| ReputationError::ErrUnrecoverable(e.to_string()))?
                 .entry(channel_id)
             {
                 Entry::Occupied(_) => Err(ReputationError::ErrChannelExists(channel_id)),
@@ -73,7 +73,7 @@ pub mod forward_manager {
             match self
                 .channels
                 .lock()
-                .map_err(|e| ReputationError::ErrUnknown(e.to_string()))?
+                .map_err(|e| ReputationError::ErrUnrecoverable(e.to_string()))?
                 .remove(&channel_id)
             {
                 Some(_) => Ok(()),
@@ -90,7 +90,7 @@ pub mod forward_manager {
             let mut chan_lock = self
                 .channels
                 .lock()
-                .map_err(|e| ReputationError::ErrUnknown(e.to_string()))?;
+                .map_err(|e| ReputationError::ErrUnrecoverable(e.to_string()))?;
 
             // Get the incoming revenue threshold that the outgoing channel must meet.
             let incoming_threshold = chan_lock
@@ -113,7 +113,7 @@ pub mod forward_manager {
                 reputation_check: outgoing_channel.new_reputation_check(
                     forward.added_at,
                     incoming_threshold,
-                    &forward,
+                    forward,
                 )?,
                 resource_check: outgoing_channel.general_bucket_resources(),
             })
@@ -124,15 +124,14 @@ pub mod forward_manager {
             forward: &ProposedForward,
         ) -> Result<AllocatoinCheck, ReputationError> {
             // TODO: locks not atomic
-            let allocation_check = self.get_forwarding_outcome(&forward)?;
+            let allocation_check = self.get_forwarding_outcome(forward)?;
 
             if let ForwardingOutcome::Forward(_) = allocation_check
                 .forwarding_outcome(forward.amount_out_msat, forward.incoming_endorsed)
             {
-                let _ = self
-                    .channels
+                self.channels
                     .lock()
-                    .map_err(|e| ReputationError::ErrUnknown(e.to_string()))?
+                    .map_err(|e| ReputationError::ErrUnrecoverable(e.to_string()))?
                     .get_mut(&forward.outgoing_channel_id)
                     .ok_or(ReputationError::ErrOutgoingNotFound(
                         forward.outgoing_channel_id,
@@ -154,7 +153,7 @@ pub mod forward_manager {
             let mut chan_lock = self
                 .channels
                 .lock()
-                .map_err(|e| ReputationError::ErrUnknown(e.to_string()))?;
+                .map_err(|e| ReputationError::ErrUnrecoverable(e.to_string()))?;
 
             // Remove from outgoing channel, which will return the amount that we need to add to the incoming channel's
             // revenue for forwarding the htlc.

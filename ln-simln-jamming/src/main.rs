@@ -46,10 +46,7 @@ async fn main() -> anyhow::Result<()> {
         shutdown,
     ));
 
-    let interceptors = Arc::new(vec![
-        latency_interceptor,
-        attack_interceptor,
-    ]);
+    let interceptors = Arc::new(vec![latency_interceptor, attack_interceptor]);
 
     // Simulated channels for our simulated graph.
     let channels = sim_network
