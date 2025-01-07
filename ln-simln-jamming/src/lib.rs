@@ -455,7 +455,8 @@ pub mod sink_attack_interceptor {
         pub fn new_for_network(
             attacking_alias: String,
             target_alias: String,
-            edges: Vec<NetworkParser>,
+            edges: &[NetworkParser],
+            jamming_interceptor: JammingInterceptor,
             listener: Listener,
             shutdown: Trigger,
         ) -> Self {
@@ -483,7 +484,7 @@ pub mod sink_attack_interceptor {
             }
 
             Self {
-                jamming_interceptor: JammingInterceptor::new_for_network(&edges).unwrap(),
+                jamming_interceptor,
                 target_channels,
                 listener,
                 shutdown,

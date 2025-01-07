@@ -1,6 +1,8 @@
 use clap::Parser;
-use ln_simln_jamming::parsing::Cli;
+use ln_simln_jamming::parsing::{history_from_file, Cli};
+use ln_simln_jamming::reputation_interceptor::JammingInterceptor;
 use ln_simln_jamming::sink_attack_interceptor::SinkInterceptor;
+use ln_simln_jamming::BoxError;
 use log::LevelFilter;
 use serde::{Deserialize, Serialize};
 use simln_lib::interceptors::LatencyIntercepor;
@@ -17,7 +19,7 @@ pub struct SimNetwork {
 }
 
 #[tokio::main]
-async fn main() -> anyhow::Result<()> {
+async fn main() -> Result<(), BoxError> {
     SimpleLogger::new()
         .with_level(LevelFilter::Debug)
         // Lower logging from sim-ln so that we can focus on our own logs.
@@ -33,6 +35,8 @@ async fn main() -> anyhow::Result<()> {
     let SimNetwork { sim_network } =
         serde_json::from_str(&fs::read_to_string(cli.sim_file.as_path())?)?;
 
+    let history = history_from_file(&cli.bootstrap_file, Some(cli.bootstrap_duration))?;
+
     // Use the channel jamming interceptor and latency for simulated payments.
     let latency_interceptor: Box<dyn Interceptor> =
         Box::new(LatencyIntercepor::new_poisson(150.0)?);
@@ -42,7 +46,8 @@ async fn main() -> anyhow::Result<()> {
     let attack_interceptor: Box<dyn Interceptor> = Box::new(SinkInterceptor::new_for_network(
         "51".to_string(),
         "22".to_string(),
-        sim_network.clone(),
+        &sim_network,
+        JammingInterceptor::new_with_bootstrap(&sim_network, &history).await?,
         listener,
         shutdown,
     ));
