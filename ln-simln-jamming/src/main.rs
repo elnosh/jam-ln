@@ -1,3 +1,5 @@
+use clap::Parser;
+use ln_simln_jamming::parsing::Cli;
 use ln_simln_jamming::sink_attack_interceptor::SinkInterceptor;
 use log::LevelFilter;
 use serde::{Deserialize, Serialize};
@@ -5,6 +7,7 @@ use simln_lib::interceptors::LatencyIntercepor;
 use simln_lib::sim_node::{Interceptor, SimulatedChannel};
 use simln_lib::{NetworkParser, Simulation, SimulationCfg};
 use simple_logger::SimpleLogger;
+use std::fs;
 use std::sync::Arc;
 
 #[derive(Serialize, Deserialize)]
@@ -25,8 +28,10 @@ async fn main() -> anyhow::Result<()> {
         .init()
         .unwrap();
 
+    let cli = Cli::parse();
+
     let SimNetwork { sim_network } =
-        serde_json::from_str(&std::fs::read_to_string("./simln.json")?)?;
+        serde_json::from_str(&fs::read_to_string(cli.sim_file.as_path())?)?;
 
     // Use the channel jamming interceptor and latency for simulated payments.
     let latency_interceptor: Box<dyn Interceptor> =
