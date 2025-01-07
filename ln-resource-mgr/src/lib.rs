@@ -1,6 +1,7 @@
 pub mod outgoing_reputation;
 
 pub mod reputation {
+    use std::error::Error;
     use std::fmt::Display;
     use std::time::Instant;
 
@@ -34,6 +35,8 @@ pub mod reputation {
         /// Channel has already been removed or was never tracked.
         ErrChannelNotFound(u64),
     }
+
+    impl Error for ReputationError {}
 
     impl Display for ReputationError {
         fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {

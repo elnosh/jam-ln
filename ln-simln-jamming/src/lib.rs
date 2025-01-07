@@ -1,4 +1,9 @@
+use std::error::Error;
+
+pub type BoxError = Box<dyn Error + Send + Sync + 'static>;
+
 pub mod reputation_interceptor {
+    use crate::BoxError;
     use async_trait::async_trait;
     use bitcoin::secp256k1::PublicKey;
     use simln_lib::sim_node::{
@@ -42,7 +47,7 @@ pub mod reputation_interceptor {
     }
 
     impl JammingInterceptor {
-        pub fn new_for_network(edges: &Vec<NetworkParser>) -> Result<Self, ()> {
+        pub fn new_for_network(edges: &Vec<NetworkParser>) -> Result<Self, BoxError> {
             let mut network_nodes: HashMap<PublicKey, (ForwardManager, String)> = HashMap::new();
 
             macro_rules! add_node_to_network {
@@ -61,8 +66,7 @@ pub mod reputation_interceptor {
                             });
 
                             let _ = forward_manager
-                                .add_channel($channel.scid.into(), $channel.capacity_msat)
-                                .map_err(|_| ())?;
+                                .add_channel($channel.scid.into(), $channel.capacity_msat)?;
 
                             e.insert((forward_manager, $node_alias));
                         }
@@ -70,8 +74,7 @@ pub mod reputation_interceptor {
                             let _ = e
                                 .get_mut()
                                 .0
-                                .add_channel($channel.scid.into(), $channel.capacity_msat)
-                                .map_err(|_| ())?;
+                                .add_channel($channel.scid.into(), $channel.capacity_msat)?;
                         }
                     }
                 };
