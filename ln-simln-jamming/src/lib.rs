@@ -107,7 +107,7 @@ pub mod reputation_interceptor {
                     let (node, alias) = e.get_mut();
                     Ok((node.add_outgoing_hltc(htlc)?, alias.to_string()))
                 }
-                Entry::Vacant(_) => Err(ReputationError::ErrUnknown(format!(
+                Entry::Vacant(_) => Err(ReputationError::ErrUnrecoverable(format!(
                     "node not found: {}",
                     forwading_node,
                 ))),

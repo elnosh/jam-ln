@@ -44,7 +44,7 @@ pub mod forward_manager {
             match self
                 .channels
                 .lock()
-                .map_err(|e| ReputationError::ErrUnknown(e.to_string()))?
+                .map_err(|e| ReputationError::ErrUnrecoverable(e.to_string()))?
                 .entry(channel_id)
             {
                 Entry::Occupied(_) => Err(ReputationError::ErrChannelExists(channel_id)),
@@ -73,7 +73,7 @@ pub mod forward_manager {
             match self
                 .channels
                 .lock()
-                .map_err(|e| ReputationError::ErrUnknown(e.to_string()))?
+                .map_err(|e| ReputationError::ErrUnrecoverable(e.to_string()))?
                 .remove(&channel_id)
             {
                 Some(_) => Ok(()),
@@ -90,7 +90,7 @@ pub mod forward_manager {
             let mut chan_lock = self
                 .channels
                 .lock()
-                .map_err(|e| ReputationError::ErrUnknown(e.to_string()))?;
+                .map_err(|e| ReputationError::ErrUnrecoverable(e.to_string()))?;
 
             // Get the incoming revenue threshold that the outgoing channel must meet.
             let incoming_threshold = chan_lock
@@ -132,7 +132,7 @@ pub mod forward_manager {
                 let _ = self
                     .channels
                     .lock()
-                    .map_err(|e| ReputationError::ErrUnknown(e.to_string()))?
+                    .map_err(|e| ReputationError::ErrUnrecoverable(e.to_string()))?
                     .get_mut(&forward.outgoing_channel_id)
                     .ok_or(ReputationError::ErrOutgoingNotFound(
                         forward.outgoing_channel_id,
@@ -154,7 +154,7 @@ pub mod forward_manager {
             let mut chan_lock = self
                 .channels
                 .lock()
-                .map_err(|e| ReputationError::ErrUnknown(e.to_string()))?;
+                .map_err(|e| ReputationError::ErrUnrecoverable(e.to_string()))?;
 
             // Remove from outgoing channel, which will return the amount that we need to add to the incoming channel's
             // revenue for forwarding the htlc.
