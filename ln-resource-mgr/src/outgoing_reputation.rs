@@ -113,7 +113,7 @@ pub mod forward_manager {
                 reputation_check: outgoing_channel.new_reputation_check(
                     forward.added_at,
                     incoming_threshold,
-                    &forward,
+                    forward,
                 )?,
                 resource_check: outgoing_channel.general_bucket_resources(),
             })
@@ -124,13 +124,12 @@ pub mod forward_manager {
             forward: &ProposedForward,
         ) -> Result<AllocatoinCheck, ReputationError> {
             // TODO: locks not atomic
-            let allocation_check = self.get_forwarding_outcome(&forward)?;
+            let allocation_check = self.get_forwarding_outcome(forward)?;
 
             if let ForwardingOutcome::Forward(_) = allocation_check
                 .forwarding_outcome(forward.amount_out_msat, forward.incoming_endorsed)
             {
-                let _ = self
-                    .channels
+                self.channels
                     .lock()
                     .map_err(|e| ReputationError::ErrUnrecoverable(e.to_string()))?
                     .get_mut(&forward.outgoing_channel_id)
