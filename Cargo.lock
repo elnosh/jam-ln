@@ -857,6 +857,8 @@ dependencies = [
  "anyhow",
  "async-trait",
  "bitcoin",
+ "csv",
+ "hex",
  "ln-resource-mgr",
  "log",
  "serde",

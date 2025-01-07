@@ -2,6 +2,8 @@ use std::error::Error;
 
 pub type BoxError = Box<dyn Error + Send + Sync + 'static>;
 
+pub mod parsing;
+
 pub mod reputation_interceptor {
     use crate::BoxError;
     use async_trait::async_trait;
