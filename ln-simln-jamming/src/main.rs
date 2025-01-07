@@ -1,6 +1,3 @@
-use std::sync::Arc;
-use std::time::{Duration, Instant};
-
 use ln_simln_jamming::sink_attack_interceptor::SinkInterceptor;
 use log::LevelFilter;
 use serde::{Deserialize, Serialize};
@@ -8,6 +5,7 @@ use simln_lib::interceptors::LatencyIntercepor;
 use simln_lib::sim_node::{Interceptor, SimulatedChannel};
 use simln_lib::{NetworkParser, Simulation, SimulationCfg};
 use simple_logger::SimpleLogger;
+use std::sync::Arc;
 
 #[derive(Serialize, Deserialize)]
 pub struct SimNetwork {
@@ -37,8 +35,6 @@ async fn main() -> anyhow::Result<()> {
     // TODO: these should be shared with simln!!
     let (shutdown, listener) = triggered::trigger();
     let attack_interceptor: Box<dyn Interceptor> = Box::new(SinkInterceptor::new_for_network(
-        Instant::now(),
-        Duration::from_secs(60),
         "51".to_string(),
         "22".to_string(),
         sim_network.clone(),

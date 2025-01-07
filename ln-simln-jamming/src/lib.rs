@@ -396,7 +396,7 @@ pub mod sink_attack_interceptor {
     };
     use simln_lib::{NetworkParser, ShortChannelID};
     use std::collections::HashMap;
-    use std::time::{Duration, Instant};
+    use std::time::Duration;
     use tokio::{select, time};
     use triggered::{Listener, Trigger};
 
@@ -407,15 +407,12 @@ pub mod sink_attack_interceptor {
     }
 
     // Implements a "sink" attack where an attacking node:
-    // - Builds up reputation so that it can slow jam a target node
     // - General jams its peers so that htlcs will be endorsed
     // - Holds the endorsed htlcs to trash the target node's reputation with its peers
     //
     // This interceptor wraps an inner reputation interceptor so that we can still operate with regular reputation
     // on the non-attacking nodes. Doing so also allows us access to reputation values for monitoring.
     pub struct SinkInterceptor {
-        start_ins: Instant,
-        bootstrap: Duration,
         /// Keeps track of the target's channels for custom behavior.
         target_channels: HashMap<ShortChannelID, TargetChannelType>,
         /// Inner reputation monitor that implements jamming mitigation.
@@ -456,8 +453,6 @@ pub mod sink_attack_interceptor {
 
     impl SinkInterceptor {
         pub fn new_for_network(
-            start_ins: Instant,
-            bootstrap: Duration,
             attacking_alias: String,
             target_alias: String,
             edges: Vec<NetworkParser>,
@@ -488,8 +483,6 @@ pub mod sink_attack_interceptor {
             }
 
             Self {
-                start_ins,
-                bootstrap,
                 jamming_interceptor: JammingInterceptor::new_for_network(&edges).unwrap(),
                 target_channels,
                 listener,
@@ -501,15 +494,6 @@ pub mod sink_attack_interceptor {
         /// trash its reputation if the htlc is endorsed. We do not use our underlying jamming mitigation interceptor
         /// at all because the attacker is not required to run the mitigation.
         async fn intercept_attacker_incoming(&self, req: InterceptRequest) {
-            // The attacker only starts to act on htlcs once the bootstrap period is over.
-            if Instant::now().duration_since(self.start_ins) < self.bootstrap {
-                log::info!(
-                    "HTLC from target -> attacker received during bootstrap period, forwarding: {}",
-                    print_request(&req)
-                );
-                send_intercept_result!(req, Ok(Ok(CustomRecords::default())), self.shutdown);
-            }
-
             // Exit early if not endorsed, no point in holding.
             if endorsement_from_records(&req.incoming_custom_records)
                 == EndorsementSignal::Unendorsed
@@ -548,17 +532,6 @@ pub mod sink_attack_interceptor {
         /// Intercepts payments flowing from peer -> target, simulating a general jamming attack by failing any
         /// unendorsed payments.
         async fn intercept_peer_outgoing(&self, req: InterceptRequest) {
-            // If we're still in the bootstrapping period, just handle the htlc as usual.
-            if Instant::now().duration_since(self.start_ins) < self.bootstrap {
-                log::info!(
-                    "HTLC from peer -> target received during bootstrap period, forwarding: {}",
-                    print_request(&req)
-                );
-
-                self.jamming_interceptor.intercept_htlc(req).await;
-                return;
-            }
-
             log::info!(
                 "HTLC from peer -> target, general jamming if endorsed: {}",
                 print_request(&req),
