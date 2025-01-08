@@ -14,6 +14,7 @@ pub mod reputation_interceptor {
     use simln_lib::NetworkParser;
     use std::collections::hash_map::Entry;
     use std::collections::HashMap;
+    use std::error::Error;
     use std::ops::Sub;
     use std::sync::{Arc, Mutex};
     use std::time::{Duration, Instant};
@@ -217,9 +218,7 @@ pub mod reputation_interceptor {
                             .map_err(|e| e.to_string())?;
                     }
                     BootstrapEvent::BootstrapResolve(htlc_resolve) => {
-                        self.inner_resolve_htlc(htlc_resolve)
-                            .await
-                            .map_err(|e| e.unwrap_or("inner resolve htlc failed".to_string()))?;
+                        self.inner_resolve_htlc(htlc_resolve).await?;
                     }
                 }
             }
@@ -291,27 +290,22 @@ pub mod reputation_interceptor {
         async fn inner_resolve_htlc(
             &self,
             resolved_htlc: HtlcResolve,
-        ) -> Result<(), Option<String>> {
+        ) -> Result<(), Box<dyn Error + Send + Sync + 'static>> {
             match self
                 .network_nodes
                 .lock()
-                .unwrap()
+                .map_err(|e| ReputationError::ErrUnrecoverable(e.to_string()))?
                 .entry(resolved_htlc.forwarding_node)
             {
-                Entry::Occupied(mut e) => e
-                    .get_mut()
-                    .0
-                    .resolve_htlc(
-                        resolved_htlc.outgoing_channel_id,
-                        resolved_htlc.incoming_htlc,
-                        resolved_htlc.forward_resolution,
-                        resolved_htlc.resolved_ins,
-                    )
-                    .map_err(|e| Some(format!("{e}"))),
-                Entry::Vacant(_) => Err(Some(format!(
-                    "Node: {} not found",
-                    resolved_htlc.forwarding_node
-                ))),
+                Entry::Occupied(mut e) => Ok(e.get_mut().0.resolve_htlc(
+                    resolved_htlc.outgoing_channel_id,
+                    resolved_htlc.incoming_htlc,
+                    resolved_htlc.forward_resolution,
+                    resolved_htlc.resolved_ins,
+                )?),
+                Entry::Vacant(_) => {
+                    Err(format!("Node: {} not found", resolved_htlc.forwarding_node).into())
+                }
             }
         }
     }
@@ -352,7 +346,7 @@ pub mod reputation_interceptor {
                     htlc,
                 })
                 .await
-                .map_err(|e| Some(e.to_string()));
+                .map_err(|e| e.into()); // into maps error enum to erased Box<dyn Error>
 
             if let Err(e) = req.response.send(resp).await {
                 // TODO: select
@@ -360,7 +354,10 @@ pub mod reputation_interceptor {
             }
         }
 
-        async fn notify_resolution(&self, res: InterceptResolution) -> Result<(), Option<String>> {
+        async fn notify_resolution(
+            &self,
+            res: InterceptResolution,
+        ) -> Result<(), Box<dyn Error + Send + Sync + 'static>> {
             // If there's not outgoing channel, we're notifying on the receiving node which doesn't need any action.
             let outgoing_channel_id = match res.outgoing_channel_id {
                 Some(c) => c.into(),
@@ -396,6 +393,7 @@ pub mod sink_attack_interceptor {
     };
     use simln_lib::{NetworkParser, ShortChannelID};
     use std::collections::HashMap;
+    use std::error::Error;
     use std::time::Duration;
     use tokio::{select, time};
     use triggered::{Listener, Trigger};
@@ -583,7 +581,10 @@ pub mod sink_attack_interceptor {
 
         /// Notifies the underlying jamming interceptor of htlc resolution, as our attacking interceptor doesn't need
         /// to handle notifications.
-        async fn notify_resolution(&self, res: InterceptResolution) -> Result<(), Option<String>> {
+        async fn notify_resolution(
+            &self,
+            res: InterceptResolution,
+        ) -> Result<(), Box<dyn Error + Send + Sync + 'static>> {
             self.jamming_interceptor.notify_resolution(res).await
         }
 
