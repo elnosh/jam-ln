@@ -1,7 +1,7 @@
 use clap::Parser;
 use ln_simln_jamming::parsing::{history_from_file, Cli};
 use ln_simln_jamming::reputation_interceptor::ReputationInterceptor;
-use ln_simln_jamming::sink_attack_interceptor::SinkInterceptor;
+use ln_simln_jamming::sink_interceptor::SinkInterceptor;
 use ln_simln_jamming::BoxError;
 use log::LevelFilter;
 use serde::{Deserialize, Serialize};
