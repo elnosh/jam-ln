@@ -6,7 +6,7 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-simln-lib = { git = "https://github.com/carlaKC/sim-ln", rev = "2246619" }
+simln-lib = { git = "https://github.com/carlaKC/sim-ln", rev = "d10c8f8" }
 ln-resource-mgr = { path = "../ln-resource-mgr" }
 bitcoin = { version = "0.30.1" }
 async-trait = "0.1.73"
