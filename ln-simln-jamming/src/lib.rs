@@ -2,6 +2,8 @@ use std::error::Error;
 
 pub type BoxError = Box<dyn Error + Send + Sync + 'static>;
 
+pub mod parsing;
+
 pub mod reputation_interceptor {
     use crate::BoxError;
     use async_trait::async_trait;
@@ -12,6 +14,7 @@ pub mod reputation_interceptor {
     use simln_lib::NetworkParser;
     use std::collections::hash_map::Entry;
     use std::collections::HashMap;
+    use std::ops::Sub;
     use std::sync::{Arc, Mutex};
     use std::time::{Duration, Instant};
 
@@ -19,8 +22,8 @@ pub mod reputation_interceptor {
         ForwardManager, ForwardManagerParams, ReputationParams,
     };
     use ln_resource_mgr::reputation::{
-        AllocatoinCheck, EndorsementSignal, ForwardResolution, ForwardingOutcome, HtlcRef,
-        ProposedForward, ReputationError, ReputationManager,
+        EndorsementSignal, ForwardResolution, ForwardingOutcome, HtlcRef, ProposedForward,
+        ReputationError, ReputationManager,
     };
 
     pub const ENDORSEMENT_TYPE: u64 = 106823;
@@ -38,6 +41,37 @@ pub mod reputation_interceptor {
             }
             None => EndorsementSignal::Unendorsed,
         }
+    }
+
+    struct HtlcAdd {
+        forwarding_node: PublicKey,
+        htlc: ProposedForward,
+    }
+
+    struct HtlcResolve {
+        outgoing_channel_id: u64,
+        forwarding_node: PublicKey,
+        incoming_htlc: HtlcRef,
+        forward_resolution: ForwardResolution,
+        resolved_ins: Instant,
+    }
+
+    enum BootstrapEvent {
+        BootstrapAdd(HtlcAdd),
+        BootstrapResolve(HtlcResolve),
+    }
+
+    /// Provides details of a htlc forward that is used to bootstrap reputation values for the network.
+    pub struct BootstrapForward {
+        pub incoming_amt: u64,
+        pub outgoing_amt: u64,
+        pub incoming_expiry: u32,
+        pub outgoing_expiry: u32,
+        pub added_ns: u64,
+        pub settled_ns: u64,
+        pub forwarding_node: PublicKey,
+        pub channel_in_id: u64,
+        pub channel_out_id: u64,
     }
 
     /// Implements a network-wide interceptor that implements resource management for every forwarding node in the
@@ -100,19 +134,183 @@ pub mod reputation_interceptor {
             })
         }
 
-        fn get_interceptor_resp(
+        /// Creates a network from the set of edges provided and bootstraps the reputation of nodes in the network using
+        /// the historical forwards provided. Forwards are expected to be sorted by added_ns in ascending order.
+        pub async fn new_with_bootstrap(
+            edges: &Vec<NetworkParser>,
+            history: &[BootstrapForward],
+        ) -> Result<Self, BoxError> {
+            let mut interceptor =
+                Self::new_for_network(edges).map_err(|_| "could not create network")?;
+            interceptor.bootstrap_network_history(history).await?;
+            Ok(interceptor)
+        }
+
+        async fn bootstrap_network_history(
+            &mut self,
+            history: &[BootstrapForward],
+        ) -> Result<(), BoxError> {
+            // We'll get all instants relative to the last timestamp we're given, so we get an instant now and track
+            // the last timestamp in the set of forwards.
+            let start_ins = Instant::now();
+            let last_ts = history
+                .iter()
+                .max_by(|x, y| x.settled_ns.cmp(&y.settled_ns))
+                .ok_or("at least one entry required in bootstrap history")?
+                .settled_ns;
+
+            // Run through history and create instants relative to the current time, we'll have two events per forward
+            // so we can allocate accordingly.
+            let mut bootstrap_events = Vec::with_capacity(history.len() * 2);
+            for (i, h) in history.iter().enumerate() {
+                let incoming_ref = HtlcRef {
+                    channel_id: h.channel_in_id,
+                    htlc_index: i as u64,
+                };
+
+                bootstrap_events.push(BootstrapEvent::BootstrapAdd(HtlcAdd {
+                    forwarding_node: h.forwarding_node,
+                    htlc: ProposedForward {
+                        incoming_ref,
+                        outgoing_channel_id: h.channel_out_id,
+                        amount_in_msat: h.incoming_amt,
+                        amount_out_msat: h.outgoing_amt,
+                        expiry_in_height: h.incoming_expiry,
+                        expiry_out_height: h.outgoing_expiry,
+                        added_at: start_ins.sub(Duration::from_nanos(
+                            last_ts
+                                .checked_sub(h.added_ns)
+                                .ok_or(format!("added ts: {} > last ts: {last_ts}", h.added_ns))?,
+                        )),
+                        incoming_endorsed: EndorsementSignal::Unendorsed,
+                    },
+                }));
+
+                bootstrap_events.push(BootstrapEvent::BootstrapResolve(HtlcResolve {
+                    outgoing_channel_id: h.channel_out_id,
+                    forwarding_node: h.forwarding_node,
+                    incoming_htlc: incoming_ref,
+                    resolved_ins: start_ins.sub(Duration::from_nanos(
+                        last_ts
+                            .checked_sub(h.settled_ns)
+                            .ok_or(format!("settled ts: {} > last ts: {last_ts}", h.settled_ns))?,
+                    )),
+                    forward_resolution: ForwardResolution::Settled,
+                }));
+            }
+
+            // Sort all events by timestamp so that we can replay them "live". Fail on any error because we expect all
+            // htlcs to be able to replay through our bootstrapping network.
+            //
+            // TODO: queue?
+            bootstrap_events.sort_by_key(|event| match event {
+                BootstrapEvent::BootstrapAdd(htlc_add) => htlc_add.htlc.added_at,
+                BootstrapEvent::BootstrapResolve(htlc_resolve) => htlc_resolve.resolved_ins,
+            });
+
+            for e in bootstrap_events {
+                match e {
+                    BootstrapEvent::BootstrapAdd(htlc_add) => {
+                        self.inner_add_htlc(htlc_add)
+                            .await
+                            .map_err(|e| e.to_string())?
+                            .map_err(|e| e.to_string())?;
+                    }
+                    BootstrapEvent::BootstrapResolve(htlc_resolve) => {
+                        self.inner_resolve_htlc(htlc_resolve)
+                            .await
+                            .map_err(|e| e.unwrap_or("inner resolve htlc failed".to_string()))?;
+                    }
+                }
+            }
+
+            Ok(())
+        }
+
+        /// Adds a htlc forward to the jamming interceptor, performing forwarding checks and returning the decided
+        /// forwarding outcome for the htlc. Callers should fail if the outer result is an error, because an unexpected
+        /// error has occurred.
+        async fn inner_add_htlc(
             &self,
-            forwading_node: PublicKey,
-            htlc: &ProposedForward,
-        ) -> Result<(AllocatoinCheck, String), ReputationError> {
-            match self.network_nodes.lock().unwrap().entry(forwading_node) {
+            htlc_add: HtlcAdd,
+        ) -> Result<Result<HashMap<u64, Vec<u8>>, ForwardingError>, ReputationError> {
+            // If the forwarding node can't be found, we've hit a critical error and can't proceed.
+            let (allocation_check, alias) = match self
+                .network_nodes
+                .lock()
+                .unwrap()
+                .entry(htlc_add.forwarding_node)
+            {
                 Entry::Occupied(mut e) => {
                     let (node, alias) = e.get_mut();
-                    Ok((node.add_outgoing_hltc(htlc)?, alias.to_string()))
+                    (node.add_outgoing_hltc(&htlc_add.htlc)?, alias.to_string())
                 }
-                Entry::Vacant(_) => Err(ReputationError::ErrUnrecoverable(format!(
-                    "node not found: {}",
-                    forwading_node,
+                Entry::Vacant(_) => {
+                    return Err(ReputationError::ErrUnrecoverable(format!(
+                        "node not found: {}",
+                        htlc_add.forwarding_node,
+                    )))
+                }
+            };
+
+            // Once we have a forwarding decision, return successfully to the interceptor with the call.
+            let fwd_decision = allocation_check.forwarding_outcome(
+                htlc_add.htlc.amount_out_msat,
+                htlc_add.htlc.incoming_endorsed,
+            );
+
+            log::info!(
+                "Node {} forwarding: {} with outcome {}",
+                alias,
+                htlc_add.htlc,
+                fwd_decision,
+            );
+
+            match fwd_decision {
+                ForwardingOutcome::Forward(endorsement) => {
+                    let mut outgoing_records = HashMap::new();
+
+                    match endorsement {
+                        EndorsementSignal::Endorsed => {
+                            outgoing_records.insert(ENDORSEMENT_TYPE, vec![1]);
+                        }
+                        EndorsementSignal::Unendorsed => {
+                            outgoing_records.insert(ENDORSEMENT_TYPE, vec![0]);
+                        }
+                    }
+
+                    Ok(Ok(outgoing_records))
+                }
+                ForwardingOutcome::Fail(reason) => Ok(Err(ForwardingError::InterceptorError(
+                    format!("{:?}", reason),
+                ))),
+            }
+        }
+
+        /// Removes a htlc from the jamming interceptor, reporting its success/failure to the inner state machine.
+        async fn inner_resolve_htlc(
+            &self,
+            resolved_htlc: HtlcResolve,
+        ) -> Result<(), Option<String>> {
+            match self
+                .network_nodes
+                .lock()
+                .unwrap()
+                .entry(resolved_htlc.forwarding_node)
+            {
+                Entry::Occupied(mut e) => e
+                    .get_mut()
+                    .0
+                    .resolve_htlc(
+                        resolved_htlc.outgoing_channel_id,
+                        resolved_htlc.incoming_htlc,
+                        resolved_htlc.forward_resolution,
+                        resolved_htlc.resolved_ins,
+                    )
+                    .map_err(|e| Some(format!("{e}"))),
+                Entry::Vacant(_) => Err(Some(format!(
+                    "Node: {} not found",
+                    resolved_htlc.forwarding_node
                 ))),
             }
         }
@@ -134,7 +332,7 @@ pub mod reputation_interceptor {
                 }
             };
 
-            let htlc = &ProposedForward {
+            let htlc = ProposedForward {
                 incoming_ref: HtlcRef {
                     channel_id: req.incoming_htlc.channel_id.into(),
                     htlc_index: req.incoming_htlc.index,
@@ -148,51 +346,15 @@ pub mod reputation_interceptor {
                 incoming_endorsed: endorsement_from_records(&req.incoming_custom_records),
             };
 
-            // If we can't successfully perform a reputation check, error out the interceptor so that the simulation
-            // will fail - we do not expect failure here.
-            let (allocation_check, alias) =
-                match self.get_interceptor_resp(req.forwarding_node, htlc) {
-                    Ok(a) => a,
-                    Err(e) => {
-                        if let Err(e) = req.response.send(Err(Some(e.to_string()))).await {
-                            println!("Failed to send response: {:?}", e); // TODO: error handling
-                        }
-                        return;
-                    }
-                };
+            let resp = self
+                .inner_add_htlc(HtlcAdd {
+                    forwarding_node: req.forwarding_node,
+                    htlc,
+                })
+                .await
+                .map_err(|e| Some(e.to_string()));
 
-            // Once we have a forwarding decision, return successfully to the interceptor with the call.
-            let fwd_decision =
-                allocation_check.forwarding_outcome(htlc.amount_out_msat, htlc.incoming_endorsed);
-
-            log::info!(
-                "Node {} forwarding: {} with outcome {}",
-                alias,
-                htlc,
-                fwd_decision,
-            );
-
-            let resp = match fwd_decision {
-                ForwardingOutcome::Forward(endorsement) => {
-                    let mut outgoing_records = HashMap::new();
-
-                    match endorsement {
-                        EndorsementSignal::Endorsed => {
-                            outgoing_records.insert(ENDORSEMENT_TYPE, vec![1]);
-                        }
-                        EndorsementSignal::Unendorsed => {
-                            outgoing_records.insert(ENDORSEMENT_TYPE, vec![0]);
-                        }
-                    }
-
-                    Ok(outgoing_records)
-                }
-                ForwardingOutcome::Fail(reason) => {
-                    Err(ForwardingError::InterceptorError(format!("{:?}", reason)))
-                }
-            };
-
-            if let Err(e) = req.response.send(Ok(resp)).await {
+            if let Err(e) = req.response.send(resp).await {
                 // TODO: select
                 println!("Failed to send response: {:?}", e); // TODO: error handling
             }
@@ -205,27 +367,17 @@ pub mod reputation_interceptor {
                 None => return Ok(()),
             };
 
-            match self
-                .network_nodes
-                .lock()
-                .unwrap()
-                .entry(res.forwarding_node)
-            {
-                Entry::Occupied(mut e) => e
-                    .get_mut()
-                    .0
-                    .resolve_htlc(
-                        outgoing_channel_id,
-                        HtlcRef {
-                            channel_id: res.incoming_htlc.channel_id.into(),
-                            htlc_index: res.incoming_htlc.index,
-                        },
-                        ForwardResolution::from(res.success),
-                        Instant::now(),
-                    )
-                    .map_err(|e| Some(format!("{e}"))),
-                Entry::Vacant(_) => Err(Some(format!("Node: {} not found", res.forwarding_node))),
-            }
+            self.inner_resolve_htlc(HtlcResolve {
+                outgoing_channel_id,
+                forwarding_node: res.forwarding_node,
+                incoming_htlc: HtlcRef {
+                    channel_id: res.incoming_htlc.channel_id.into(),
+                    htlc_index: res.incoming_htlc.index,
+                },
+                forward_resolution: ForwardResolution::from(res.success),
+                resolved_ins: Instant::now(),
+            })
+            .await
         }
 
         /// Returns an identifying name for the interceptor for logging, does not need to be unique.
@@ -244,7 +396,7 @@ pub mod sink_attack_interceptor {
     };
     use simln_lib::{NetworkParser, ShortChannelID};
     use std::collections::HashMap;
-    use std::time::{Duration, Instant};
+    use std::time::Duration;
     use tokio::{select, time};
     use triggered::{Listener, Trigger};
 
@@ -255,15 +407,12 @@ pub mod sink_attack_interceptor {
     }
 
     // Implements a "sink" attack where an attacking node:
-    // - Builds up reputation so that it can slow jam a target node
     // - General jams its peers so that htlcs will be endorsed
     // - Holds the endorsed htlcs to trash the target node's reputation with its peers
     //
     // This interceptor wraps an inner reputation interceptor so that we can still operate with regular reputation
     // on the non-attacking nodes. Doing so also allows us access to reputation values for monitoring.
     pub struct SinkInterceptor {
-        start_ins: Instant,
-        bootstrap: Duration,
         /// Keeps track of the target's channels for custom behavior.
         target_channels: HashMap<ShortChannelID, TargetChannelType>,
         /// Inner reputation monitor that implements jamming mitigation.
@@ -304,11 +453,10 @@ pub mod sink_attack_interceptor {
 
     impl SinkInterceptor {
         pub fn new_for_network(
-            start_ins: Instant,
-            bootstrap: Duration,
             attacking_alias: String,
             target_alias: String,
-            edges: Vec<NetworkParser>,
+            edges: &[NetworkParser],
+            jamming_interceptor: JammingInterceptor,
             listener: Listener,
             shutdown: Trigger,
         ) -> Self {
@@ -336,9 +484,7 @@ pub mod sink_attack_interceptor {
             }
 
             Self {
-                start_ins,
-                bootstrap,
-                jamming_interceptor: JammingInterceptor::new_for_network(&edges).unwrap(),
+                jamming_interceptor,
                 target_channels,
                 listener,
                 shutdown,
@@ -349,15 +495,6 @@ pub mod sink_attack_interceptor {
         /// trash its reputation if the htlc is endorsed. We do not use our underlying jamming mitigation interceptor
         /// at all because the attacker is not required to run the mitigation.
         async fn intercept_attacker_incoming(&self, req: InterceptRequest) {
-            // The attacker only starts to act on htlcs once the bootstrap period is over.
-            if Instant::now().duration_since(self.start_ins) < self.bootstrap {
-                log::info!(
-                    "HTLC from target -> attacker received during bootstrap period, forwarding: {}",
-                    print_request(&req)
-                );
-                send_intercept_result!(req, Ok(Ok(CustomRecords::default())), self.shutdown);
-            }
-
             // Exit early if not endorsed, no point in holding.
             if endorsement_from_records(&req.incoming_custom_records)
                 == EndorsementSignal::Unendorsed
@@ -396,17 +533,6 @@ pub mod sink_attack_interceptor {
         /// Intercepts payments flowing from peer -> target, simulating a general jamming attack by failing any
         /// unendorsed payments.
         async fn intercept_peer_outgoing(&self, req: InterceptRequest) {
-            // If we're still in the bootstrapping period, just handle the htlc as usual.
-            if Instant::now().duration_since(self.start_ins) < self.bootstrap {
-                log::info!(
-                    "HTLC from peer -> target received during bootstrap period, forwarding: {}",
-                    print_request(&req)
-                );
-
-                self.jamming_interceptor.intercept_htlc(req).await;
-                return;
-            }
-
             log::info!(
                 "HTLC from peer -> target, general jamming if endorsed: {}",
                 print_request(&req),
