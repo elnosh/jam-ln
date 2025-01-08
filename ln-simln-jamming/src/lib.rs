@@ -77,11 +77,11 @@ pub mod reputation_interceptor {
 
     /// Implements a network-wide interceptor that implements resource management for every forwarding node in the
     /// network.
-    pub struct JammingInterceptor {
+    pub struct ReputationInterceptor {
         network_nodes: Arc<Mutex<HashMap<PublicKey, (ForwardManager, String)>>>,
     }
 
-    impl JammingInterceptor {
+    impl ReputationInterceptor {
         pub fn new_for_network(edges: &Vec<NetworkParser>) -> Result<Self, BoxError> {
             let mut network_nodes: HashMap<PublicKey, (ForwardManager, String)> = HashMap::new();
 
@@ -311,7 +311,7 @@ pub mod reputation_interceptor {
     }
 
     #[async_trait]
-    impl Interceptor for JammingInterceptor {
+    impl Interceptor for ReputationInterceptor {
         /// Implemented by HTLC interceptors that provide input on the resolution of HTLCs forwarded in the simulation.
         async fn intercept_htlc(&self, req: InterceptRequest) {
             // If the intercept has no outgoing channel, we can just exit early because there's no action to be taken.
@@ -385,7 +385,7 @@ pub mod reputation_interceptor {
 }
 
 pub mod sink_attack_interceptor {
-    use crate::reputation_interceptor::{endorsement_from_records, JammingInterceptor};
+    use crate::reputation_interceptor::{endorsement_from_records, ReputationInterceptor};
     use async_trait::async_trait;
     use ln_resource_mgr::reputation::EndorsementSignal;
     use simln_lib::sim_node::{
@@ -414,7 +414,7 @@ pub mod sink_attack_interceptor {
         /// Keeps track of the target's channels for custom behavior.
         target_channels: HashMap<ShortChannelID, TargetChannelType>,
         /// Inner reputation monitor that implements jamming mitigation.
-        jamming_interceptor: JammingInterceptor,
+        jamming_interceptor: ReputationInterceptor,
         /// Used to control shutdown.
         listener: Listener,
         shutdown: Trigger,
@@ -454,7 +454,7 @@ pub mod sink_attack_interceptor {
             attacking_alias: String,
             target_alias: String,
             edges: &[NetworkParser],
-            jamming_interceptor: JammingInterceptor,
+            jamming_interceptor: ReputationInterceptor,
             listener: Listener,
             shutdown: Trigger,
         ) -> Self {

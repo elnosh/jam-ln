@@ -1,6 +1,6 @@
 use clap::Parser;
 use ln_simln_jamming::parsing::{history_from_file, Cli};
-use ln_simln_jamming::reputation_interceptor::JammingInterceptor;
+use ln_simln_jamming::reputation_interceptor::ReputationInterceptor;
 use ln_simln_jamming::sink_attack_interceptor::SinkInterceptor;
 use ln_simln_jamming::BoxError;
 use log::LevelFilter;
@@ -47,7 +47,7 @@ async fn main() -> Result<(), BoxError> {
         "51".to_string(),
         "22".to_string(),
         &sim_network,
-        JammingInterceptor::new_with_bootstrap(&sim_network, &history).await?,
+        ReputationInterceptor::new_with_bootstrap(&sim_network, &history).await?,
         listener,
         shutdown,
     ));
