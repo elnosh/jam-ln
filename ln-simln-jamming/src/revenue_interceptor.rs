@@ -154,18 +154,25 @@ impl RevenueInterceptor {
 
     pub async fn poll_revenue_difference(&self, interval: Duration) -> Result<(), BoxError> {
         let start_ins = Instant::now();
+        let mut i = 0;
 
         loop {
             select! {
                 _ = self.listener.clone() => return Ok(()),
                 _ = sleep(interval) => {
+                    i +=1;
+
                     let simulation_revenue = self.target_revenue.lock().await.revenue_total;
                     let peacetime_revenue = self.peacetime_revenue.lock().await.peacetime_revenue;
 
                     if peacetime_revenue > simulation_revenue{
                         self.shutdown.trigger();
-                        log::info!("Peacetime revenue: {peacetime_revenue} exceeds simulation
-                            revenue: {simulation_revenue} after: {:?}", start_ins.elapsed());
+                        log::info!("Peacetime revenue: {peacetime_revenue} exceeds simulation revenue: {simulation_revenue} after: {:?}", start_ins.elapsed());
+                        return Ok(())
+                    }
+
+                    if i % 10 == 0{
+                        log::info!("Peacetime revenue: {peacetime_revenue} less than simulation revenue: {simulation_revenue} after: {:?}", start_ins.elapsed());
                     }
                 },
             }
