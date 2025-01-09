@@ -131,7 +131,7 @@ impl SinkInterceptor {
         // If the htlc is endorsed, then we go ahead and hold the htlc for as long as we can only exiting if we
         // get a shutdown signal elsewhere.
         let resp = select! {
-            _ = self.listener.clone() => Err(ForwardingError::InterceptorError("shutdown signal received".to_string())),
+            _ = self.listener.clone() => Err(ForwardingError::InterceptorError("shutdown signal received".to_string().into())),
 
             _ = time::sleep(max_hold_secs) => Ok(CustomRecords::default())
         };
@@ -153,7 +153,7 @@ impl SinkInterceptor {
             EndorsementSignal::Endorsed => self.jamming_interceptor.intercept_htlc(req).await,
             EndorsementSignal::Unendorsed => {
                 let resp = Ok(Err(ForwardingError::InterceptorError(
-                    "general jamming unendorsed".to_string(),
+                    "general jamming unendorsed".to_string().into(),
                 )));
 
                 send_intercept_result!(req, resp, self.shutdown)
