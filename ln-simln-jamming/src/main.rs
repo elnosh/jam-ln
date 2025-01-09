@@ -38,21 +38,21 @@ async fn main() -> Result<(), BoxError> {
     let history = history_from_file(&cli.bootstrap_file, Some(cli.bootstrap_duration))?;
 
     // Use the channel jamming interceptor and latency for simulated payments.
-    let latency_interceptor: Box<dyn Interceptor> =
-        Box::new(LatencyIntercepor::new_poisson(150.0)?);
+    let latency_interceptor: Arc<dyn Interceptor> =
+        Arc::new(LatencyIntercepor::new_poisson(150.0)?);
 
     // TODO: these should be shared with simln!!
     let (shutdown, listener) = triggered::trigger();
-    let attack_interceptor: Box<dyn Interceptor> = Box::new(SinkInterceptor::new_for_network(
+    let attack_interceptor: Arc<dyn Interceptor> = Arc::new(SinkInterceptor::new_for_network(
         "51".to_string(),
         "22".to_string(),
         &sim_network,
         ReputationInterceptor::new_with_bootstrap(&sim_network, &history).await?,
-        listener,
-        shutdown,
+        listener.clone(),
+        shutdown.clone(),
     ));
 
-    let interceptors = Arc::new(vec![latency_interceptor, attack_interceptor]);
+    let interceptors = vec![latency_interceptor, attack_interceptor];
 
     // Simulated channels for our simulated graph.
     let channels = sim_network
@@ -68,6 +68,8 @@ async fn main() -> Result<(), BoxError> {
         vec![], // No activities, we want random activity!
         1,      // No clock speedup, just run with regular timing for now.
         interceptors,
+        listener,
+        shutdown,
     )
     .await
     .map_err(|e| anyhow::anyhow!(e))?;

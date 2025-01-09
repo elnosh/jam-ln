@@ -273,10 +273,9 @@ impl ReputationInterceptor {
 
                 Ok(Ok(outgoing_records))
             }
-            ForwardingOutcome::Fail(reason) => Ok(Err(ForwardingError::InterceptorError(format!(
-                "{:?}",
-                reason
-            )))),
+            ForwardingOutcome::Fail(reason) => Ok(Err(ForwardingError::InterceptorError(
+                reason.to_string().into(),
+            ))),
         }
     }
 
