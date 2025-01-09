@@ -4,14 +4,16 @@ use std::collections::{BinaryHeap, HashMap};
 use std::error::Error;
 use std::ops::{Add, Sub};
 use std::path::PathBuf;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
 use bitcoin::secp256k1::PublicKey;
 use ln_resource_mgr::reputation::HtlcRef;
 use simln_lib::sim_node::{InterceptRequest, InterceptResolution, Interceptor};
 use tokio::sync::Mutex;
-use tokio::time;
+use tokio::time::sleep;
+use tokio::{select, time};
+use triggered::{Listener, Trigger};
 
 use crate::parsing::peacetime_from_file;
 use crate::BoxError;
@@ -20,6 +22,8 @@ pub struct RevenueInterceptor {
     target_node: PublicKey,
     target_revenue: Mutex<NodeRevenue>,
     peacetime_revenue: Mutex<PeacetimeRevenue>,
+    listener: Listener,
+    shutdown: Trigger,
 }
 
 struct NodeRevenue {
@@ -100,6 +104,8 @@ impl RevenueInterceptor {
         bootstrap_revenue: u64,
         bootstrap_duration: Duration,
         revenue_file: PathBuf,
+        listener: Listener,
+        shutdown: Trigger,
     ) -> Result<Self, BoxError> {
         Ok(Self {
             target_node: target_pubkey,
@@ -112,6 +118,8 @@ impl RevenueInterceptor {
                 revenue_file,
                 bootstrap_duration,
             )?),
+            listener,
+            shutdown,
         })
     }
 
@@ -138,6 +146,26 @@ impl RevenueInterceptor {
             let _ = time::sleep(Duration::from_nanos(wait));
 
             self.peacetime_revenue.lock().await.peacetime_revenue += next_event.fee_msat;
+        }
+    }
+
+    pub async fn poll_revenue_difference(&self, interval: Duration) -> Result<(), BoxError> {
+		let start_ins = Instant::now();
+
+        loop {
+            select! {
+                _ = self.listener.clone() => return Ok(()),
+                _ = sleep(interval) => {
+                    let simulation_revenue = self.target_revenue.lock().await.revenue_total;
+                    let peacetime_revenue = self.peacetime_revenue.lock().await.peacetime_revenue;
+
+                    if peacetime_revenue > simulation_revenue{
+                        self.shutdown.trigger();
+                        log::info!("Peacetime revenue: {peacetime_revenue} exceeds simulation
+                            revenue: {simulation_revenue} after: {:?}", start_ins.elapsed());
+                    }
+                },
+            }
         }
     }
 }
