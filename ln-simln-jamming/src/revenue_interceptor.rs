@@ -73,7 +73,7 @@ impl PeacetimeRevenue {
         // Grab the first event to get our starting timestamp, push the event back on so that we can process it.
         let first_event = peacetime_activity
             .peek()
-            .ok_or(format!("should have at least one forward for target node"))?;
+            .ok_or("should have at least one forward for target node".to_string())?;
 
         let cutoff_ns = first_event
             .timestamp_ns
@@ -134,7 +134,7 @@ impl RevenueInterceptor {
             let next_event = peacetime_lock
                 .revenue_events
                 .pop()
-                .ok_or(format!("run out of peacetime events"))?;
+                .ok_or("out of peacetime events".to_string())?;
             drop(peacetime_lock);
 
             let last_event_ts = last_event_ts.unwrap_or_else(|| {
@@ -143,14 +143,17 @@ impl RevenueInterceptor {
             });
             let wait = next_event.timestamp_ns.sub(last_event_ts);
 
-            let _ = time::sleep(Duration::from_nanos(wait));
+            select! {
+                _ = self.listener.clone() => return Ok(()),
+                _ = time::sleep(Duration::from_nanos(wait)) => {},
+            }
 
             self.peacetime_revenue.lock().await.peacetime_revenue += next_event.fee_msat;
         }
     }
 
     pub async fn poll_revenue_difference(&self, interval: Duration) -> Result<(), BoxError> {
-		let start_ins = Instant::now();
+        let start_ins = Instant::now();
 
         loop {
             select! {
