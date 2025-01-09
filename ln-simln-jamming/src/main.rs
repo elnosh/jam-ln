@@ -1,6 +1,7 @@
 use clap::Parser;
 use ln_simln_jamming::parsing::{history_from_file, Cli};
 use ln_simln_jamming::reputation_interceptor::ReputationInterceptor;
+use ln_simln_jamming::revenue_interceptor::RevenueInterceptor;
 use ln_simln_jamming::sink_interceptor::SinkInterceptor;
 use ln_simln_jamming::BoxError;
 use log::LevelFilter;
@@ -11,6 +12,8 @@ use simln_lib::{NetworkParser, Simulation, SimulationCfg};
 use simple_logger::SimpleLogger;
 use std::fs;
 use std::sync::Arc;
+use std::time::Duration;
+use tokio::task::JoinSet;
 
 #[derive(Serialize, Deserialize)]
 pub struct SimNetwork {
@@ -35,7 +38,32 @@ async fn main() -> Result<(), BoxError> {
     let SimNetwork { sim_network } =
         serde_json::from_str(&fs::read_to_string(cli.sim_file.as_path())?)?;
 
+    // Match the target alias using pubkeys provided in sim network file.
+    let target_alias = "22".to_string(); // TODO: cli argument
+    let target_channel = sim_network
+        .iter()
+        .find(|hist| hist.node_1.alias == target_alias || hist.node_2.alias == target_alias)
+        .ok_or(format!(
+            "attacker alias: {target_alias} not found in sim file"
+        ))?;
+
+    let target_pubkey = if target_channel.node_1.alias == target_alias {
+        target_channel.node_1.pubkey
+    } else {
+        target_channel.node_2.pubkey
+    };
+
+    // Pull history that bootstraps the simulation in a network with the attacker's channels present and calculate
+    // revenue for the target node during this bootstrap period.
     let history = history_from_file(&cli.bootstrap_file, Some(cli.bootstrap_duration))?;
+
+    let bootstrap_revenue = history.iter().fold(0, |acc, item| {
+        if item.forwarding_node == target_pubkey {
+            acc + item.incoming_amt - item.outgoing_amt
+        } else {
+            acc
+        }
+    });
 
     // Use the channel jamming interceptor and latency for simulated payments.
     let latency_interceptor: Arc<dyn Interceptor> =
@@ -45,14 +73,35 @@ async fn main() -> Result<(), BoxError> {
     let (shutdown, listener) = triggered::trigger();
     let attack_interceptor: Arc<dyn Interceptor> = Arc::new(SinkInterceptor::new_for_network(
         "51".to_string(),
-        "22".to_string(),
+        target_alias.clone(),
         &sim_network,
         ReputationInterceptor::new_with_bootstrap(&sim_network, &history).await?,
         listener.clone(),
         shutdown.clone(),
     ));
 
-    let interceptors = vec![latency_interceptor, attack_interceptor];
+    let revenue_interceptor = Arc::new(RevenueInterceptor::new_with_bootstrap(
+        target_pubkey,
+        bootstrap_revenue,
+        cli.bootstrap_duration,
+        cli.peacetime_file,
+        listener.clone(),
+        shutdown.clone(),
+    )?);
+
+    let mut tasks = JoinSet::new();
+
+    let revenue_interceptor_1 = revenue_interceptor.clone();
+    tasks.spawn(async move { revenue_interceptor_1.process_peacetime_fwds().await });
+
+    let revenue_interceptor_2 = revenue_interceptor.clone();
+    tasks.spawn(async move {
+        revenue_interceptor_2
+            .poll_revenue_difference(Duration::from_secs(5))
+            .await
+    });
+
+    let interceptors = vec![latency_interceptor, attack_interceptor, revenue_interceptor];
 
     // Simulated channels for our simulated graph.
     let channels = sim_network

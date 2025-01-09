@@ -19,6 +19,9 @@ const DEFAULT_SIM_FILE: &str = "./simln.json";
 /// Default file used to bootstrap reputation.
 const DEFAULT_BOOTSTRAP_FILE: &str = "./bootstrap.csv";
 
+/// Default file used to imitate peacetime revenue
+const DEFAULT_PEACETIME_FILE: &str = "./no_attacker.csv";
+
 #[derive(Parser)]
 #[command(version, about)]
 pub struct Cli {
@@ -30,6 +33,11 @@ pub struct Cli {
     /// simulation.
     #[arg(long, default_value = DEFAULT_BOOTSTRAP_FILE)]
     pub bootstrap_file: PathBuf,
+
+    /// A CSV file containing forwards for the network, excluding the attacker used to represent peacetime revenue
+    /// for the target node.
+    #[arg(long, default_value = DEFAULT_PEACETIME_FILE)]
+    pub peacetime_file: PathBuf,
 
     /// The duration of time that reputation for the network should be bootstrapped for, expressed as human readable
     /// values (eg: 1w, 3d).
