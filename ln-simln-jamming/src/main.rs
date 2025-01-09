@@ -112,7 +112,7 @@ async fn main() -> Result<(), BoxError> {
 
     // Setup the simulated network with our fake graph.
     let (simulation, graph) = Simulation::new_with_sim_network(
-        SimulationCfg::new(None, 3_800_000, 2.0, None, None),
+        SimulationCfg::new(None, 3_800_000, 2.0, None, Some(13995354354227336701)),
         channels,
         vec![], // No activities, we want random activity!
         1,      // No clock speedup, just run with regular timing for now.
