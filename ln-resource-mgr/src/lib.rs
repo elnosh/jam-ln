@@ -232,6 +232,15 @@ pub mod reputation {
         }
     }
 
+    impl Display for ForwardResolution {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            match self {
+                ForwardResolution::Settled => write!(f, "settled"),
+                ForwardResolution::Failed => write!(f, "failed"),
+            }
+        }
+    }
+
     /// A unique identifier for a htlc on a channel (payment hash may be repeated for mpp payments).
     #[derive(PartialEq, Eq, Hash, Debug, Clone, Copy)]
     pub struct HtlcRef {

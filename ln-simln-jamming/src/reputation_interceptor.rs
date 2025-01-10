@@ -299,6 +299,14 @@ impl ReputationInterceptor {
         &self,
         resolved_htlc: HtlcResolve,
     ) -> Result<(), Box<dyn Error + Send + Sync + 'static>> {
+        log::info!(
+            "Resolving htlc {}:{} on {} with outcome {}",
+            resolved_htlc.incoming_htlc.channel_id,
+            resolved_htlc.incoming_htlc.htlc_index,
+            resolved_htlc.outgoing_channel_id,
+            resolved_htlc.forward_resolution,
+        );
+
         match self
             .network_nodes
             .lock()
