@@ -68,6 +68,21 @@ pub struct BootstrapForward {
     pub channel_out_id: u64,
 }
 
+#[derive(Copy, Clone, Debug)]
+pub struct ReputationPair {
+    pub incoming_scid: u64,
+    pub outgoing_scid: u64,
+    pub incoming_revenue: i64,
+    pub outgoing_reputation: i64,
+}
+
+impl ReputationPair {
+    pub fn outgoing_reputation(&self) -> bool {
+        // TODO: for what htlc amount?
+        self.outgoing_reputation > self.incoming_revenue
+    }
+}
+
 /// Implements a network-wide interceptor that implements resource management for every forwarding node in the
 /// network.
 pub struct ReputationInterceptor {
@@ -300,6 +315,41 @@ impl ReputationInterceptor {
                 Err(format!("Node: {} not found", resolved_htlc.forwarding_node).into())
             }
         }
+    }
+
+    /// Returns all reputation pairs for the node provided. For example, if a node has channels 1, 2 and 3 it will
+    /// return the following reputation pairs: [1 -> 2], [1 -> 3], [2 -> 1], [2 -> 3], [3 -> 1], [3 -> 2].
+    pub async fn list_reputation_pairs(
+        &self,
+        node: PublicKey,
+        access_ins: Instant,
+    ) -> Result<Vec<ReputationPair>, BoxError> {
+        let reputations = self
+            .network_nodes
+            .lock()
+            .map_err(|e| ReputationError::ErrUnrecoverable(e.to_string()))?
+            .get(&node)
+            .ok_or(format!("node: {node} not found"))?
+            .0
+            .list_reputation(access_ins)?;
+
+        let mut pairs = Vec::with_capacity(reputations.len() * (reputations.len() - 1));
+        for (incoming_scid, snapshot_incoming) in reputations.iter() {
+            for (outgoing_scid, snapshot_outgoing) in reputations.iter() {
+                if incoming_scid == outgoing_scid {
+                    continue;
+                }
+
+                pairs.push(ReputationPair {
+                    incoming_scid: *incoming_scid,
+                    outgoing_scid: *outgoing_scid,
+                    incoming_revenue: snapshot_incoming.incoming_revenue,
+                    outgoing_reputation: snapshot_outgoing.outgoing_reputation,
+                })
+            }
+        }
+
+        Ok(pairs)
     }
 }
 
