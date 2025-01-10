@@ -960,6 +960,7 @@ dependencies = [
  "bitcoin",
  "clap",
  "csv",
+ "futures",
  "hex",
  "humantime",
  "ln-resource-mgr",
