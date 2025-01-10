@@ -25,6 +25,11 @@ pub mod forward_manager {
         pub general_liquidity_portion: u8,
     }
 
+    pub struct ReputationSnapshot {
+        pub outgoing_reputation: i64,
+        pub incoming_revenue: i64,
+    }
+
     pub struct ForwardManager {
         params: ForwardManagerParams,
         channels: Mutex<HashMap<u64, TrackedChannel>>,
@@ -36,6 +41,33 @@ pub mod forward_manager {
                 params,
                 channels: Mutex::new(HashMap::new()),
             }
+        }
+
+        /// Lists the reputation scores of each channel at the access instant provided. This function *will* mutate
+        /// the underlying decaying averages to be tracked at the instant provided.
+        pub fn list_reputation(
+            &self,
+            access_ins: Instant,
+        ) -> Result<HashMap<u64, ReputationSnapshot>, ReputationError> {
+            let mut chan_lock = self
+                .channels
+                .lock()
+                .map_err(|e| ReputationError::ErrUnrecoverable(e.to_string()))?;
+
+            let mut reputations = HashMap::with_capacity(chan_lock.len());
+            for (scid, channel) in chan_lock.iter_mut() {
+                reputations.insert(
+                    *scid,
+                    ReputationSnapshot {
+                        outgoing_reputation: channel
+                            .outgoing_reputation
+                            .outgoing_reputation(access_ins)?,
+                        incoming_revenue: channel.incoming_revenue.value_at_instant(access_ins)?,
+                    },
+                );
+            }
+
+            Ok(reputations)
         }
     }
 
