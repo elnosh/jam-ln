@@ -9,9 +9,9 @@ pub mod forward_manager {
 
     use super::reputation_tracker::{ReputationParams, ReputationTracker};
     use crate::decaying_average::DecayingAverage;
-    use crate::reputation::{AllocatoinCheck, ReputationManager};
-    use crate::reputation::{
-        ForwardResolution, ForwardingOutcome, HtlcRef, ProposedForward, ReputationError,
+    use crate::{
+        AllocatoinCheck, ForwardResolution, ForwardingOutcome, HtlcRef, ProposedForward,
+        ReputationError, ReputationManager,
     };
 
     struct TrackedChannel {
@@ -233,7 +233,7 @@ mod reputation_tracker {
     use std::time::{Duration, Instant};
 
     use crate::decaying_average::DecayingAverage;
-    use crate::reputation::{
+    use crate::{
         validate_msat, EndorsementSignal, ForwardResolution, HtlcRef, ProposedForward,
         ReputationCheck, ReputationError, ResourceCheck,
     };

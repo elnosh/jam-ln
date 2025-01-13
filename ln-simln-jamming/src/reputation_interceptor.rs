@@ -15,7 +15,7 @@ use std::time::{Duration, Instant};
 use ln_resource_mgr::outgoing_reputation::{
     ForwardManager, ForwardManagerParams, ReputationParams,
 };
-use ln_resource_mgr::reputation::{
+use ln_resource_mgr::{
     EndorsementSignal, ForwardResolution, ForwardingOutcome, HtlcRef, ProposedForward,
     ReputationError, ReputationManager,
 };

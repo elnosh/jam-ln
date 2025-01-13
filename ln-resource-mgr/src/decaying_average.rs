@@ -1,6 +1,6 @@
 use std::time::{Duration, Instant};
 
-use crate::reputation::ReputationError;
+use crate::ReputationError;
 
 /// Tracks a timestamped decaying average, which may be positive or negative. Acts
 pub struct DecayingAverage {
@@ -54,7 +54,7 @@ impl DecayingAverage {
 
 #[cfg(test)]
 mod tests {
-    use crate::reputation::ReputationError;
+    use crate::ReputationError;
 
     use super::DecayingAverage;
     use std::ops::Add;

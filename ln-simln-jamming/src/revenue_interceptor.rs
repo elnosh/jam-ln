@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
 use bitcoin::secp256k1::PublicKey;
-use ln_resource_mgr::reputation::HtlcRef;
+use ln_resource_mgr::HtlcRef;
 use simln_lib::sim_node::{InterceptRequest, InterceptResolution, Interceptor};
 use tokio::sync::Mutex;
 use tokio::time::sleep;

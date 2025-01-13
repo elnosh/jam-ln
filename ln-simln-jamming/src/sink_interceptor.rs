@@ -5,7 +5,7 @@ use crate::BoxError;
 use async_trait::async_trait;
 use bitcoin::secp256k1::PublicKey;
 use futures::future::join_all;
-use ln_resource_mgr::reputation::EndorsementSignal;
+use ln_resource_mgr::EndorsementSignal;
 use simln_lib::sim_node::{
     CustomRecords, ForwardingError, InterceptRequest, InterceptResolution, Interceptor,
 };
