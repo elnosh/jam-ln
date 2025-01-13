@@ -292,6 +292,14 @@ impl Interceptor for SinkInterceptor {
         &self,
         res: InterceptResolution,
     ) -> Result<(), Box<dyn Error + Send + Sync + 'static>> {
+        // If this was a payment forwarded through the attacker from the target (target -> attacker -> *), we don't
+        // want to report it to the reputation interceptor (because we didn't use it for the original intercepted htlc).
+        if let Some(target_chan) = self.target_channels.get(&res.incoming_htlc.channel_id) {
+            if *target_chan == TargetChannelType::Attacker {
+                return Ok(());
+            }
+        }
+
         self.jamming_interceptor.notify_resolution(res).await
     }
 
