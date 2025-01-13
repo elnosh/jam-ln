@@ -51,3 +51,86 @@ impl DecayingAverage {
         Ok(self.value)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use crate::reputation::ReputationError;
+
+    use super::DecayingAverage;
+    use std::ops::Add;
+    use std::time::{Duration, Instant};
+
+    /// The set decay period that we generated test values for.
+    const TEST_PERIOD: Duration = Duration::from_secs(100);
+
+    /// Tests creation of a decaying average and values when no updates have been made.
+    #[test]
+    fn test_new_decaying_average() {
+        let ins_0 = Instant::now();
+        let mut avg = DecayingAverage::new(TEST_PERIOD);
+        assert_eq!(avg.value_at_instant(ins_0).unwrap(), 0);
+
+        let ins_1 = ins_0.add(Duration::from_secs(10));
+        assert_eq!(avg.value_at_instant(ins_1).unwrap(), 0);
+
+        let ins_2 = ins_0.add(Duration::from_secs(15));
+        assert_eq!(avg.add_value(1000, ins_2).unwrap(), 1000);
+    }
+
+    /// Tests updating of decaying average at various intervals. Values for this test were independently generated.
+    #[test]
+    fn test_decaying_average_values() {
+        let ins_0 = Instant::now();
+        let mut avg = DecayingAverage::new(TEST_PERIOD);
+
+        // Set initial value on average.
+        let ins_1 = ins_0 + Duration::from_secs(1000);
+        assert_eq!(avg.add_value(1000, ins_1).unwrap(), 1000);
+
+        // Advance the clock a few times and assert decay as expected.
+        let ins_2 = ins_1 + Duration::from_secs(25);
+        assert_eq!(avg.value_at_instant(ins_2).unwrap(), 707,);
+
+        let ins_3 = ins_2 + Duration::from_secs(3);
+        assert_eq!(avg.value_at_instant(ins_3).unwrap(), 678);
+
+        // Add value without advancing time.
+        assert_eq!(avg.add_value(2300, ins_3).unwrap(), 2978);
+
+        // Add value with advancing time.
+        let ins_4 = ins_3 + Duration::from_secs(50);
+        assert_eq!(avg.value_at_instant(ins_4).unwrap(), 1489);
+    }
+
+    /// Test that edge cases with maximum/minimum values are appropriately handled.
+    #[test]
+    fn test_average_bounds() {
+        let ins_0 = Instant::now();
+        let mut avg = DecayingAverage::new(TEST_PERIOD);
+        assert_eq!(avg.add_value(100, ins_0).unwrap(), 100);
+
+        // Expect decay to zero when 1000x the decay period has passed.
+        let ins_1 = ins_0.add(TEST_PERIOD * 1000);
+        assert_eq!(avg.value_at_instant(ins_1).unwrap(), 0);
+
+        // A very large value is properly represented, but overflowing i64::MAX is saturating.
+        let ins_2 = ins_1.add(Duration::from_secs(15));
+        let large_value = i64::MAX / 2;
+        assert_eq!(avg.add_value(large_value, ins_2).unwrap(), large_value);
+        assert_eq!(avg.add_value(i64::MAX, ins_2).unwrap(), i64::MAX);
+    }
+
+    #[test]
+    fn test_update_in_past() {
+        let ins_0 = Instant::now();
+        let ins_1 = ins_0.add(Duration::from_secs(100));
+
+        let mut avg = DecayingAverage::new(TEST_PERIOD);
+        assert_eq!(avg.add_value(100, ins_1).unwrap(), 100);
+
+        assert!(matches!(
+            avg.add_value(500, ins_0),
+            Err(ReputationError::ErrUpdateInPast(_, _))
+        ));
+    }
+}
