@@ -192,8 +192,7 @@ impl SinkInterceptor {
             .list_reputation_pairs(node, access_ins)
             .await?
             .iter()
-            .filter(|scid| channels.get(&scid.outgoing_scid).is_some())
-            .map(|pair| *pair)
+            .filter(|scid| channels.get(&scid.outgoing_scid).is_some()).copied()
             .collect();
 
         Ok(reputations)
