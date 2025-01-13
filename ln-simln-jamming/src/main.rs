@@ -165,10 +165,7 @@ async fn main() -> Result<(), BoxError> {
     Ok(())
 }
 
-fn find_pubkey_by_alias(
-    alias: &str,
-    sim_network: &Vec<NetworkParser>,
-) -> Result<PublicKey, BoxError> {
+fn find_pubkey_by_alias(alias: &str, sim_network: &[NetworkParser]) -> Result<PublicKey, BoxError> {
     let target_channel = sim_network
         .iter()
         .find(|hist| hist.node_1.alias == alias || hist.node_2.alias == alias)
