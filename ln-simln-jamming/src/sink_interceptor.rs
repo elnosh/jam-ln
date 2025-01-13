@@ -57,7 +57,7 @@ pub struct SinkInterceptor {
     /// List of public keys of the target's honest (non-attacker) peers.
     honest_peers: Vec<PublicKey>,
     /// Inner reputation monitor that implements jamming mitigation.
-    jamming_interceptor: ReputationInterceptor,
+    reputation_interceptor: ReputationInterceptor,
     /// Used to control shutdown.
     listener: Listener,
     shutdown: Trigger,
@@ -135,7 +135,7 @@ impl SinkInterceptor {
         Self {
             target_pubkey,
             honest_peers,
-            jamming_interceptor,
+            reputation_interceptor: jamming_interceptor,
             target_channels,
             listener,
             shutdown,
@@ -188,7 +188,7 @@ impl SinkInterceptor {
             .collect();
 
         let reputations: Vec<ReputationPair> = self
-            .jamming_interceptor
+            .reputation_interceptor
             .list_reputation_pairs(node, access_ins)
             .await?
             .iter()
@@ -246,7 +246,7 @@ impl SinkInterceptor {
         // If the htlc is endorsed, apply usual reputation checks, otherwise just reject unendorsed htlcs to mimic
         // a general jam on the channel.
         match endorsement_from_records(&req.incoming_custom_records) {
-            EndorsementSignal::Endorsed => self.jamming_interceptor.intercept_htlc(req).await,
+            EndorsementSignal::Endorsed => self.reputation_interceptor.intercept_htlc(req).await,
             EndorsementSignal::Unendorsed => {
                 let resp = Ok(Err(ForwardingError::InterceptorError(
                     "general jamming unendorsed".to_string().into(),
@@ -283,7 +283,7 @@ impl Interceptor for SinkInterceptor {
 
         // The target is not involved in the forward at all, just use jamming interceptor to implement reputation
         // and bucketing.
-        self.jamming_interceptor.intercept_htlc(req).await
+        self.reputation_interceptor.intercept_htlc(req).await
     }
 
     /// Notifies the underlying jamming interceptor of htlc resolution, as our attacking interceptor doesn't need
@@ -300,7 +300,7 @@ impl Interceptor for SinkInterceptor {
             }
         }
 
-        self.jamming_interceptor.notify_resolution(res).await
+        self.reputation_interceptor.notify_resolution(res).await
     }
 
     fn name(&self) -> String {
