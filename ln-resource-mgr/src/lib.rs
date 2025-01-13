@@ -131,7 +131,7 @@ pub enum FailureReason {
 
 /// A snapshot of the reputation and resources available for a forward.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct AllocatoinCheck {
+pub struct AllocationCheck {
     /// The reputation values used to compare the incoming channel's revenue to the outgoing channel's reputation for
     /// the htlc proposed.
     pub reputation_check: ReputationCheck,
@@ -139,7 +139,7 @@ pub struct AllocatoinCheck {
     pub resource_check: ResourceCheck,
 }
 
-impl AllocatoinCheck {
+impl AllocationCheck {
     /// The recommended action to be taken for the htlc forward.
     pub fn forwarding_outcome(
         &self,
@@ -352,7 +352,7 @@ pub trait ReputationManager {
     fn get_forwarding_outcome(
         &self,
         forward: &ProposedForward,
-    ) -> Result<AllocatoinCheck, ReputationError>;
+    ) -> Result<AllocationCheck, ReputationError>;
 
     /// Checks the endorsement signal and reputation of a proposed forward to determine whether a htlc should be
     /// forwarded on the outgoing link. If the htlc can be forwarded, it will be added to the internal state of
@@ -365,7 +365,7 @@ pub trait ReputationManager {
     fn add_outgoing_hltc(
         &self,
         forward: &ProposedForward,
-    ) -> Result<AllocatoinCheck, ReputationError>;
+    ) -> Result<AllocationCheck, ReputationError>;
 
     /// Resolves a htlc that was previously added using [`add_outgoing_htlc`], returning
     /// [`ReputationError::ErrForwardNotFound`] if the htlc is not found.

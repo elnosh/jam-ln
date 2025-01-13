@@ -10,7 +10,7 @@ pub mod forward_manager {
     use super::reputation_tracker::{ReputationParams, ReputationTracker};
     use crate::decaying_average::DecayingAverage;
     use crate::{
-        AllocatoinCheck, ForwardResolution, ForwardingOutcome, HtlcRef, ProposedForward,
+        AllocationCheck, ForwardResolution, ForwardingOutcome, HtlcRef, ProposedForward,
         ReputationError, ReputationManager,
     };
 
@@ -116,7 +116,7 @@ pub mod forward_manager {
         fn get_forwarding_outcome(
             &self,
             forward: &ProposedForward,
-        ) -> Result<AllocatoinCheck, ReputationError> {
+        ) -> Result<AllocationCheck, ReputationError> {
             forward.validate()?;
 
             let mut chan_lock = self
@@ -141,7 +141,7 @@ pub mod forward_manager {
                 ))?
                 .outgoing_reputation;
 
-            Ok(AllocatoinCheck {
+            Ok(AllocationCheck {
                 reputation_check: outgoing_channel.new_reputation_check(
                     forward.added_at,
                     incoming_threshold,
@@ -154,7 +154,7 @@ pub mod forward_manager {
         fn add_outgoing_hltc(
             &self,
             forward: &ProposedForward,
-        ) -> Result<AllocatoinCheck, ReputationError> {
+        ) -> Result<AllocationCheck, ReputationError> {
             // TODO: locks not atomic
             let allocation_check = self.get_forwarding_outcome(forward)?;
 
