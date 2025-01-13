@@ -1,7 +1,5 @@
-use crate::reputation_interceptor::{
-    endorsement_from_records, ReputationInterceptor, ReputationPair,
-};
-use crate::BoxError;
+use crate::reputation_interceptor::{ReputationInterceptor, ReputationPair};
+use crate::{endorsement_from_records, BoxError};
 use async_trait::async_trait;
 use bitcoin::secp256k1::PublicKey;
 use futures::future::join_all;

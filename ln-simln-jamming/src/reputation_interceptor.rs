@@ -1,4 +1,4 @@
-use crate::BoxError;
+use crate::{BoxError, ENDORSEMENT_TYPE, endorsement_from_records};
 use async_trait::async_trait;
 use bitcoin::secp256k1::PublicKey;
 use simln_lib::sim_node::{
@@ -19,23 +19,6 @@ use ln_resource_mgr::{
     EndorsementSignal, ForwardResolution, ForwardingOutcome, HtlcRef, ProposedForward,
     ReputationError, ReputationManager,
 };
-
-pub const ENDORSEMENT_TYPE: u64 = 106823;
-
-pub fn endorsement_from_records(records: &CustomRecords) -> EndorsementSignal {
-    match records.get(&ENDORSEMENT_TYPE) {
-        Some(endorsed) => {
-            if endorsed.len() == 1 && endorsed[0] == 1 {
-                EndorsementSignal::Endorsed
-            } else {
-                // Consider any value that isn't [1] to be unendorsed.
-                // TODO: we really shouldn't run into this?
-                EndorsementSignal::Unendorsed
-            }
-        }
-        None => EndorsementSignal::Unendorsed,
-    }
-}
 
 struct HtlcAdd {
     forwarding_node: PublicKey,
