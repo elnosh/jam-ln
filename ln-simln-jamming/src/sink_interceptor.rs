@@ -31,7 +31,7 @@ pub struct NetworkReputation {
 }
 
 impl NetworkReputation {
-	/// Gets the number of pairs that the target or attacker has outgoing reputation for.
+    /// Gets the number of pairs that the target or attacker has outgoing reputation for.
     pub fn reputation_count(&self, target: bool) -> usize {
         if target {
             &self.target_reputation
@@ -192,7 +192,8 @@ impl SinkInterceptor {
             .list_reputation_pairs(node, access_ins)
             .await?
             .iter()
-            .filter(|scid| channels.get(&scid.outgoing_scid).is_some()).copied()
+            .filter(|scid| channels.get(&scid.outgoing_scid).is_some())
+            .copied()
             .collect();
 
         Ok(reputations)
