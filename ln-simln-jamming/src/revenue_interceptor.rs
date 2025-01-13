@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
 use bitcoin::secp256k1::PublicKey;
-use ln_resource_mgr::reputation::HtlcRef;
+use ln_resource_mgr::HtlcRef;
 use simln_lib::sim_node::{InterceptRequest, InterceptResolution, Interceptor};
 use tokio::sync::Mutex;
 use tokio::time::sleep;
@@ -18,6 +18,9 @@ use triggered::{Listener, Trigger};
 use crate::parsing::peacetime_from_file;
 use crate::BoxError;
 
+/// Tracks revenue for a target node under attack and in peacetime, shutting down the simulation if the target node
+/// loses revenue under attack compared to peacetime.
+#[derive(Debug)]
 pub struct RevenueInterceptor {
     target_node: PublicKey,
     target_revenue: Mutex<NodeRevenue>,
@@ -26,19 +29,21 @@ pub struct RevenueInterceptor {
     shutdown: Trigger,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
 struct NodeRevenue {
     revenue_total: u64,
     /// Tracks pending htlcs on the target node so that we can report fees once we know how they have resolved.
     pending_htlcs: HashMap<HtlcRef, u64>,
 }
 
-#[derive(Eq, PartialEq)]
+/// Minimally represents a forwarding event for a node.
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RevenueEvent {
     pub timestamp_ns: u64,
     pub fee_msat: u64,
 }
 
-// Reverse the ordering to create a min-heap based on timestamp_ns
+// Reverse the ordering to create a min-heap based on timestamp_ns.
 impl Ord for RevenueEvent {
     fn cmp(&self, other: &Self) -> Ordering {
         other.timestamp_ns.cmp(&self.timestamp_ns)
@@ -52,6 +57,7 @@ impl PartialOrd for RevenueEvent {
 }
 
 /// Responsible for tracking what the target node's revenue would be in a peacetime network (without the attacker).
+#[derive(Clone, Debug)]
 struct PeacetimeRevenue {
     /// Represents the revenue of the target node in peacetime (a network without the attacker).
     peacetime_revenue: u64,
@@ -152,6 +158,8 @@ impl RevenueInterceptor {
         }
     }
 
+    /// Polls the difference between attack and peacetime revenue using the provide interval. Triggers shutdown if
+    /// attack revenue drops below projected peacetime revenue.
     pub async fn poll_revenue_difference(&self, interval: Duration) -> Result<(), BoxError> {
         let start_ins = Instant::now();
         let mut i = 0;

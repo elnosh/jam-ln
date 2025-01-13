@@ -1,11 +1,9 @@
-use crate::reputation_interceptor::{
-    endorsement_from_records, ReputationInterceptor, ReputationPair,
-};
-use crate::BoxError;
+use crate::reputation_interceptor::{ReputationInterceptor, ReputationPair};
+use crate::{endorsement_from_records, BoxError};
 use async_trait::async_trait;
 use bitcoin::secp256k1::PublicKey;
 use futures::future::join_all;
-use ln_resource_mgr::reputation::EndorsementSignal;
+use ln_resource_mgr::EndorsementSignal;
 use simln_lib::sim_node::{
     CustomRecords, ForwardingError, InterceptRequest, InterceptResolution, Interceptor,
 };
@@ -16,12 +14,15 @@ use std::time::{Duration, Instant};
 use tokio::{select, time};
 use triggered::{Listener, Trigger};
 
-#[derive(Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 enum TargetChannelType {
     Attacker,
     Peer,
 }
 
+/// Provides the reputation pairs for Peers -> Target and Target -> Attacker to gauge the reputation state of attack
+/// relevant nodes.
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct NetworkReputation {
     /// The attacker's pairwise outgoing reputation with the target.
     pub attacker_reputation: Vec<ReputationPair>,
@@ -50,6 +51,7 @@ impl NetworkReputation {
 //
 // This interceptor wraps an inner reputation interceptor so that we can still operate with regular reputation
 // on the non-attacking nodes. Doing so also allows us access to reputation values for monitoring.
+#[derive(Clone, Debug)]
 pub struct SinkInterceptor {
     target_pubkey: PublicKey,
     /// Keeps track of the target's channels for custom behavior.
