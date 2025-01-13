@@ -14,12 +14,15 @@ use std::time::{Duration, Instant};
 use tokio::{select, time};
 use triggered::{Listener, Trigger};
 
-#[derive(Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 enum TargetChannelType {
     Attacker,
     Peer,
 }
 
+/// Provides the reputation pairs for Peers -> Target and Target -> Attacker to gauge the reputation state of attack
+/// relevant nodes.
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct NetworkReputation {
     /// The attacker's pairwise outgoing reputation with the target.
     pub attacker_reputation: Vec<ReputationPair>,
@@ -48,6 +51,7 @@ impl NetworkReputation {
 //
 // This interceptor wraps an inner reputation interceptor so that we can still operate with regular reputation
 // on the non-attacking nodes. Doing so also allows us access to reputation values for monitoring.
+#[derive(Clone, Debug)]
 pub struct SinkInterceptor {
     target_pubkey: PublicKey,
     /// Keeps track of the target's channels for custom behavior.
