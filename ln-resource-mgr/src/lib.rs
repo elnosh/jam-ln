@@ -8,7 +8,7 @@ use std::time::Instant;
 /// The total supply of bitcoin expressed in millisatoshis.
 const SUPPLY_CAP_MSAT: u64 = 21000000 * 100000000 * 1000;
 
-#[derive(Debug)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ReputationError {
     /// Indicates that the library has encountered an unrecoverable error.
     ErrUnrecoverable(String),
@@ -88,7 +88,7 @@ impl Display for ReputationError {
 }
 
 /// The different possible endorsement signals on a htlc's update_add message.
-#[derive(PartialEq, Eq, Copy, Clone)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum EndorsementSignal {
     Unendorsed,
     Endorsed,
@@ -103,6 +103,7 @@ impl Display for EndorsementSignal {
     }
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ForwardingOutcome {
     /// Forward the outgoing htlc with the endorsement signal provided.
     Forward(EndorsementSignal),
@@ -119,7 +120,7 @@ impl Display for ForwardingOutcome {
     }
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum FailureReason {
     /// There is no space in the outgoing channel's general resource bucket, so the htlc should be failed back. It
     /// may be retired with endorsement set to gain access to protected resources.
@@ -129,12 +130,17 @@ pub enum FailureReason {
 }
 
 /// A snapshot of the reputation and resources available for a forward.
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct AllocatoinCheck {
+    /// The reputation values used to compare the incoming channel's revenue to the outgoing channel's reputation for
+    /// the htlc proposed.
     pub reputation_check: ReputationCheck,
+    /// The resources available on the outgoing channel.
     pub resource_check: ResourceCheck,
 }
 
 impl AllocatoinCheck {
+    /// The recommended action to be taken for the htlc forward.
     pub fn forwarding_outcome(
         &self,
         htlc_amt_msat: u64,
@@ -163,6 +169,7 @@ impl AllocatoinCheck {
 }
 
 /// A snapshot of a reputation check for a htlc forward.
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ReputationCheck {
     pub outgoing_reputation: i64,
     pub incoming_revenue: i64,
@@ -181,8 +188,8 @@ impl ReputationCheck {
     }
 }
 
-#[derive(Clone)]
 /// A snapshot of the resource check for a htlc forward.
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ResourceCheck {
     pub general_slots_used: u16,
     pub general_slots_availabe: u16,
@@ -191,7 +198,7 @@ pub struct ResourceCheck {
 }
 
 impl ResourceCheck {
-    pub fn general_resources_available(&self, htlc_amt_mast: u64) -> bool {
+    fn general_resources_available(&self, htlc_amt_mast: u64) -> bool {
         if self.general_liquidity_msat_used + htlc_amt_mast > self.general_liquidity_msat_available
         {
             return false;
@@ -215,7 +222,7 @@ impl Display for FailureReason {
 }
 
 /// The resolution for a htlc received from the upstream peer (or decided locally).
-#[derive(PartialEq, Clone, Copy)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ForwardResolution {
     Settled,
     Failed,
@@ -240,13 +247,16 @@ impl Display for ForwardResolution {
     }
 }
 
-/// A unique identifier for a htlc on a channel (payment hash may be repeated for mpp payments).
-#[derive(PartialEq, Eq, Hash, Debug, Clone, Copy)]
+/// A unique identifier for a htlc on a channel.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub struct HtlcRef {
     pub channel_id: u64,
+    /// The unique index used to refer to the htlc in update_add_htlc.
     pub htlc_index: u64,
 }
 
+/// A htlc that has been locked in on the incoming link and is proposed for outgoing forwarding.
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ProposedForward {
     pub incoming_ref: HtlcRef,
     pub outgoing_channel_id: u64,
@@ -278,7 +288,7 @@ impl Display for ProposedForward {
 }
 
 impl ProposedForward {
-    pub fn validate(&self) -> Result<(), ReputationError> {
+    fn validate(&self) -> Result<(), ReputationError> {
         let _ = validate_msat(self.amount_out_msat)?;
         let _ = validate_msat(self.amount_in_msat)?;
 
@@ -300,12 +310,12 @@ impl ProposedForward {
     }
 
     /// Only underflow safe after validation.
-    pub fn fee_msat(&self) -> u64 {
+    fn fee_msat(&self) -> u64 {
         self.amount_in_msat - self.amount_out_msat
     }
 
     /// Only underflow safe after validation.
-    pub fn expiry_delta(&self) -> u32 {
+    fn expiry_delta(&self) -> u32 {
         self.expiry_in_height - self.expiry_out_height
     }
 }
