@@ -24,14 +24,14 @@ impl DecayingAverage {
 
     pub fn value_at_instant(&mut self, access_instant: Instant) -> Result<i64, ReputationError> {
         if let Some(last_updated) = self.last_updated {
-            let elapsed = access_instant.duration_since(last_updated).as_secs_f64();
-            if elapsed < 0.0 {
+            if access_instant < last_updated {
                 return Err(ReputationError::ErrUpdateInPast(
                     last_updated,
                     access_instant,
                 ));
             }
 
+            let elapsed = access_instant.duration_since(last_updated).as_secs_f64();
             self.value = (self.value as f64 * self.decay_rate.powf(elapsed)).round() as i64;
         }
 
@@ -43,7 +43,7 @@ impl DecayingAverage {
     /// will act as a saturating add
     pub fn add_value(&mut self, value: i64, update_time: Instant) -> Result<i64, ReputationError> {
         // Progress current value to the new timestamp so that it'll be appropriately decayed.
-        let _ = self.value_at_instant(update_time);
+        self.value_at_instant(update_time)?;
 
         // No need to decay the new value as we're now at our last updated time.
         self.value = self.value.saturating_add(value);
