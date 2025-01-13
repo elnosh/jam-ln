@@ -498,10 +498,8 @@ mod decaying_average {
                         access_instant,
                     ));
                 }
-
-                self.value = self
-                    .value
-                    .saturating_mul(self.decay_rate.powf(elapsed) as i64); // TODO: does this rounding break things?
+				
+                self.value = (self.value as f64 * self.decay_rate.powf(elapsed)).round() as i64;
             }
 
             self.last_updated = Some(access_instant);
