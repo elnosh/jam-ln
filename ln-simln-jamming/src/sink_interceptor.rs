@@ -1,13 +1,18 @@
-use crate::reputation_interceptor::{endorsement_from_records, ReputationInterceptor};
+use crate::reputation_interceptor::{
+    endorsement_from_records, ReputationInterceptor, ReputationPair,
+};
+use crate::BoxError;
 use async_trait::async_trait;
+use bitcoin::secp256k1::PublicKey;
+use futures::future::join_all;
 use ln_resource_mgr::reputation::EndorsementSignal;
 use simln_lib::sim_node::{
     CustomRecords, ForwardingError, InterceptRequest, InterceptResolution, Interceptor,
 };
 use simln_lib::{NetworkParser, ShortChannelID};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::error::Error;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tokio::{select, time};
 use triggered::{Listener, Trigger};
 
@@ -17,6 +22,28 @@ enum TargetChannelType {
     Peer,
 }
 
+pub struct NetworkReputation {
+    /// The attacker's pairwise outgoing reputation with the target.
+    pub attacker_reputation: Vec<ReputationPair>,
+
+    /// The target's pairwise outgoing reputation with its peers.
+    pub target_reputation: Vec<ReputationPair>,
+}
+
+impl NetworkReputation {
+	/// Gets the number of pairs that the target or attacker has outgoing reputation for.
+    pub fn reputation_count(&self, target: bool) -> usize {
+        if target {
+            &self.target_reputation
+        } else {
+            &self.attacker_reputation
+        }
+        .iter()
+        .filter(|pair| pair.outgoing_reputation())
+        .count()
+    }
+}
+
 // Implements a "sink" attack where an attacking node:
 // - General jams its peers so that htlcs will be endorsed
 // - Holds the endorsed htlcs to trash the target node's reputation with its peers
@@ -24,8 +51,11 @@ enum TargetChannelType {
 // This interceptor wraps an inner reputation interceptor so that we can still operate with regular reputation
 // on the non-attacking nodes. Doing so also allows us access to reputation values for monitoring.
 pub struct SinkInterceptor {
+    target_pubkey: PublicKey,
     /// Keeps track of the target's channels for custom behavior.
     target_channels: HashMap<ShortChannelID, TargetChannelType>,
+    /// List of public keys of the target's honest (non-attacker) peers.
+    honest_peers: Vec<PublicKey>,
     /// Inner reputation monitor that implements jamming mitigation.
     jamming_interceptor: ReputationInterceptor,
     /// Used to control shutdown.
@@ -64,42 +94,109 @@ fn print_request(req: &InterceptRequest) -> String {
 
 impl SinkInterceptor {
     pub fn new_for_network(
-        attacking_alias: String,
-        target_alias: String,
+        attacking_pubkey: PublicKey,
+        target_pubkey: PublicKey,
         edges: &[NetworkParser],
         jamming_interceptor: ReputationInterceptor,
         listener: Listener,
         shutdown: Trigger,
     ) -> Self {
         let mut target_channels = HashMap::new();
+        let mut honest_peers = Vec::new();
 
         for channel in edges.iter() {
-            let node_1_target = channel.node_1.alias == target_alias;
-            let node_2_target = channel.node_2.alias == target_alias;
+            let node_1_target = channel.node_1.pubkey == target_pubkey;
+            let node_2_target = channel.node_2.pubkey == target_pubkey;
 
             if !(node_1_target || node_2_target) {
                 continue;
             }
 
-            let channel_type = if node_1_target && channel.node_2.alias == attacking_alias {
+            let channel_type = if node_1_target && channel.node_2.pubkey == attacking_pubkey {
                 TargetChannelType::Attacker
             } else if node_1_target {
                 TargetChannelType::Peer
-            } else if node_2_target && channel.node_1.alias == attacking_alias {
+            } else if node_2_target && channel.node_1.pubkey == attacking_pubkey {
                 TargetChannelType::Attacker
             } else {
                 TargetChannelType::Peer
             };
 
+            if channel_type == TargetChannelType::Peer {
+                honest_peers.push(if node_1_target {
+                    channel.node_2.pubkey
+                } else {
+                    channel.node_1.pubkey
+                });
+            }
             target_channels.insert(channel.scid, channel_type);
         }
 
         Self {
+            target_pubkey,
+            honest_peers,
             jamming_interceptor,
             target_channels,
             listener,
             shutdown,
         }
+    }
+
+    /// Reports on the current reputation state of the target node with its peers, and the attacker's standing with
+    /// the target.
+    pub async fn get_reputation_status(
+        &self,
+        access_ins: Instant,
+    ) -> Result<NetworkReputation, BoxError> {
+        // Can use regular mapping closures because get_target_pairs is async.
+        let target_reputation_results: Vec<Result<Vec<ReputationPair>, BoxError>> =
+            join_all(self.honest_peers.iter().map(|pubkey| async {
+                self.get_target_pairs(*pubkey, TargetChannelType::Peer, access_ins)
+                    .await
+            }))
+            .await;
+
+        Ok(NetworkReputation {
+            attacker_reputation: self
+                .get_target_pairs(self.target_pubkey, TargetChannelType::Attacker, access_ins)
+                .await?,
+            target_reputation: target_reputation_results
+                .into_iter()
+                .collect::<Result<Vec<Vec<ReputationPair>>, BoxError>>()?
+                .into_iter()
+                .flatten()
+                .collect(),
+        })
+    }
+
+    /// Gets reputation pairs for the node provided, filtering them for channels that the target node is a part of.
+    /// - TargetChannelType::Peer / Node=Peer: reports the target's reputation in the eyes of its peers.
+    /// - TargetChannelType::Attacker / Node=Target: reports the attacker's reputation in the eyes of the target.
+    /// Note that if the node provided is not the target or one of its peers, nothing will be returned.
+    async fn get_target_pairs(
+        &self,
+        node: PublicKey,
+        filter_chan_type: TargetChannelType,
+        access_ins: Instant,
+    ) -> Result<Vec<ReputationPair>, BoxError> {
+        let channels: HashSet<u64> = self
+            .target_channels
+            .iter()
+            .filter(|(_, chan_type)| **chan_type == filter_chan_type)
+            .map(|(scid, _)| *scid)
+            .map(|scid| scid.into()) // TODO: don't double map
+            .collect();
+
+        let reputations: Vec<ReputationPair> = self
+            .jamming_interceptor
+            .list_reputation_pairs(node, access_ins)
+            .await?
+            .iter()
+            .filter(|scid| channels.get(&scid.outgoing_scid).is_some())
+            .map(|pair| *pair)
+            .collect();
+
+        Ok(reputations)
     }
 
     /// Intercepts payments flowing from target -> attacker, holding the htlc for the maximum allowable time to

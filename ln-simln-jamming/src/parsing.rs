@@ -22,6 +22,12 @@ const DEFAULT_BOOTSTRAP_FILE: &str = "./bootstrap.csv";
 /// Default file used to imitate peacetime revenue
 const DEFAULT_PEACETIME_FILE: &str = "./no_attacker.csv";
 
+/// Default percent of good reputation pairs the target requires.
+const DEFAULT_TARGET_REP_PERCENT: &str = "50";
+
+/// Default percent of good reputation pairs with the target that the attacker requires.
+const DEFAULT_ATTACKER_REP_PERCENT: &str = "50";
+
 #[derive(Parser)]
 #[command(version, about)]
 pub struct Cli {
@@ -43,6 +49,38 @@ pub struct Cli {
     /// values (eg: 1w, 3d).
     #[arg(long, value_parser = parse_duration)]
     pub bootstrap_duration: Duration,
+
+    /// The minimum percentage of channel pairs between the target and its honest peers that the target needs to have
+    /// good reputation on for the simulation to run.
+    #[arg(long, default_value = DEFAULT_TARGET_REP_PERCENT)]
+    pub target_reputation_percent: u8,
+
+    /// The minimum percentage of pairs with between the target and the attacker that the attacker needs to have good
+    /// reputation on for the simulation to run.
+    #[arg(long, default_value = DEFAULT_ATTACKER_REP_PERCENT)]
+    pub attacker_reputation_percent: u8,
+}
+
+impl Cli {
+    pub fn validate(&self) -> Result<(), BoxError> {
+        if self.target_reputation_percent == 0 || self.target_reputation_percent > 100 {
+            return Err(format!(
+                "target reputation percent {} must be in (0;100]",
+                self.target_reputation_percent
+            )
+            .into());
+        }
+
+        if self.attacker_reputation_percent == 0 || self.attacker_reputation_percent > 100 {
+            return Err(format!(
+                "attacker reputation percent {} must be in (0;100]",
+                self.attacker_reputation_percent
+            )
+            .into());
+        }
+
+        Ok(())
+    }
 }
 
 fn parse_duration(s: &str) -> Result<Duration, String> {

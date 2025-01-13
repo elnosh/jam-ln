@@ -1,3 +1,4 @@
+use bitcoin::secp256k1::PublicKey;
 use clap::Parser;
 use ln_simln_jamming::parsing::{history_from_file, Cli};
 use ln_simln_jamming::reputation_interceptor::ReputationInterceptor;
@@ -12,7 +13,7 @@ use simln_lib::{NetworkParser, Simulation, SimulationCfg};
 use simple_logger::SimpleLogger;
 use std::fs;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tokio::task::JoinSet;
 
 #[derive(Serialize, Deserialize)]
@@ -34,6 +35,7 @@ async fn main() -> Result<(), BoxError> {
         .unwrap();
 
     let cli = Cli::parse();
+    cli.validate()?;
 
     let SimNetwork { sim_network } =
         serde_json::from_str(&fs::read_to_string(cli.sim_file.as_path())?)?;
@@ -65,20 +67,53 @@ async fn main() -> Result<(), BoxError> {
         }
     });
 
+    // TODO: args!
+    let target_pubkey = find_pubkey_by_alias("22", &sim_network)?;
+    let attacker_pubkey = find_pubkey_by_alias("50", &sim_network)?;
+
     // Use the channel jamming interceptor and latency for simulated payments.
     let latency_interceptor: Arc<dyn Interceptor> =
         Arc::new(LatencyIntercepor::new_poisson(150.0)?);
 
     // TODO: these should be shared with simln!!
     let (shutdown, listener) = triggered::trigger();
-    let attack_interceptor: Arc<dyn Interceptor> = Arc::new(SinkInterceptor::new_for_network(
-        "51".to_string(),
-        target_alias.clone(),
+    let attack_interceptor = SinkInterceptor::new_for_network(
+        attacker_pubkey,
+        target_pubkey,
         &sim_network,
         ReputationInterceptor::new_with_bootstrap(&sim_network, &history).await?,
         listener.clone(),
         shutdown.clone(),
-    ));
+    );
+
+    // Do some preliminary checks on our reputation state - there isn't much point in running if we haven't built up
+    // some reputation.
+    let start_state = attack_interceptor
+        .get_reputation_status(Instant::now())
+        .await?;
+    if start_state.reputation_count(false)
+        < start_state.attacker_reputation.len() * cli.attacker_reputation_percent as usize / 100
+    {
+        return Err(format!(
+            "no point running simulation when attacker has < 50% good reputation, {}/{}",
+            start_state.reputation_count(false),
+            start_state.attacker_reputation.len(),
+        )
+        .into());
+    }
+
+    if start_state.reputation_count(true)
+        < start_state.target_reputation.len() * cli.target_reputation_percent as usize / 100
+    {
+        return Err(format!(
+            "no point running simulation when target has < 50% good reputation, {}/{}",
+            start_state.reputation_count(true),
+            start_state.target_reputation.len()
+        )
+        .into());
+    }
+
+    let attack_interceptor: Arc<dyn Interceptor> = Arc::new(attack_interceptor);
 
     let revenue_interceptor = Arc::new(RevenueInterceptor::new_with_bootstrap(
         target_pubkey,
@@ -128,4 +163,20 @@ async fn main() -> Result<(), BoxError> {
     graph.lock().await.wait_for_shutdown().await;
 
     Ok(())
+}
+
+fn find_pubkey_by_alias(
+    alias: &str,
+    sim_network: &Vec<NetworkParser>,
+) -> Result<PublicKey, BoxError> {
+    let target_channel = sim_network
+        .iter()
+        .find(|hist| hist.node_1.alias == alias || hist.node_2.alias == alias)
+        .ok_or(format!("alias: {alias} not found in sim file"))?;
+
+    Ok(if target_channel.node_1.alias == alias {
+        target_channel.node_1.pubkey
+    } else {
+        target_channel.node_2.pubkey
+    })
 }
