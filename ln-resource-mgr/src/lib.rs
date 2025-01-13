@@ -1,4 +1,5 @@
 pub mod outgoing_reputation;
+mod decaying_average;
 
 pub mod reputation {
     use std::error::Error;
