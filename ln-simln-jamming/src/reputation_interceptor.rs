@@ -1,4 +1,4 @@
-use crate::{BoxError, ENDORSEMENT_TYPE, endorsement_from_records};
+use crate::{endorsement_from_records, BoxError, ENDORSEMENT_TYPE};
 use async_trait::async_trait;
 use bitcoin::secp256k1::PublicKey;
 use simln_lib::sim_node::{
@@ -39,6 +39,7 @@ enum BootstrapEvent {
 }
 
 /// Provides details of a htlc forward that is used to bootstrap reputation values for the network.
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct BootstrapForward {
     pub incoming_amt: u64,
     pub outgoing_amt: u64,
@@ -51,7 +52,7 @@ pub struct BootstrapForward {
     pub channel_out_id: u64,
 }
 
-#[derive(Copy, Clone, Debug)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ReputationPair {
     pub incoming_scid: u64,
     pub outgoing_scid: u64,
@@ -68,12 +69,13 @@ impl ReputationPair {
 
 /// Implements a network-wide interceptor that implements resource management for every forwarding node in the
 /// network.
+#[derive(Clone, Debug)]
 pub struct ReputationInterceptor {
     network_nodes: Arc<Mutex<HashMap<PublicKey, (ForwardManager, String)>>>,
 }
 
 impl ReputationInterceptor {
-    pub fn new_for_network(edges: &Vec<NetworkParser>) -> Result<Self, BoxError> {
+    pub fn new_for_network(edges: &[NetworkParser]) -> Result<Self, BoxError> {
         let mut network_nodes: HashMap<PublicKey, (ForwardManager, String)> = HashMap::new();
 
         macro_rules! add_node_to_network {
@@ -129,7 +131,7 @@ impl ReputationInterceptor {
     /// Creates a network from the set of edges provided and bootstraps the reputation of nodes in the network using
     /// the historical forwards provided. Forwards are expected to be sorted by added_ns in ascending order.
     pub async fn new_with_bootstrap(
-        edges: &Vec<NetworkParser>,
+        edges: &[NetworkParser],
         history: &[BootstrapForward],
     ) -> Result<Self, BoxError> {
         let mut interceptor =
