@@ -3,14 +3,15 @@ use std::time::{Duration, Instant};
 use crate::ReputationError;
 
 /// Tracks a timestamped decaying average, which may be positive or negative. Acts
-pub struct DecayingAverage {
+#[derive(Clone, Debug)]
+pub(super) struct DecayingAverage {
     value: i64,
     last_updated: Option<Instant>,
     decay_rate: f64,
 }
 
 impl DecayingAverage {
-    pub fn new(period: Duration) -> Self {
+    pub(super) fn new(period: Duration) -> Self {
         DecayingAverage {
             value: 0,
             last_updated: None,
@@ -22,7 +23,11 @@ impl DecayingAverage {
         0.5f64.powf(2.0 / period.as_secs_f64())
     }
 
-    pub fn value_at_instant(&mut self, access_instant: Instant) -> Result<i64, ReputationError> {
+    /// Decays the tracked value to its value at the instant provided and returns the updated value.
+    pub(super) fn value_at_instant(
+        &mut self,
+        access_instant: Instant,
+    ) -> Result<i64, ReputationError> {
         if let Some(last_updated) = self.last_updated {
             if access_instant < last_updated {
                 return Err(ReputationError::ErrUpdateInPast(
@@ -40,8 +45,12 @@ impl DecayingAverage {
     }
 
     /// Updates the current value of the decaying average and then adds the new value provided. The value provided
-    /// will act as a saturating add
-    pub fn add_value(&mut self, value: i64, update_time: Instant) -> Result<i64, ReputationError> {
+    /// will act as a saturating add if it exceeds i64::MAX.
+    pub(super) fn add_value(
+        &mut self,
+        value: i64,
+        update_time: Instant,
+    ) -> Result<i64, ReputationError> {
         // Progress current value to the new timestamp so that it'll be appropriately decayed.
         self.value_at_instant(update_time)?;
 
