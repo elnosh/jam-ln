@@ -3,6 +3,7 @@ use crate::{endorsement_from_records, BoxError};
 use async_trait::async_trait;
 use bitcoin::secp256k1::PublicKey;
 use futures::future::join_all;
+use ln_resource_mgr::outgoing_reputation::ForwardManagerParams;
 use ln_resource_mgr::EndorsementSignal;
 use simln_lib::sim_node::{
     CustomRecords, ForwardingError, InterceptRequest, InterceptResolution, Interceptor,
@@ -33,14 +34,20 @@ pub struct NetworkReputation {
 
 impl NetworkReputation {
     /// Gets the number of pairs that the target or attacker has outgoing reputation for.
-    pub fn reputation_count(&self, target: bool) -> usize {
+    pub fn reputation_count(
+        &self,
+        target: bool,
+        params: &ForwardManagerParams,
+        htlc_fee: u64,
+        expiry: u32,
+    ) -> usize {
         if target {
             &self.target_reputation
         } else {
             &self.attacker_reputation
         }
         .iter()
-        .filter(|pair| pair.outgoing_reputation())
+        .filter(|pair| pair.outgoing_reputation(params.htlc_opportunity_cost(htlc_fee, expiry)))
         .count()
     }
 }

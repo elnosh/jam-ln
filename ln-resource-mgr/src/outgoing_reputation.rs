@@ -9,13 +9,21 @@ use reputation_tracker::ReputationTracker;
 use std::collections::hash_map::Entry;
 use std::collections::HashMap;
 use std::sync::Mutex;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ForwardManagerParams {
     pub reputation_params: ReputationParams,
     pub general_slot_portion: u8,
     pub general_liquidity_portion: u8,
+}
+
+impl ForwardManagerParams {
+    /// Returns the opportunity cost for the htlc amount and expiry provided, assuming 10 minute blocks.
+    pub fn htlc_opportunity_cost(&self, fee_msat: u64, expiry: u32) -> u64 {
+        self.reputation_params
+            .opportunity_cost(fee_msat, Duration::from_secs(expiry as u64 * 10 * 60))
+    }
 }
 
 /// Provides a reputation check snapshot for an incoming/outgoing channel pair.
@@ -252,7 +260,7 @@ mod reputation_tracker {
     impl ReputationParams {
         /// Calculates the opportunity_cost of a htlc being held on our channel - allowing one [`reputation_period`]'s
         /// grace period, then charging for every subsequent period.
-        fn opportunity_cost(&self, fee_msat: u64, hold_time: Duration) -> u64 {
+        pub(super) fn opportunity_cost(&self, fee_msat: u64, hold_time: Duration) -> u64 {
             (hold_time.as_secs() / self.resolution_period.as_secs()).saturating_mul(fee_msat)
         }
 

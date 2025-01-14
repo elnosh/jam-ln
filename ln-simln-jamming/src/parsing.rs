@@ -31,6 +31,13 @@ const DEFAULT_ATTACKER_REP_PERCENT: &str = "50";
 /// Default clock speedup to run with regular wall time.
 const DEFAULT_CLOCK_SPEEDUP: &str = "1";
 
+/// Default htlc size that a peer must be able to get endorsed to be considered as having good reputation, $10 at the
+/// time of writing.
+const DEFAULT_REPUTATION_MARGIN_MSAT: &str = "10000000";
+
+/// Default htlc expiry used for calculating reputation margin htlc's risk.
+const DEFAULT_REPUTATION_MARGIN_EXIPRY: &str = "200";
+
 #[derive(Parser)]
 #[command(version, about)]
 pub struct Cli {
@@ -66,6 +73,17 @@ pub struct Cli {
     /// Speed up multiplier to add to the wall clock to run the simulation faster.
     #[arg(long, default_value = DEFAULT_CLOCK_SPEEDUP)]
     pub clock_speedup: u32,
+
+    /// The htlc amount that a peer must be able to get endorsed to be considered as having a good reputation, expressed
+    /// in msat. This will be converted to a fee using a base fee of 1000 msat and a proportional charge of 0.01% of the
+    /// amount.
+    #[arg(long, default_value = DEFAULT_REPUTATION_MARGIN_MSAT)]
+    pub reputation_margin_msat: u64,
+
+    /// The htlc expiry that is used to assess whether a peer has sufficient reputation to forward a htlc, expressed
+    /// in blocks.
+    #[arg(long, default_value = DEFAULT_REPUTATION_MARGIN_EXIPRY)]
+    pub reputation_margin_expiry_blocks: u32,
 }
 
 impl Cli {

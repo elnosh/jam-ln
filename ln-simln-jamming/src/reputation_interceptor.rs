@@ -61,9 +61,9 @@ pub struct ReputationPair {
 }
 
 impl ReputationPair {
-    pub fn outgoing_reputation(&self) -> bool {
-        // TODO: for what htlc amount?
-        self.outgoing_reputation > self.incoming_revenue
+    /// Determines whether a pair has sufficient reputation for the htlc risk provided.
+    pub fn outgoing_reputation(&self, risk: u64) -> bool {
+        self.outgoing_reputation > self.incoming_revenue + risk as i64
     }
 }
 
