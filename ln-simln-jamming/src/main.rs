@@ -7,6 +7,7 @@ use ln_simln_jamming::sink_interceptor::SinkInterceptor;
 use ln_simln_jamming::BoxError;
 use log::LevelFilter;
 use serde::{Deserialize, Serialize};
+use simln_lib::clock::SimulationClock;
 use simln_lib::interceptors::LatencyIntercepor;
 use simln_lib::sim_node::{Interceptor, SimulatedChannel};
 use simln_lib::{NetworkParser, Simulation, SimulationCfg};
@@ -146,11 +147,12 @@ async fn main() -> Result<(), BoxError> {
         .collect::<Vec<SimulatedChannel>>();
 
     // Setup the simulated network with our fake graph.
+    let clock = Arc::new(SimulationClock::new(1)?);
     let (simulation, graph) = Simulation::new_with_sim_network(
         SimulationCfg::new(None, 3_800_000, 2.0, None, Some(13995354354227336701)),
         channels,
         vec![], // No activities, we want random activity!
-        1,      // No clock speedup, just run with regular timing for now.
+        clock,
         interceptors,
         listener,
         shutdown,
