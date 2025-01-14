@@ -77,7 +77,7 @@ async fn main() -> Result<(), BoxError> {
     let latency_interceptor: Arc<dyn Interceptor> =
         Arc::new(LatencyIntercepor::new_poisson(150.0)?);
 
-    let clock = Arc::new(SimulationClock::new(1)?);
+    let clock = Arc::new(SimulationClock::new(cli.clock_speedup)?);
 
     // TODO: these should be shared with simln!!
     let (shutdown, listener) = triggered::trigger();
