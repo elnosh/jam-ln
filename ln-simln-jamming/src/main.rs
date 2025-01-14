@@ -1,5 +1,6 @@
 use bitcoin::secp256k1::PublicKey;
 use clap::Parser;
+use ln_resource_mgr::outgoing_reputation::{ForwardManagerParams, ReputationParams};
 use ln_simln_jamming::clock::InstantClock;
 use ln_simln_jamming::parsing::{history_from_file, Cli};
 use ln_simln_jamming::reputation_interceptor::ReputationInterceptor;
@@ -78,6 +79,16 @@ async fn main() -> Result<(), BoxError> {
         Arc::new(LatencyIntercepor::new_poisson(150.0)?);
 
     let clock = Arc::new(SimulationClock::new(cli.clock_speedup)?);
+    let forward_params = ForwardManagerParams {
+        reputation_params: ReputationParams {
+            revenue_window: Duration::from_secs(14 * 24 * 60 * 60),
+            reputation_multiplier: 12,
+            resolution_period: Duration::from_secs(90),
+            expected_block_speed: Some(Duration::from_secs(10 * 60 * 60)),
+        },
+        general_slot_portion: 50,
+        general_liquidity_portion: 50,
+    };
 
     // TODO: these should be shared with simln!!
     let (shutdown, listener) = triggered::trigger();
@@ -85,7 +96,13 @@ async fn main() -> Result<(), BoxError> {
         attacker_pubkey,
         target_pubkey,
         &sim_network,
-        ReputationInterceptor::new_with_bootstrap(&sim_network, &history, clock.clone()).await?,
+        ReputationInterceptor::new_with_bootstrap(
+            forward_params,
+            &sim_network,
+            &history,
+            clock.clone(),
+        )
+        .await?,
         listener.clone(),
         shutdown.clone(),
     );
