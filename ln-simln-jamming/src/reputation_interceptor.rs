@@ -6,7 +6,7 @@ use simln_lib::sim_node::{
 };
 use simln_lib::NetworkParser;
 use std::collections::hash_map::Entry;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::error::Error;
 use std::ops::Sub;
 use std::sync::{Arc, Mutex};
@@ -20,6 +20,7 @@ use ln_resource_mgr::{
     ReputationError, ReputationManager,
 };
 
+#[derive(Clone)]
 struct HtlcAdd {
     forwarding_node: PublicKey,
     htlc: ProposedForward,
@@ -202,16 +203,22 @@ impl ReputationInterceptor {
             BootstrapEvent::BootstrapResolve(htlc_resolve) => htlc_resolve.resolved_ins,
         });
 
+        // Data generation does not run the reputation algorithm, so it's possible that we'll hit a few htlcs that
+        // can't be forwarded due to bucketing restrictions. This isn't critical, and we'll hit them deterministically
+        // for each run so we can just log them and then skip resolving them.
+        let mut skipped_htlcs = HashSet::new();
         for e in bootstrap_events {
             match e {
                 BootstrapEvent::BootstrapAdd(htlc_add) => {
-                    self.inner_add_htlc(htlc_add)
-                        .await
-                        .map_err(|e| e.to_string())?
-                        .map_err(|e| e.to_string())?;
+                    if let Err(e) = self.inner_add_htlc(htlc_add.clone()).await? {
+                        skipped_htlcs.insert(htlc_add.htlc.incoming_ref);
+                        log::error!("Routing failure for bootstrap: {e}");
+                    }
                 }
                 BootstrapEvent::BootstrapResolve(htlc_resolve) => {
-                    self.inner_resolve_htlc(htlc_resolve).await?;
+                    if !skipped_htlcs.remove(&htlc_resolve.incoming_htlc) {
+                        self.inner_resolve_htlc(htlc_resolve).await?;
+                    }
                 }
             }
         }
