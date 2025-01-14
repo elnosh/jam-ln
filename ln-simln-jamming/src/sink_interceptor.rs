@@ -51,7 +51,7 @@ impl NetworkReputation {
 //
 // This interceptor wraps an inner reputation interceptor so that we can still operate with regular reputation
 // on the non-attacking nodes. Doing so also allows us access to reputation values for monitoring.
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct SinkInterceptor {
     target_pubkey: PublicKey,
     /// Keeps track of the target's channels for custom behavior.

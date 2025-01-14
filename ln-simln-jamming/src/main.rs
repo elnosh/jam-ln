@@ -1,5 +1,6 @@
 use bitcoin::secp256k1::PublicKey;
 use clap::Parser;
+use ln_simln_jamming::clock::InstantClock;
 use ln_simln_jamming::parsing::{history_from_file, Cli};
 use ln_simln_jamming::reputation_interceptor::ReputationInterceptor;
 use ln_simln_jamming::revenue_interceptor::RevenueInterceptor;
@@ -14,7 +15,7 @@ use simln_lib::{NetworkParser, Simulation, SimulationCfg};
 use simple_logger::SimpleLogger;
 use std::fs;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 use tokio::task::JoinSet;
 
 #[derive(Serialize, Deserialize)]
@@ -84,7 +85,7 @@ async fn main() -> Result<(), BoxError> {
         attacker_pubkey,
         target_pubkey,
         &sim_network,
-        ReputationInterceptor::new_with_bootstrap(&sim_network, &history).await?,
+        ReputationInterceptor::new_with_bootstrap(&sim_network, &history, clock.clone()).await?,
         listener.clone(),
         shutdown.clone(),
     );
@@ -92,7 +93,7 @@ async fn main() -> Result<(), BoxError> {
     // Do some preliminary checks on our reputation state - there isn't much point in running if we haven't built up
     // some reputation.
     let start_state = attack_interceptor
-        .get_reputation_status(Instant::now())
+        .get_reputation_status(clock.clone().now())
         .await?;
     if start_state.reputation_count(false)
         < start_state.attacker_reputation.len() * cli.attacker_reputation_percent as usize / 100

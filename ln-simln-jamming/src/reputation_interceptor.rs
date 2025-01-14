@@ -1,3 +1,4 @@
+use crate::clock::InstantClock;
 use crate::{endorsement_from_records, BoxError, ENDORSEMENT_TYPE};
 use async_trait::async_trait;
 use bitcoin::secp256k1::PublicKey;
@@ -70,13 +71,17 @@ impl ReputationPair {
 
 /// Implements a network-wide interceptor that implements resource management for every forwarding node in the
 /// network.
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct ReputationInterceptor {
     network_nodes: Arc<Mutex<HashMap<PublicKey, (ForwardManager, String)>>>,
+    clock: Arc<dyn InstantClock + Send + Sync>,
 }
 
 impl ReputationInterceptor {
-    pub fn new_for_network(edges: &[NetworkParser]) -> Result<Self, BoxError> {
+    pub fn new_for_network(
+        edges: &[NetworkParser],
+        clock: Arc<dyn InstantClock + Send + Sync>,
+    ) -> Result<Self, BoxError> {
         let mut network_nodes: HashMap<PublicKey, (ForwardManager, String)> = HashMap::new();
 
         macro_rules! add_node_to_network {
@@ -126,6 +131,7 @@ impl ReputationInterceptor {
 
         Ok(Self {
             network_nodes: Arc::new(Mutex::new(network_nodes)),
+            clock,
         })
     }
 
@@ -134,9 +140,10 @@ impl ReputationInterceptor {
     pub async fn new_with_bootstrap(
         edges: &[NetworkParser],
         history: &[BootstrapForward],
+        clock: Arc<dyn InstantClock + Send + Sync>,
     ) -> Result<Self, BoxError> {
         let mut interceptor =
-            Self::new_for_network(edges).map_err(|_| "could not create network")?;
+            Self::new_for_network(edges, clock).map_err(|_| "could not create network")?;
         interceptor.bootstrap_network_history(history).await?;
         Ok(interceptor)
     }
@@ -147,7 +154,7 @@ impl ReputationInterceptor {
     ) -> Result<(), BoxError> {
         // We'll get all instants relative to the last timestamp we're given, so we get an instant now and track
         // the last timestamp in the set of forwards.
-        let start_ins = Instant::now();
+        let start_ins = self.clock.now();
         let last_ts = history
             .iter()
             .max_by(|x, y| x.settled_ns.cmp(&y.settled_ns))
@@ -379,7 +386,7 @@ impl Interceptor for ReputationInterceptor {
             amount_out_msat: req.outgoing_amount_msat,
             expiry_in_height: req.incoming_expiry_height,
             expiry_out_height: req.outgoing_expiry_height,
-            added_at: Instant::now(),
+            added_at: self.clock.now(),
             incoming_endorsed: endorsement_from_records(&req.incoming_custom_records),
         };
 
@@ -415,7 +422,7 @@ impl Interceptor for ReputationInterceptor {
                 htlc_index: res.incoming_htlc.index,
             },
             forward_resolution: ForwardResolution::from(res.success),
-            resolved_ins: Instant::now(),
+            resolved_ins: self.clock.now(),
         })
         .await
     }
