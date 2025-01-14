@@ -76,6 +76,8 @@ async fn main() -> Result<(), BoxError> {
     let latency_interceptor: Arc<dyn Interceptor> =
         Arc::new(LatencyIntercepor::new_poisson(150.0)?);
 
+    let clock = Arc::new(SimulationClock::new(1)?);
+
     // TODO: these should be shared with simln!!
     let (shutdown, listener) = triggered::trigger();
     let attack_interceptor = SinkInterceptor::new_for_network(
@@ -117,6 +119,7 @@ async fn main() -> Result<(), BoxError> {
     let attack_interceptor: Arc<dyn Interceptor> = Arc::new(attack_interceptor);
 
     let revenue_interceptor = Arc::new(RevenueInterceptor::new_with_bootstrap(
+        clock.clone(),
         target_pubkey,
         bootstrap_revenue,
         cli.bootstrap_duration,
@@ -147,7 +150,6 @@ async fn main() -> Result<(), BoxError> {
         .collect::<Vec<SimulatedChannel>>();
 
     // Setup the simulated network with our fake graph.
-    let clock = Arc::new(SimulationClock::new(1)?);
     let (simulation, graph) = Simulation::new_with_sim_network(
         SimulationCfg::new(None, 3_800_000, 2.0, None, Some(13995354354227336701)),
         channels,

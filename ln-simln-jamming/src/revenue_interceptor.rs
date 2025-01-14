@@ -4,24 +4,31 @@ use std::collections::{BinaryHeap, HashMap};
 use std::error::Error;
 use std::ops::{Add, Sub};
 use std::path::PathBuf;
-use std::time::{Duration, Instant};
+use std::sync::Arc;
+use std::time::Duration;
 
 use async_trait::async_trait;
 use bitcoin::secp256k1::PublicKey;
 use ln_resource_mgr::HtlcRef;
+use simln_lib::clock::{Clock, SimulationClock};
 use simln_lib::sim_node::{InterceptRequest, InterceptResolution, Interceptor};
+use tokio::select;
 use tokio::sync::Mutex;
-use tokio::time::sleep;
-use tokio::{select, time};
 use triggered::{Listener, Trigger};
 
+use crate::clock::InstantClock;
 use crate::parsing::peacetime_from_file;
 use crate::BoxError;
 
+/// Combines clock traits required for revenue interceptor.
+pub trait RevenueClock: InstantClock + Clock + Send + Sync {}
+
+impl RevenueClock for SimulationClock {}
+
 /// Tracks revenue for a target node under attack and in peacetime, shutting down the simulation if the target node
 /// loses revenue under attack compared to peacetime.
-#[derive(Debug)]
 pub struct RevenueInterceptor {
+    clock: Arc<dyn RevenueClock>,
     target_node: PublicKey,
     target_revenue: Mutex<NodeRevenue>,
     peacetime_revenue: Mutex<PeacetimeRevenue>,
@@ -106,6 +113,7 @@ impl PeacetimeRevenue {
 
 impl RevenueInterceptor {
     pub fn new_with_bootstrap(
+        clock: Arc<dyn RevenueClock>,
         target_pubkey: PublicKey,
         bootstrap_revenue: u64,
         bootstrap_duration: Duration,
@@ -114,6 +122,7 @@ impl RevenueInterceptor {
         shutdown: Trigger,
     ) -> Result<Self, BoxError> {
         Ok(Self {
+            clock,
             target_node: target_pubkey,
             target_revenue: Mutex::new(NodeRevenue {
                 revenue_total: bootstrap_revenue,
@@ -151,7 +160,7 @@ impl RevenueInterceptor {
 
             select! {
                 _ = self.listener.clone() => return Ok(()),
-                _ = time::sleep(Duration::from_nanos(wait)) => {},
+                _ = self.clock.sleep(Duration::from_nanos(wait)) => {},
             }
 
             self.peacetime_revenue.lock().await.peacetime_revenue += next_event.fee_msat;
@@ -161,26 +170,27 @@ impl RevenueInterceptor {
     /// Polls the difference between attack and peacetime revenue using the provide interval. Triggers shutdown if
     /// attack revenue drops below projected peacetime revenue.
     pub async fn poll_revenue_difference(&self, interval: Duration) -> Result<(), BoxError> {
-        let start_ins = Instant::now();
+        let start_ins = InstantClock::now(&*self.clock);
         let mut i = 0;
 
         loop {
             select! {
                 _ = self.listener.clone() => return Ok(()),
-                _ = sleep(interval) => {
+                _ = self.clock.sleep(interval) => {
                     i +=1;
 
                     let simulation_revenue = self.target_revenue.lock().await.revenue_total;
                     let peacetime_revenue = self.peacetime_revenue.lock().await.peacetime_revenue;
+                    let elapsed = InstantClock::now(&*self.clock).duration_since(start_ins);
 
                     if peacetime_revenue > simulation_revenue{
                         self.shutdown.trigger();
-                        log::info!("Peacetime revenue: {peacetime_revenue} exceeds simulation revenue: {simulation_revenue} after: {:?}", start_ins.elapsed());
+                        log::error!("Peacetime revenue: {peacetime_revenue} exceeds simulation revenue: {simulation_revenue} after: {:?}", elapsed);
                         return Ok(())
                     }
 
                     if i % 10 == 0{
-                        log::info!("Peacetime revenue: {peacetime_revenue} less than simulation revenue: {simulation_revenue} after: {:?}", start_ins.elapsed());
+                        log::info!("Peacetime revenue: {peacetime_revenue} less than simulation revenue: {simulation_revenue} after: {:?}", elapsed);
                     }
                 },
             }
