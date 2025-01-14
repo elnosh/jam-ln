@@ -2,6 +2,7 @@ use ln_resource_mgr::EndorsementSignal;
 use simln_lib::sim_node::CustomRecords;
 use std::error::Error;
 
+pub mod clock;
 pub mod parsing;
 pub mod reputation_interceptor;
 pub mod revenue_interceptor;
