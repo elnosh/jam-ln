@@ -92,9 +92,9 @@ async fn main() -> Result<(), BoxError> {
         general_liquidity_portion: 50,
     };
 
-    // TODO: these should be shared with simln!!
     let (shutdown, listener) = triggered::trigger();
     let attack_interceptor = SinkInterceptor::new_for_network(
+        clock.clone(),
         attacker_pubkey,
         target_pubkey,
         &sim_network,
@@ -241,13 +241,16 @@ fn get_reputation_margin_fee(cli: &Cli) -> u64 {
 }
 /// Gets reputation pairs for the target node and attacking node, logs them and optionally checking that each node
 /// meets the configured threshold of good reputation if require_reputation is set.
-async fn check_reputation_status(
-    attack_interceptor: &SinkInterceptor,
+async fn check_reputation_status<C>(
+    attack_interceptor: &SinkInterceptor<C>,
     cli: &Cli,
     params: ForwardManagerParams,
     instant: Instant,
     require_reputation: bool,
-) -> Result<(), BoxError> {
+) -> Result<(), BoxError>
+where
+    C: InstantClock + Clock,
+{
     let status = attack_interceptor.get_reputation_status(instant).await?;
 
     let margin_fee = get_reputation_margin_fee(cli);

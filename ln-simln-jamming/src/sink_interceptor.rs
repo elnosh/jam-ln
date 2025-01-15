@@ -1,3 +1,4 @@
+use crate::clock::InstantClock;
 use crate::reputation_interceptor::{ReputationInterceptor, ReputationPair};
 use crate::{endorsement_from_records, BoxError};
 use async_trait::async_trait;
@@ -5,14 +6,16 @@ use bitcoin::secp256k1::PublicKey;
 use futures::future::join_all;
 use ln_resource_mgr::outgoing_reputation::ForwardManagerParams;
 use ln_resource_mgr::EndorsementSignal;
+use simln_lib::clock::Clock;
 use simln_lib::sim_node::{
     CustomRecords, ForwardingError, InterceptRequest, InterceptResolution, Interceptor,
 };
 use simln_lib::{NetworkParser, ShortChannelID};
 use std::collections::{HashMap, HashSet};
 use std::error::Error;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
-use tokio::{select, time};
+use tokio::select;
 use triggered::{Listener, Trigger};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -59,7 +62,11 @@ impl NetworkReputation {
 // This interceptor wraps an inner reputation interceptor so that we can still operate with regular reputation
 // on the non-attacking nodes. Doing so also allows us access to reputation values for monitoring.
 #[derive(Clone)]
-pub struct SinkInterceptor {
+pub struct SinkInterceptor<C>
+where
+    C: InstantClock + Clock,
+{
+    clock: Arc<C>,
     target_pubkey: PublicKey,
     /// Keeps track of the target's channels for custom behavior.
     target_channels: HashMap<ShortChannelID, TargetChannelType>,
@@ -101,8 +108,9 @@ fn print_request(req: &InterceptRequest) -> String {
     )
 }
 
-impl SinkInterceptor {
+impl<C: InstantClock + Clock> SinkInterceptor<C> {
     pub fn new_for_network(
+        clock: Arc<C>,
         attacking_pubkey: PublicKey,
         target_pubkey: PublicKey,
         edges: &[NetworkParser],
@@ -142,6 +150,7 @@ impl SinkInterceptor {
         }
 
         Self {
+            clock,
             target_pubkey,
             honest_peers,
             reputation_interceptor: jamming_interceptor,
@@ -238,8 +247,7 @@ impl SinkInterceptor {
         // get a shutdown signal elsewhere.
         let resp = select! {
             _ = self.listener.clone() => Err(ForwardingError::InterceptorError("shutdown signal received".to_string().into())),
-
-            _ = time::sleep(max_hold_secs) => Ok(CustomRecords::default())
+            _ = self.clock.sleep(max_hold_secs) => Ok(CustomRecords::default())
         };
 
         send_intercept_result!(req, Ok(resp), self.shutdown);
@@ -269,7 +277,7 @@ impl SinkInterceptor {
 }
 
 #[async_trait]
-impl Interceptor for SinkInterceptor {
+impl<C: InstantClock + Clock> Interceptor for SinkInterceptor<C> {
     /// Implemented by HTLC interceptors that provide input on the resolution of HTLCs forwarded in the simulation.
     async fn intercept_htlc(&self, req: InterceptRequest) {
         // Intercept payments from target -> attacker.
