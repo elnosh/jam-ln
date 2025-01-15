@@ -13,9 +13,7 @@ use std::ops::Sub;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use ln_resource_mgr::outgoing_reputation::{
-    ForwardManager, ForwardManagerParams, ReputationParams,
-};
+use ln_resource_mgr::outgoing_reputation::{ForwardManager, ForwardManagerParams};
 use ln_resource_mgr::{
     EndorsementSignal, ForwardResolution, ForwardingOutcome, HtlcRef, ProposedForward,
     ReputationError, ReputationManager,
@@ -63,9 +61,9 @@ pub struct ReputationPair {
 }
 
 impl ReputationPair {
-    pub fn outgoing_reputation(&self) -> bool {
-        // TODO: for what htlc amount?
-        self.outgoing_reputation > self.incoming_revenue
+    /// Determines whether a pair has sufficient reputation for the htlc risk provided.
+    pub fn outgoing_reputation(&self, risk: u64) -> bool {
+        self.outgoing_reputation > self.incoming_revenue + risk as i64
     }
 }
 
@@ -79,6 +77,7 @@ pub struct ReputationInterceptor {
 
 impl ReputationInterceptor {
     pub fn new_for_network(
+        params: ForwardManagerParams,
         edges: &[NetworkParser],
         clock: Arc<dyn InstantClock + Send + Sync>,
     ) -> Result<Self, BoxError> {
@@ -88,16 +87,7 @@ impl ReputationInterceptor {
             ($network_nodes:expr, $node_pubkey:expr, $node_alias:expr, $channel:expr) => {
                 match $network_nodes.entry($node_pubkey) {
                     Entry::Vacant(e) => {
-                        let forward_manager = ForwardManager::new(ForwardManagerParams {
-                            reputation_params: ReputationParams {
-                                revenue_window: Duration::from_secs(14 * 24 * 60 * 60),
-                                reputation_multiplier: 12,
-                                resolution_period: Duration::from_secs(90),
-                                expected_block_speed: Some(Duration::from_secs(10 * 60 * 60)),
-                            },
-                            general_slot_portion: 50,
-                            general_liquidity_portion: 50,
-                        });
+                        let forward_manager = ForwardManager::new(params);
 
                         let _ = forward_manager
                             .add_channel($channel.scid.into(), $channel.capacity_msat)?;
@@ -138,12 +128,13 @@ impl ReputationInterceptor {
     /// Creates a network from the set of edges provided and bootstraps the reputation of nodes in the network using
     /// the historical forwards provided. Forwards are expected to be sorted by added_ns in ascending order.
     pub async fn new_with_bootstrap(
+        params: ForwardManagerParams,
         edges: &[NetworkParser],
         history: &[BootstrapForward],
         clock: Arc<dyn InstantClock + Send + Sync>,
     ) -> Result<Self, BoxError> {
         let mut interceptor =
-            Self::new_for_network(edges, clock).map_err(|_| "could not create network")?;
+            Self::new_for_network(params, edges, clock).map_err(|_| "could not create network")?;
         interceptor.bootstrap_network_history(history).await?;
         Ok(interceptor)
     }

@@ -1,5 +1,6 @@
 use bitcoin::secp256k1::PublicKey;
 use clap::Parser;
+use ln_resource_mgr::outgoing_reputation::{ForwardManagerParams, ReputationParams};
 use ln_simln_jamming::clock::InstantClock;
 use ln_simln_jamming::parsing::{history_from_file, Cli};
 use ln_simln_jamming::reputation_interceptor::ReputationInterceptor;
@@ -13,9 +14,9 @@ use simln_lib::interceptors::LatencyIntercepor;
 use simln_lib::sim_node::{Interceptor, SimulatedChannel};
 use simln_lib::{NetworkParser, Simulation, SimulationCfg};
 use simple_logger::SimpleLogger;
-use std::fs;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
+use std::{fs, usize};
 use tokio::task::JoinSet;
 
 #[derive(Serialize, Deserialize)]
@@ -78,6 +79,16 @@ async fn main() -> Result<(), BoxError> {
         Arc::new(LatencyIntercepor::new_poisson(150.0)?);
 
     let clock = Arc::new(SimulationClock::new(cli.clock_speedup)?);
+    let forward_params = ForwardManagerParams {
+        reputation_params: ReputationParams {
+            revenue_window: Duration::from_secs(14 * 24 * 60 * 60),
+            reputation_multiplier: 12,
+            resolution_period: Duration::from_secs(90),
+            expected_block_speed: Some(Duration::from_secs(10 * 60 * 60)),
+        },
+        general_slot_portion: 50,
+        general_liquidity_portion: 50,
+    };
 
     // TODO: these should be shared with simln!!
     let (shutdown, listener) = triggered::trigger();
@@ -85,37 +96,20 @@ async fn main() -> Result<(), BoxError> {
         attacker_pubkey,
         target_pubkey,
         &sim_network,
-        ReputationInterceptor::new_with_bootstrap(&sim_network, &history, clock.clone()).await?,
+        ReputationInterceptor::new_with_bootstrap(
+            forward_params,
+            &sim_network,
+            &history,
+            clock.clone(),
+        )
+        .await?,
         listener.clone(),
         shutdown.clone(),
     );
 
     // Do some preliminary checks on our reputation state - there isn't much point in running if we haven't built up
     // some reputation.
-    let start_state = attack_interceptor
-        .get_reputation_status(clock.clone().now())
-        .await?;
-    if start_state.reputation_count(false)
-        < start_state.attacker_reputation.len() * cli.attacker_reputation_percent as usize / 100
-    {
-        return Err(format!(
-            "no point running simulation when attacker has < 50% good reputation, {}/{}",
-            start_state.reputation_count(false),
-            start_state.attacker_reputation.len(),
-        )
-        .into());
-    }
-
-    if start_state.reputation_count(true)
-        < start_state.target_reputation.len() * cli.target_reputation_percent as usize / 100
-    {
-        return Err(format!(
-            "no point running simulation when target has < 50% good reputation, {}/{}",
-            start_state.reputation_count(true),
-            start_state.target_reputation.len()
-        )
-        .into());
-    }
+    check_reputation_status(&attack_interceptor, &cli, forward_params, clock.now(), true).await?;
 
     let attack_interceptor: Arc<dyn Interceptor> = Arc::new(attack_interceptor);
 
@@ -181,4 +175,74 @@ fn find_pubkey_by_alias(alias: &str, sim_network: &[NetworkParser]) -> Result<Pu
     } else {
         target_channel.node_2.pubkey
     })
+}
+
+/// Gets reputation pairs for the target node and attacking node, logs them and optionally checking that each node
+/// meets the configured threshold of good reputation if require_reputation is set.
+async fn check_reputation_status(
+    attack_interceptor: &SinkInterceptor,
+    cli: &Cli,
+    params: ForwardManagerParams,
+    instant: Instant,
+    require_reputation: bool,
+) -> Result<(), BoxError> {
+    let status = attack_interceptor.get_reputation_status(instant).await?;
+
+    let margin_fee = 1000 + (0.0001 * cli.reputation_margin_msat as f64) as u64;
+
+    let attacker_reputation = status.reputation_count(
+        false,
+        &params,
+        margin_fee,
+        cli.reputation_margin_expiry_blocks,
+    );
+
+    let target_reputation = status.reputation_count(
+        true,
+        &params,
+        margin_fee,
+        cli.reputation_margin_expiry_blocks,
+    );
+
+    log::info!(
+        "Attacker has {} out of {} pairs with reputation",
+        attacker_reputation,
+        status.attacker_reputation.len()
+    );
+
+    log::info!(
+        "Target has {}/{} pairs with reputation with its peers",
+        target_reputation,
+        status.target_reputation.len()
+    );
+
+    if !require_reputation {
+        return Ok(());
+    }
+
+    let attacker_threshold =
+        status.attacker_reputation.len() * cli.attacker_reputation_percent as usize / 100;
+    if attacker_reputation < attacker_threshold {
+        return Err(format!(
+            "attacker has {}/{} good reputation pairs which does not meet threshold {}",
+            attacker_reputation,
+            status.attacker_reputation.len(),
+            attacker_threshold,
+        )
+        .into());
+    }
+
+    let target_threshold =
+        status.target_reputation.len() * cli.target_reputation_percent as usize / 100;
+    if target_reputation < target_threshold {
+        return Err(format!(
+            "target has {}/{} good reputation pairs which does not meet threshold {}",
+            target_reputation,
+            status.target_reputation.len(),
+            target_threshold,
+        )
+        .into());
+    }
+
+    Ok(())
 }
