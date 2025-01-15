@@ -126,13 +126,24 @@ async fn main() -> Result<(), BoxError> {
     let mut tasks = JoinSet::new();
 
     let revenue_interceptor_1 = revenue_interceptor.clone();
-    tasks.spawn(async move { revenue_interceptor_1.process_peacetime_fwds().await });
+    let revenue_shutdown = shutdown.clone();
+    tasks.spawn(async move {
+        if let Err(e) = revenue_interceptor_1.process_peacetime_fwds().await {
+            log::error!("Error processing peacetime forwards: {e}");
+            revenue_shutdown.trigger();
+        }
+    });
 
     let revenue_interceptor_2 = revenue_interceptor.clone();
+    let revenue_shutdown = shutdown.clone();
     tasks.spawn(async move {
-        revenue_interceptor_2
+        if let Err(e) = revenue_interceptor_2
             .poll_revenue_difference(Duration::from_secs(5))
             .await
+        {
+            log::error!("Error polling revenue difference: {e}");
+            revenue_shutdown.trigger();
+        }
     });
 
     let interceptors = vec![latency_interceptor, attack_interceptor, revenue_interceptor];
