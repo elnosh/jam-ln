@@ -86,7 +86,7 @@ async fn main() -> Result<(), BoxError> {
             revenue_window: Duration::from_secs(14 * 24 * 60 * 60),
             reputation_multiplier: 12,
             resolution_period: Duration::from_secs(90),
-            expected_block_speed: Some(Duration::from_secs(10 * 60 * 60)),
+            expected_block_speed: Some(Duration::from_secs(10 * 60)),
         },
         general_slot_portion: 50,
         general_liquidity_portion: 50,
