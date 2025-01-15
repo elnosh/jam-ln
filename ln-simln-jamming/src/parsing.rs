@@ -38,6 +38,10 @@ const DEFAULT_REPUTATION_MARGIN_MSAT: &str = "10000000";
 /// Default htlc expiry used for calculating reputation margin htlc's risk.
 const DEFAULT_REPUTATION_MARGIN_EXIPRY: &str = "200";
 
+/// The default interval used to poll whether the attacker still has reputation with the target, 5 minutes expresssed
+/// in seconds.
+const DEFAULT_ATTACKER_POLL_SECONDS: &str = "300";
+
 #[derive(Parser)]
 #[command(version, about)]
 pub struct Cli {
@@ -84,6 +88,10 @@ pub struct Cli {
     /// in blocks.
     #[arg(long, default_value = DEFAULT_REPUTATION_MARGIN_EXIPRY)]
     pub reputation_margin_expiry_blocks: u32,
+
+    /// The interval to poll whether the attacker still has reputation with the target node, expressed in seconds.
+    #[arg(long, default_value = DEFAULT_ATTACKER_POLL_SECONDS)]
+    pub attacker_poll_interval_seconds: u64,
 }
 
 impl Cli {
