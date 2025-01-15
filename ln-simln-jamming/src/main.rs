@@ -5,10 +5,11 @@ use ln_simln_jamming::clock::InstantClock;
 use ln_simln_jamming::parsing::{history_from_file, Cli};
 use ln_simln_jamming::reputation_interceptor::ReputationInterceptor;
 use ln_simln_jamming::revenue_interceptor::RevenueInterceptor;
-use ln_simln_jamming::sink_interceptor::SinkInterceptor;
+use ln_simln_jamming::sink_interceptor::{SinkInterceptor, TargetChannelType};
 use ln_simln_jamming::BoxError;
 use log::LevelFilter;
 use serde::{Deserialize, Serialize};
+use simln_lib::clock::Clock;
 use simln_lib::clock::SimulationClock;
 use simln_lib::interceptors::LatencyIntercepor;
 use simln_lib::sim_node::{Interceptor, SimulatedChannel};
@@ -17,6 +18,7 @@ use simple_logger::SimpleLogger;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use std::{fs, usize};
+use tokio::select;
 use tokio::task::JoinSet;
 
 #[derive(Serialize, Deserialize)]
@@ -109,9 +111,57 @@ async fn main() -> Result<(), BoxError> {
 
     // Do some preliminary checks on our reputation state - there isn't much point in running if we haven't built up
     // some reputation.
-    check_reputation_status(&attack_interceptor, &cli, forward_params, clock.now(), true).await?;
+    check_reputation_status(
+        &attack_interceptor,
+        &cli,
+        forward_params,
+        InstantClock::now(&*clock),
+        true,
+    )
+    .await?;
 
-    let attack_interceptor: Arc<dyn Interceptor> = Arc::new(attack_interceptor);
+    let attack_interceptor = Arc::new(attack_interceptor);
+
+    // Spawn a task that will trigger shutdown of the simulation if the attacker loses reputation.
+    let mut tasks = JoinSet::new();
+    let attack_interceptor_1 = attack_interceptor.clone();
+    let attack_clock = clock.clone();
+    let attack_listener = listener.clone();
+    let attack_shutdown = shutdown.clone();
+    let reputation_threshold = forward_params.htlc_opportunity_cost(
+        get_reputation_margin_fee(&cli),
+        cli.reputation_margin_expiry_blocks,
+    );
+
+    tasks.spawn(async move {
+    let interval = Duration::from_secs(cli.attacker_poll_interval_seconds);
+    loop {
+        select! {
+            _ = attack_listener.clone() => return,
+            _ = attack_clock.sleep(interval) => {
+                match attack_interceptor_1
+                    .get_target_pairs(
+                        target_pubkey,
+                        TargetChannelType::Attacker,
+                        InstantClock::now(&*attack_clock),
+                    )
+                .await {
+                    Ok(rep) => {
+                        if !rep.iter().any(|pair| pair.outgoing_reputation(reputation_threshold)) {
+                            log::error!("Attacker has no more reputation with the target");
+                            attack_shutdown.trigger();
+                            return;
+                        }
+                    },
+                    Err(e) => {
+                        log::error!("Error checking attacker reputation: {e}");
+                        attack_shutdown.trigger();
+                        return;
+                    },
+                }
+            }
+        }
+    }});
 
     let revenue_interceptor = Arc::new(RevenueInterceptor::new_with_bootstrap(
         clock.clone(),
@@ -123,16 +173,25 @@ async fn main() -> Result<(), BoxError> {
         shutdown.clone(),
     )?);
 
-    let mut tasks = JoinSet::new();
-
     let revenue_interceptor_1 = revenue_interceptor.clone();
-    tasks.spawn(async move { revenue_interceptor_1.process_peacetime_fwds().await });
+    let revenue_shutdown = shutdown.clone();
+    tasks.spawn(async move {
+        if let Err(e) = revenue_interceptor_1.process_peacetime_fwds().await {
+            log::error!("Error processing peacetime forwards: {e}");
+            revenue_shutdown.trigger();
+        }
+    });
 
     let revenue_interceptor_2 = revenue_interceptor.clone();
+    let revenue_shutdown = shutdown.clone();
     tasks.spawn(async move {
-        revenue_interceptor_2
+        if let Err(e) = revenue_interceptor_2
             .poll_revenue_difference(Duration::from_secs(5))
             .await
+        {
+            log::error!("Error polling revenue difference: {e}");
+            revenue_shutdown.trigger();
+        }
     });
 
     let interceptors = vec![latency_interceptor, attack_interceptor, revenue_interceptor];
@@ -177,6 +236,9 @@ fn find_pubkey_by_alias(alias: &str, sim_network: &[NetworkParser]) -> Result<Pu
     })
 }
 
+fn get_reputation_margin_fee(cli: &Cli) -> u64 {
+    1000 + (0.0001 * cli.reputation_margin_msat as f64) as u64
+}
 /// Gets reputation pairs for the target node and attacking node, logs them and optionally checking that each node
 /// meets the configured threshold of good reputation if require_reputation is set.
 async fn check_reputation_status(
@@ -188,7 +250,7 @@ async fn check_reputation_status(
 ) -> Result<(), BoxError> {
     let status = attack_interceptor.get_reputation_status(instant).await?;
 
-    let margin_fee = 1000 + (0.0001 * cli.reputation_margin_msat as f64) as u64;
+    let margin_fee = get_reputation_margin_fee(cli);
 
     let attacker_reputation = status.reputation_count(
         false,

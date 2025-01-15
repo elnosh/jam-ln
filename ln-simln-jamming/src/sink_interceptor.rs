@@ -16,7 +16,7 @@ use tokio::{select, time};
 use triggered::{Listener, Trigger};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-enum TargetChannelType {
+pub enum TargetChannelType {
     Attacker,
     Peer,
 }
@@ -182,7 +182,7 @@ impl SinkInterceptor {
     /// - TargetChannelType::Peer / Node=Peer: reports the target's reputation in the eyes of its peers.
     /// - TargetChannelType::Attacker / Node=Target: reports the attacker's reputation in the eyes of the target.
     /// Note that if the node provided is not the target or one of its peers, nothing will be returned.
-    async fn get_target_pairs(
+    pub async fn get_target_pairs(
         &self,
         node: PublicKey,
         filter_chan_type: TargetChannelType,
