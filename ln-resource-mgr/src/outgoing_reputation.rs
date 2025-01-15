@@ -395,7 +395,10 @@ mod reputation_tracker {
             let in_flight_total_risk = self.total_in_flight_risk();
             let htlc_risk = self
                 .params
-                .htlc_risk(forward.fee_msat(), forward.expiry_delta());
+                // The underlying simulation is block height agnostic, and starts its routes with a height of zero, so
+                // we can just use the incoming expiry to reflect "maximum time htlc can be held on channel", because
+                // we're calculating expiry_in_height - 0.
+                .htlc_risk(forward.fee_msat(), forward.expiry_in_height);
 
             Ok(ReputationCheck {
                 outgoing_reputation,
