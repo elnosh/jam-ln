@@ -23,13 +23,18 @@ impl DecayingAverage {
         0.5f64.powf(2.0 / period.as_secs_f64())
     }
 
-    /// Decays the tracked value to its value at the instant provided and returns the updated value.
+    /// Decays the tracked value to its value at the instant provided and returns the updated value. The access_instant
+    /// must be after the last_updated time of the decaying average, tolerant to nanosecond differences.
     pub(super) fn value_at_instant(
         &mut self,
         access_instant: Instant,
     ) -> Result<i64, ReputationError> {
         if let Some(last_updated) = self.last_updated {
-            if access_instant < last_updated {
+            // Enforce that the access_instant must be after the last update on our average, but tolerate nanosecond
+            // differences - these will just reflect as an update with the same update as last_updated.
+            if access_instant < last_updated
+                && last_updated.duration_since(access_instant).as_secs() > 0
+            {
                 return Err(ReputationError::ErrUpdateInPast(
                     last_updated,
                     access_instant,
@@ -129,17 +134,29 @@ mod tests {
         assert_eq!(avg.add_value(i64::MAX, ins_2).unwrap(), i64::MAX);
     }
 
+    // Tests that we can't update the decaying average with values in the past, but tolerate nanosecond differences and
+    // treat them as an update at the current time.
     #[test]
-    fn test_update_in_past() {
+    fn test_update_in_past_tolerance() {
         let ins_0 = Instant::now();
-        let ins_1 = ins_0.add(Duration::from_secs(100));
+        let ins_1 = ins_0.add(Duration::from_secs(1));
 
         let mut avg = DecayingAverage::new(TEST_PERIOD);
         assert_eq!(avg.add_value(100, ins_1).unwrap(), 100);
 
+        // One second in the past is above our tolerance, should fail.
         assert!(matches!(
             avg.add_value(500, ins_0),
             Err(ReputationError::ErrUpdateInPast(_, _))
         ));
+        assert_eq!(avg.value_at_instant(ins_1).unwrap(), 100);
+
+        // Half a second in the past is within our tolerance, should update average.
+        let ins_2 = ins_0.add(Duration::from_secs(1) / 2);
+        assert_eq!(avg.add_value(150, ins_2).unwrap(), 250);
+
+        // One second in the future should decay our existing value.
+        let ins_4 = ins_1.add(Duration::from_secs(1));
+        assert_eq!(avg.value_at_instant(ins_4).unwrap() < 250, true);
     }
 }
