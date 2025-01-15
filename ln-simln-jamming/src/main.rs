@@ -1,5 +1,6 @@
 use bitcoin::secp256k1::PublicKey;
 use clap::Parser;
+use ln_simln_jamming::clock::InstantClock;
 use ln_simln_jamming::parsing::{history_from_file, Cli};
 use ln_simln_jamming::reputation_interceptor::ReputationInterceptor;
 use ln_simln_jamming::revenue_interceptor::RevenueInterceptor;
@@ -7,13 +8,14 @@ use ln_simln_jamming::sink_interceptor::SinkInterceptor;
 use ln_simln_jamming::BoxError;
 use log::LevelFilter;
 use serde::{Deserialize, Serialize};
+use simln_lib::clock::SimulationClock;
 use simln_lib::interceptors::LatencyIntercepor;
 use simln_lib::sim_node::{Interceptor, SimulatedChannel};
 use simln_lib::{NetworkParser, Simulation, SimulationCfg};
 use simple_logger::SimpleLogger;
 use std::fs;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 use tokio::task::JoinSet;
 
 #[derive(Serialize, Deserialize)]
@@ -75,13 +77,15 @@ async fn main() -> Result<(), BoxError> {
     let latency_interceptor: Arc<dyn Interceptor> =
         Arc::new(LatencyIntercepor::new_poisson(150.0)?);
 
+    let clock = Arc::new(SimulationClock::new(cli.clock_speedup)?);
+
     // TODO: these should be shared with simln!!
     let (shutdown, listener) = triggered::trigger();
     let attack_interceptor = SinkInterceptor::new_for_network(
         attacker_pubkey,
         target_pubkey,
         &sim_network,
-        ReputationInterceptor::new_with_bootstrap(&sim_network, &history).await?,
+        ReputationInterceptor::new_with_bootstrap(&sim_network, &history, clock.clone()).await?,
         listener.clone(),
         shutdown.clone(),
     );
@@ -89,7 +93,7 @@ async fn main() -> Result<(), BoxError> {
     // Do some preliminary checks on our reputation state - there isn't much point in running if we haven't built up
     // some reputation.
     let start_state = attack_interceptor
-        .get_reputation_status(Instant::now())
+        .get_reputation_status(clock.clone().now())
         .await?;
     if start_state.reputation_count(false)
         < start_state.attacker_reputation.len() * cli.attacker_reputation_percent as usize / 100
@@ -116,6 +120,7 @@ async fn main() -> Result<(), BoxError> {
     let attack_interceptor: Arc<dyn Interceptor> = Arc::new(attack_interceptor);
 
     let revenue_interceptor = Arc::new(RevenueInterceptor::new_with_bootstrap(
+        clock.clone(),
         target_pubkey,
         bootstrap_revenue,
         cli.bootstrap_duration,
@@ -150,7 +155,7 @@ async fn main() -> Result<(), BoxError> {
         SimulationCfg::new(None, 3_800_000, 2.0, None, Some(13995354354227336701)),
         channels,
         vec![], // No activities, we want random activity!
-        1,      // No clock speedup, just run with regular timing for now.
+        clock,
         interceptors,
         listener,
         shutdown,

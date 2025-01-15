@@ -28,6 +28,9 @@ const DEFAULT_TARGET_REP_PERCENT: &str = "50";
 /// Default percent of good reputation pairs with the target that the attacker requires.
 const DEFAULT_ATTACKER_REP_PERCENT: &str = "50";
 
+/// Default clock speedup to run with regular wall time.
+const DEFAULT_CLOCK_SPEEDUP: &str = "1";
+
 #[derive(Parser)]
 #[command(version, about)]
 pub struct Cli {
@@ -59,6 +62,10 @@ pub struct Cli {
     /// reputation on for the simulation to run.
     #[arg(long, default_value = DEFAULT_ATTACKER_REP_PERCENT)]
     pub attacker_reputation_percent: u8,
+
+    /// Speed up multiplier to add to the wall clock to run the simulation faster.
+    #[arg(long, default_value = DEFAULT_CLOCK_SPEEDUP)]
+    pub clock_speedup: u32,
 }
 
 impl Cli {
