@@ -1,5 +1,5 @@
 use crate::clock::InstantClock;
-use crate::reputation_interceptor::{ReputationInterceptor, ReputationPair};
+use crate::reputation_interceptor::{ReputationMonitor, ReputationPair};
 use crate::{endorsement_from_records, BoxError};
 use async_trait::async_trait;
 use bitcoin::secp256k1::PublicKey;
@@ -62,9 +62,10 @@ impl NetworkReputation {
 // This interceptor wraps an inner reputation interceptor so that we can still operate with regular reputation
 // on the non-attacking nodes. Doing so also allows us access to reputation values for monitoring.
 #[derive(Clone)]
-pub struct SinkInterceptor<C>
+pub struct SinkInterceptor<C, R>
 where
     C: InstantClock + Clock,
+    R: Interceptor + ReputationMonitor,
 {
     clock: Arc<C>,
     target_pubkey: PublicKey,
@@ -73,7 +74,7 @@ where
     /// List of public keys of the target's honest (non-attacker) peers.
     honest_peers: Vec<PublicKey>,
     /// Inner reputation monitor that implements jamming mitigation.
-    reputation_interceptor: ReputationInterceptor,
+    reputation_interceptor: R,
     /// Used to control shutdown.
     listener: Listener,
     shutdown: Trigger,
@@ -108,13 +109,13 @@ fn print_request(req: &InterceptRequest) -> String {
     )
 }
 
-impl<C: InstantClock + Clock> SinkInterceptor<C> {
+impl<C: InstantClock + Clock, R: Interceptor + ReputationMonitor> SinkInterceptor<C, R> {
     pub fn new_for_network(
         clock: Arc<C>,
         attacking_pubkey: PublicKey,
         target_pubkey: PublicKey,
         edges: &[NetworkParser],
-        jamming_interceptor: ReputationInterceptor,
+        reputation_interceptor: R,
         listener: Listener,
         shutdown: Trigger,
     ) -> Self {
@@ -153,7 +154,7 @@ impl<C: InstantClock + Clock> SinkInterceptor<C> {
             clock,
             target_pubkey,
             honest_peers,
-            reputation_interceptor: jamming_interceptor,
+            reputation_interceptor,
             target_channels,
             listener,
             shutdown,
@@ -277,7 +278,9 @@ impl<C: InstantClock + Clock> SinkInterceptor<C> {
 }
 
 #[async_trait]
-impl<C: InstantClock + Clock> Interceptor for SinkInterceptor<C> {
+impl<C: InstantClock + Clock, R: Interceptor + ReputationMonitor> Interceptor
+    for SinkInterceptor<C, R>
+{
     /// Implemented by HTLC interceptors that provide input on the resolution of HTLCs forwarded in the simulation.
     async fn intercept_htlc(&self, req: InterceptRequest) {
         // Intercept payments from target -> attacker.

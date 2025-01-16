@@ -67,6 +67,16 @@ impl ReputationPair {
     }
 }
 
+/// Functionality to monitor reputation values in a network.
+#[async_trait]
+pub trait ReputationMonitor {
+    async fn list_reputation_pairs(
+        &self,
+        node: PublicKey,
+        access_ins: Instant,
+    ) -> Result<Vec<ReputationPair>, BoxError>;
+}
+
 /// Implements a network-wide interceptor that implements resource management for every forwarding node in the
 /// network.
 #[derive(Clone)]
@@ -314,10 +324,13 @@ impl ReputationInterceptor {
             }
         }
     }
+}
 
+#[async_trait]
+impl ReputationMonitor for ReputationInterceptor {
     /// Returns all reputation pairs for the node provided. For example, if a node has channels 1, 2 and 3 it will
     /// return the following reputation pairs: [1 -> 2], [1 -> 3], [2 -> 1], [2 -> 3], [3 -> 1], [3 -> 2].
-    pub async fn list_reputation_pairs(
+    async fn list_reputation_pairs(
         &self,
         node: PublicKey,
         access_ins: Instant,
