@@ -1,10 +1,8 @@
 use crate::clock::InstantClock;
-use crate::{endorsement_from_records, BoxError, ENDORSEMENT_TYPE};
+use crate::{endorsement_from_records, records_from_endorsement, BoxError};
 use async_trait::async_trait;
 use bitcoin::secp256k1::PublicKey;
-use simln_lib::sim_node::{
-    CustomRecords, ForwardingError, InterceptRequest, InterceptResolution, Interceptor,
-};
+use simln_lib::sim_node::{ForwardingError, InterceptRequest, InterceptResolution, Interceptor};
 use simln_lib::NetworkParser;
 use std::collections::hash_map::Entry;
 use std::collections::{HashMap, HashSet};
@@ -275,18 +273,7 @@ impl ReputationInterceptor {
 
         match fwd_decision {
             ForwardingOutcome::Forward(endorsement) => {
-                let mut outgoing_records = HashMap::new();
-
-                match endorsement {
-                    EndorsementSignal::Endorsed => {
-                        outgoing_records.insert(ENDORSEMENT_TYPE, vec![1]);
-                    }
-                    EndorsementSignal::Unendorsed => {
-                        outgoing_records.insert(ENDORSEMENT_TYPE, vec![0]);
-                    }
-                }
-
-                Ok(Ok(outgoing_records))
+                Ok(Ok(records_from_endorsement(endorsement)))
             }
             ForwardingOutcome::Fail(reason) => Ok(Err(ForwardingError::InterceptorError(
                 reason.to_string().into(),
@@ -372,7 +359,13 @@ impl Interceptor for ReputationInterceptor {
         let outgoing_channel_id = match req.outgoing_channel_id {
             Some(c) => c.into(),
             None => {
-                if let Err(e) = req.response.send(Ok(Ok(CustomRecords::default()))).await {
+                if let Err(e) = req
+                    .response
+                    .send(Ok(Ok(records_from_endorsement(
+                        EndorsementSignal::Unendorsed,
+                    ))))
+                    .await
+                {
                     // TODO: select?
                     println!("Failed to send response: {:?}", e);
                 }

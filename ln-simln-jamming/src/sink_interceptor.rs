@@ -1,15 +1,13 @@
 use crate::clock::InstantClock;
 use crate::reputation_interceptor::{ReputationMonitor, ReputationPair};
-use crate::{endorsement_from_records, BoxError};
+use crate::{endorsement_from_records, records_from_endorsement, BoxError};
 use async_trait::async_trait;
 use bitcoin::secp256k1::PublicKey;
 use futures::future::join_all;
 use ln_resource_mgr::outgoing_reputation::ForwardManagerParams;
 use ln_resource_mgr::EndorsementSignal;
 use simln_lib::clock::Clock;
-use simln_lib::sim_node::{
-    CustomRecords, ForwardingError, InterceptRequest, InterceptResolution, Interceptor,
-};
+use simln_lib::sim_node::{ForwardingError, InterceptRequest, InterceptResolution, Interceptor};
 use simln_lib::{NetworkParser, ShortChannelID};
 use std::collections::{HashMap, HashSet};
 use std::error::Error;
@@ -228,7 +226,11 @@ impl<C: InstantClock + Clock, R: Interceptor + ReputationMonitor> SinkIntercepto
                 "HTLC from target -> attacker not endorsed, releasing: {}",
                 print_request(&req)
             );
-            send_intercept_result!(req, Ok(Ok(CustomRecords::default())), self.shutdown);
+            send_intercept_result!(
+                req,
+                Ok(Ok(records_from_endorsement(EndorsementSignal::Unendorsed))),
+                self.shutdown
+            );
             return;
         }
 
@@ -248,7 +250,7 @@ impl<C: InstantClock + Clock, R: Interceptor + ReputationMonitor> SinkIntercepto
         // get a shutdown signal elsewhere.
         let resp = select! {
             _ = self.listener.clone() => Err(ForwardingError::InterceptorError("shutdown signal received".to_string().into())),
-            _ = self.clock.sleep(max_hold_secs) => Ok(CustomRecords::default())
+            _ = self.clock.sleep(max_hold_secs) => Ok(records_from_endorsement(EndorsementSignal::Endorsed))
         };
 
         send_intercept_result!(req, Ok(resp), self.shutdown);

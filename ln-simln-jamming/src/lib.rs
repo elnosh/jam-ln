@@ -27,3 +27,15 @@ pub fn endorsement_from_records(records: &CustomRecords) -> EndorsementSignal {
         None => EndorsementSignal::Unendorsed,
     }
 }
+
+/// Converts an endorsement signal to custom records using the blip-04 experimental TLV.
+pub fn records_from_endorsement(endorsement: EndorsementSignal) -> CustomRecords {
+    match endorsement {
+        EndorsementSignal::Unendorsed => CustomRecords::default(),
+        EndorsementSignal::Endorsed => {
+            let mut records = CustomRecords::default();
+            records.insert(ENDORSEMENT_TYPE, vec![1]);
+            records
+        }
+    }
+}
