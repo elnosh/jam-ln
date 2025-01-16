@@ -10,7 +10,7 @@ use std::time::Duration;
 use async_trait::async_trait;
 use bitcoin::secp256k1::PublicKey;
 use ln_resource_mgr::HtlcRef;
-use simln_lib::clock::{Clock, SimulationClock};
+use simln_lib::clock::Clock;
 use simln_lib::sim_node::{InterceptRequest, InterceptResolution, Interceptor};
 use tokio::select;
 use tokio::sync::Mutex;
@@ -20,15 +20,13 @@ use crate::clock::InstantClock;
 use crate::parsing::peacetime_from_file;
 use crate::BoxError;
 
-/// Combines clock traits required for revenue interceptor.
-pub trait RevenueClock: InstantClock + Clock + Send + Sync {}
-
-impl RevenueClock for SimulationClock {}
-
 /// Tracks revenue for a target node under attack and in peacetime, shutting down the simulation if the target node
 /// loses revenue under attack compared to peacetime.
-pub struct RevenueInterceptor {
-    clock: Arc<dyn RevenueClock>,
+pub struct RevenueInterceptor<C>
+where
+    C: InstantClock + Clock,
+{
+    clock: Arc<C>,
     target_node: PublicKey,
     target_revenue: Mutex<NodeRevenue>,
     peacetime_revenue: Mutex<PeacetimeRevenue>,
@@ -111,9 +109,9 @@ impl PeacetimeRevenue {
     }
 }
 
-impl RevenueInterceptor {
+impl<C: InstantClock + Clock> RevenueInterceptor<C> {
     pub fn new_with_bootstrap(
-        clock: Arc<dyn RevenueClock>,
+        clock: Arc<C>,
         target_pubkey: PublicKey,
         bootstrap_revenue: u64,
         bootstrap_duration: Duration,
@@ -199,7 +197,7 @@ impl RevenueInterceptor {
 }
 
 #[async_trait]
-impl Interceptor for RevenueInterceptor {
+impl<C: InstantClock + Clock> Interceptor for RevenueInterceptor<C> {
     /// RevenueInterceptor does not need to take any active action on incoming htlcs.
     async fn intercept_htlc(&self, req: InterceptRequest) {
         let resp = if req.forwarding_node == self.target_node {
