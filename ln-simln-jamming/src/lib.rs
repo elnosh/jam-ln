@@ -7,6 +7,7 @@ pub mod parsing;
 pub mod reputation_interceptor;
 pub mod revenue_interceptor;
 pub mod sink_interceptor;
+pub(crate) mod test_utils;
 
 /// Error type for errors that can be erased, includes 'static so that down-casting is possible.
 pub type BoxError = Box<dyn Error + Send + Sync + 'static>;

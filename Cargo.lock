@@ -965,6 +965,7 @@ dependencies = [
  "humantime",
  "ln-resource-mgr",
  "log",
+ "rand",
  "serde",
  "serde_json",
  "simln-lib",
