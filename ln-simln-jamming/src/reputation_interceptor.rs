@@ -2,6 +2,11 @@ use crate::clock::InstantClock;
 use crate::{endorsement_from_records, records_from_endorsement, BoxError};
 use async_trait::async_trait;
 use bitcoin::secp256k1::PublicKey;
+use ln_resource_mgr::outgoing_reputation::{ForwardManager, ForwardManagerParams};
+use ln_resource_mgr::{
+    AllocationCheck, EndorsementSignal, ForwardResolution, ForwardingOutcome, HtlcRef,
+    ProposedForward, ReputationError, ReputationManager,
+};
 use simln_lib::sim_node::{ForwardingError, InterceptRequest, InterceptResolution, Interceptor};
 use simln_lib::NetworkParser;
 use std::collections::hash_map::Entry;
@@ -11,16 +16,10 @@ use std::ops::Sub;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use ln_resource_mgr::outgoing_reputation::{ForwardManager, ForwardManagerParams};
-use ln_resource_mgr::{
-    EndorsementSignal, ForwardResolution, ForwardingOutcome, HtlcRef, ProposedForward,
-    ReputationError, ReputationManager,
-};
-
 #[derive(Clone)]
-struct HtlcAdd {
-    forwarding_node: PublicKey,
-    htlc: ProposedForward,
+pub struct HtlcAdd {
+    pub forwarding_node: PublicKey,
+    pub htlc: ProposedForward,
 }
 
 struct HtlcResolve {
@@ -73,6 +72,11 @@ pub trait ReputationMonitor {
         node: PublicKey,
         access_ins: Instant,
     ) -> Result<Vec<ReputationPair>, BoxError>;
+
+    async fn check_htlc_outcome(
+        &self,
+        htlc_add: HtlcAdd,
+    ) -> Result<AllocationCheck, ReputationError>;
 }
 
 /// Implements a network-wide interceptor that implements resource management for every forwarding node in the
@@ -348,6 +352,25 @@ impl ReputationMonitor for ReputationInterceptor {
         }
 
         Ok(pairs)
+    }
+
+    /// Checks the forwarding decision for a htlc without adding it to internal state.
+    async fn check_htlc_outcome(
+        &self,
+        htlc_add: HtlcAdd,
+    ) -> Result<AllocationCheck, ReputationError> {
+        match self
+            .network_nodes
+            .lock()
+            .unwrap()
+            .entry(htlc_add.forwarding_node)
+        {
+            Entry::Occupied(e) => e.get().0.get_forwarding_outcome(&htlc_add.htlc),
+            Entry::Vacant(_) => Err(ReputationError::ErrUnrecoverable(format!(
+                "node not found: {}",
+                htlc_add.forwarding_node,
+            ))),
+        }
     }
 }
 
