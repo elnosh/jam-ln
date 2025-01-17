@@ -313,11 +313,6 @@ impl ProposedForward {
     fn fee_msat(&self) -> u64 {
         self.amount_in_msat - self.amount_out_msat
     }
-
-    /// Only underflow safe after validation.
-    fn expiry_delta(&self) -> u32 {
-        self.expiry_in_height - self.expiry_out_height
-    }
 }
 
 /// Validates that an msat amount doesn't exceed the total supply cap of bitcoin and casts to i64 to be used in

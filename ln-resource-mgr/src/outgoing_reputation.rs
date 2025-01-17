@@ -301,7 +301,7 @@ mod reputation_tracker {
     #[derive(Clone, Debug)]
     pub(super) struct InFlightHtlc {
         pub fee_msat: u64,
-        cltv_delta: u32,
+        hold_blocks: u32,
         amount_msat: u64,
         added_instant: Instant,
         incoming_endorsed: EndorsementSignal,
@@ -363,7 +363,7 @@ mod reputation_tracker {
             self.outgoing_in_flight
                 .iter()
                 .filter(|(_, v)| v.incoming_endorsed == EndorsementSignal::Endorsed)
-                .map(|(_, v)| self.params.htlc_risk(v.fee_msat, v.cltv_delta))
+                .map(|(_, v)| self.params.htlc_risk(v.fee_msat, v.hold_blocks))
                 .sum()
         }
 
@@ -428,7 +428,7 @@ mod reputation_tracker {
                 Entry::Occupied(_) => Err(ReputationError::ErrDuplicateHtlc(forward.incoming_ref)),
                 Entry::Vacant(v) => {
                     v.insert(InFlightHtlc {
-                        cltv_delta: forward.expiry_delta(),
+                        hold_blocks: forward.expiry_in_height,
                         amount_msat: forward.amount_out_msat,
                         fee_msat: forward.fee_msat(),
                         added_instant: forward.added_at,
