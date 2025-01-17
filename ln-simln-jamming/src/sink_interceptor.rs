@@ -109,6 +109,29 @@ fn print_request(req: &InterceptRequest) -> String {
 }
 
 impl<C: InstantClock + Clock, R: Interceptor + ReputationMonitor> SinkInterceptor<C, R> {
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        clock: Arc<C>,
+        attacker_pubkey: PublicKey,
+        target_pubkey: PublicKey,
+        target_channels: HashMap<ShortChannelID, TargetChannelType>,
+        honest_peers: Vec<PublicKey>,
+        reputation_interceptor: R,
+        listener: Listener,
+        shutdown: Trigger,
+    ) -> Self {
+        Self {
+            clock,
+            attacker_pubkey,
+            target_pubkey,
+            target_channels,
+            honest_peers,
+            reputation_interceptor,
+            listener,
+            shutdown,
+        }
+    }
+
     pub fn new_for_network(
         clock: Arc<C>,
         attacker_pubkey: PublicKey,
@@ -149,16 +172,16 @@ impl<C: InstantClock + Clock, R: Interceptor + ReputationMonitor> SinkIntercepto
             target_channels.insert(channel.scid, channel_type);
         }
 
-        Self {
+        Self::new(
             clock,
             attacker_pubkey,
             target_pubkey,
+            target_channels,
             honest_peers,
             reputation_interceptor,
-            target_channels,
             listener,
             shutdown,
-        }
+        )
     }
 
     /// Reports on the current reputation state of the target node with its peers, and the attacker's standing with
