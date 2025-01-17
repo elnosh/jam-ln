@@ -66,6 +66,7 @@ where
     R: Interceptor + ReputationMonitor,
 {
     clock: Arc<C>,
+    attacker_pubkey: PublicKey,
     target_pubkey: PublicKey,
     /// Keeps track of the target's channels for custom behavior.
     target_channels: HashMap<ShortChannelID, TargetChannelType>,
@@ -110,7 +111,7 @@ fn print_request(req: &InterceptRequest) -> String {
 impl<C: InstantClock + Clock, R: Interceptor + ReputationMonitor> SinkInterceptor<C, R> {
     pub fn new_for_network(
         clock: Arc<C>,
-        attacking_pubkey: PublicKey,
+        attacker_pubkey: PublicKey,
         target_pubkey: PublicKey,
         edges: &[NetworkParser],
         reputation_interceptor: R,
@@ -128,11 +129,11 @@ impl<C: InstantClock + Clock, R: Interceptor + ReputationMonitor> SinkIntercepto
                 continue;
             }
 
-            let channel_type = if node_1_target && channel.node_2.pubkey == attacking_pubkey {
+            let channel_type = if node_1_target && channel.node_2.pubkey == attacker_pubkey {
                 TargetChannelType::Attacker
             } else if node_1_target {
                 TargetChannelType::Peer
-            } else if node_2_target && channel.node_1.pubkey == attacking_pubkey {
+            } else if node_2_target && channel.node_1.pubkey == attacker_pubkey {
                 TargetChannelType::Attacker
             } else {
                 TargetChannelType::Peer
@@ -150,6 +151,7 @@ impl<C: InstantClock + Clock, R: Interceptor + ReputationMonitor> SinkIntercepto
 
         Self {
             clock,
+            attacker_pubkey,
             target_pubkey,
             honest_peers,
             reputation_interceptor,
@@ -287,7 +289,9 @@ impl<C: InstantClock + Clock, R: Interceptor + ReputationMonitor> Interceptor
     async fn intercept_htlc(&self, req: InterceptRequest) {
         // Intercept payments from target -> attacker.
         if let Some(target_chan) = self.target_channels.get(&req.incoming_htlc.channel_id) {
-            if *target_chan == TargetChannelType::Attacker {
+            if *target_chan == TargetChannelType::Attacker
+                && req.forwarding_node == self.attacker_pubkey
+            {
                 self.intercept_attacker_incoming(req).await;
                 return;
             }
