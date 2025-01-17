@@ -470,4 +470,227 @@ mod reputation_tracker {
             Ok(in_flight)
         }
     }
+
+    #[cfg(test)]
+    mod tests {
+        use std::time::{Duration, Instant};
+
+        use crate::outgoing_reputation::ReputationParams;
+        use crate::{
+            EndorsementSignal, ForwardResolution, HtlcRef, ProposedForward, ReputationCheck,
+            ReputationError, ResourceCheck,
+        };
+
+        use super::ReputationTracker;
+
+        fn get_test_params() -> ReputationParams {
+            ReputationParams {
+                revenue_window: Duration::from_secs(60 * 60 * 24), // 1 week
+                reputation_multiplier: 10,
+                resolution_period: Duration::from_secs(60),
+                expected_block_speed: Some(Duration::from_secs(60 * 10)),
+            }
+        }
+
+        /// Returns a ReputationTracker with 100 general slots and 100_00 msat of general liquidity.
+        fn get_test_tracker() -> ReputationTracker {
+            ReputationTracker::new(get_test_params(), 100, 100_000).unwrap()
+        }
+
+        fn get_test_htlc(id: u64, endorsed: EndorsementSignal, fee_msat: u64) -> ProposedForward {
+            ProposedForward {
+                incoming_ref: HtlcRef {
+                    channel_id: 1,
+                    htlc_index: id,
+                },
+                outgoing_channel_id: 2,
+                amount_in_msat: 1000 + fee_msat,
+                amount_out_msat: 1000,
+                expiry_in_height: 500_010,
+                expiry_out_height: 500_000,
+                added_at: Instant::now(),
+                incoming_endorsed: endorsed,
+            }
+        }
+
+        #[test]
+        fn test_opportunity_cost() {
+            let params = get_test_params();
+            // Less than resolution_period has zero cost.
+            assert_eq!(params.opportunity_cost(100, Duration::from_secs(10)), 0);
+
+            // Equal to resolution_period or within one period is equal to fee.
+            assert_eq!(params.opportunity_cost(100, Duration::from_secs(60)), 100);
+            assert_eq!(params.opportunity_cost(100, Duration::from_secs(65)), 100);
+
+            // Multiple periods above resolution_period charges multiples of fee.
+            assert_eq!(params.opportunity_cost(100, Duration::from_secs(600)), 1000);
+        }
+
+        #[test]
+        fn test_effective_fees() {
+            let params = get_test_params();
+            let fast_resolve = params.resolution_period / 2;
+            let slow_resolve = params.resolution_period * 3;
+
+            let cases = vec![
+                (
+                    1000,
+                    fast_resolve,
+                    EndorsementSignal::Endorsed,
+                    true,
+                    Ok(1000),
+                ),
+                (
+                    1000,
+                    slow_resolve,
+                    EndorsementSignal::Endorsed,
+                    true,
+                    Ok(-2000),
+                ),
+                (
+                    1000,
+                    fast_resolve,
+                    EndorsementSignal::Endorsed,
+                    false,
+                    Ok(0),
+                ),
+                (
+                    1000,
+                    slow_resolve,
+                    EndorsementSignal::Endorsed,
+                    false,
+                    Ok(-3000),
+                ),
+                (
+                    1000,
+                    fast_resolve,
+                    EndorsementSignal::Unendorsed,
+                    true,
+                    Ok(1000),
+                ),
+                (
+                    1000,
+                    slow_resolve,
+                    EndorsementSignal::Unendorsed,
+                    true,
+                    Ok(0),
+                ),
+                (
+                    1000,
+                    fast_resolve,
+                    EndorsementSignal::Unendorsed,
+                    false,
+                    Ok(0),
+                ),
+                (
+                    1000,
+                    slow_resolve,
+                    EndorsementSignal::Unendorsed,
+                    false,
+                    Ok(0),
+                ),
+            ];
+
+            for (fee_msat, hold_time, endorsed, settled, expected) in cases {
+                let result = params.effective_fees(fee_msat, hold_time, endorsed, settled);
+                assert_eq!(result, expected, "Case failed: fee_msat={fee_msat:?}, hold_time={hold_time:?}, endorsed={endorsed:?}, settled={settled:?}");
+            }
+        }
+
+        #[test]
+        fn test_add_htlc() {
+            let mut tracker = get_test_tracker();
+
+            // Endorsed htlc contribute to in flight risk and count.
+            let htlc_1 = get_test_htlc(0, EndorsementSignal::Endorsed, 1000);
+            let htlc_1_risk = tracker
+                .params
+                .htlc_risk(htlc_1.fee_msat(), htlc_1.expiry_in_height);
+
+            assert!(tracker.add_outgoing_htlc(&htlc_1).is_ok());
+            assert_eq!(tracker.total_incoming_risk_msat(), htlc_1_risk,);
+            assert_eq!(
+                tracker.total_outgoing_in_flight_msat(EndorsementSignal::Endorsed),
+                htlc_1.amount_out_msat,
+            );
+            assert_eq!(
+                tracker.total_in_flight_count(EndorsementSignal::Endorsed),
+                1
+            );
+
+            assert!(matches!(
+                tracker.add_outgoing_htlc(&htlc_1).err().unwrap(),
+                ReputationError::ErrDuplicateHtlc(_)
+            ));
+
+            // Unendorsed doesn't contribute to in flight risk, but counted in other tracking.
+            let htlc_2 = get_test_htlc(1, EndorsementSignal::Unendorsed, 2000);
+
+            assert!(tracker.add_outgoing_htlc(&htlc_2).is_ok());
+            assert_eq!(tracker.total_incoming_risk_msat(), htlc_1_risk,);
+            assert_eq!(
+                tracker.total_outgoing_in_flight_msat(EndorsementSignal::Unendorsed),
+                htlc_2.amount_out_msat,
+            );
+            assert_eq!(
+                tracker.total_in_flight_count(EndorsementSignal::Endorsed),
+                1
+            );
+
+            // While we're here, test some lookup functions.
+            let htlc_3 = get_test_htlc(2, EndorsementSignal::Endorsed, 3000);
+            assert_eq!(
+                tracker
+                    .new_reputation_check(Instant::now(), 550, &htlc_3)
+                    .unwrap(),
+                ReputationCheck {
+                    outgoing_reputation: 0,
+                    incoming_revenue: 550,
+                    in_flight_total_risk: htlc_1_risk,
+                    htlc_risk: tracker
+                        .params
+                        .htlc_risk(htlc_3.fee_msat(), htlc_1.expiry_in_height,),
+                },
+            );
+
+            assert_eq!(
+                tracker.general_bucket_resources(),
+                ResourceCheck {
+                    general_slots_used: 1,
+                    general_slots_availabe: tracker.general_slot_count,
+                    general_liquidity_msat_used: htlc_2.amount_out_msat,
+                    general_liquidity_msat_available: tracker.general_liquidity_msat,
+                }
+            );
+        }
+
+        /// Tests addition / removal of a successfully settled htlc.
+        #[test]
+        fn test_remove_htlc() {
+            let mut tracker = get_test_tracker();
+            let htlc_1 = get_test_htlc(0, EndorsementSignal::Endorsed, 1000);
+
+            tracker.add_outgoing_htlc(&htlc_1).unwrap();
+            let mut remove_htlc_1 = || {
+                tracker.remove_outgoing_htlc(
+                    htlc_1.outgoing_channel_id,
+                    htlc_1.incoming_ref,
+                    ForwardResolution::Settled,
+                    htlc_1.added_at,
+                )
+            };
+
+            assert!(remove_htlc_1().is_ok());
+            assert!(matches!(
+                remove_htlc_1().err().unwrap(),
+                ReputationError::ErrForwardNotFound(_, _)
+            ));
+
+            assert_eq!(
+                tracker.outgoing_reputation(htlc_1.added_at).unwrap(),
+                htlc_1.fee_msat() as i64
+            );
+        }
+    }
 }
