@@ -3,7 +3,7 @@ use clap::Parser;
 use ln_resource_mgr::outgoing_reputation::{ForwardManagerParams, ReputationParams};
 use ln_simln_jamming::clock::InstantClock;
 use ln_simln_jamming::parsing::{history_from_file, Cli};
-use ln_simln_jamming::reputation_interceptor::ReputationInterceptor;
+use ln_simln_jamming::reputation_interceptor::{ReputationInterceptor, ReputationMonitor};
 use ln_simln_jamming::revenue_interceptor::RevenueInterceptor;
 use ln_simln_jamming::sink_interceptor::{SinkInterceptor, TargetChannelType};
 use ln_simln_jamming::BoxError;
@@ -241,8 +241,8 @@ fn get_reputation_margin_fee(cli: &Cli) -> u64 {
 }
 /// Gets reputation pairs for the target node and attacking node, logs them and optionally checking that each node
 /// meets the configured threshold of good reputation if require_reputation is set.
-async fn check_reputation_status<C>(
-    attack_interceptor: &SinkInterceptor<C>,
+async fn check_reputation_status<C, R>(
+    attack_interceptor: &SinkInterceptor<C, R>,
     cli: &Cli,
     params: ForwardManagerParams,
     instant: Instant,
@@ -250,6 +250,7 @@ async fn check_reputation_status<C>(
 ) -> Result<(), BoxError>
 where
     C: InstantClock + Clock,
+    R: Interceptor + ReputationMonitor,
 {
     let status = attack_interceptor.get_reputation_status(instant).await?;
 

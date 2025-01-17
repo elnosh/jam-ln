@@ -1,10 +1,13 @@
 use crate::clock::InstantClock;
-use crate::{endorsement_from_records, BoxError, ENDORSEMENT_TYPE};
+use crate::{endorsement_from_records, records_from_endorsement, BoxError};
 use async_trait::async_trait;
 use bitcoin::secp256k1::PublicKey;
-use simln_lib::sim_node::{
-    CustomRecords, ForwardingError, InterceptRequest, InterceptResolution, Interceptor,
+use ln_resource_mgr::outgoing_reputation::{ForwardManager, ForwardManagerParams};
+use ln_resource_mgr::{
+    AllocationCheck, EndorsementSignal, ForwardResolution, ForwardingOutcome, HtlcRef,
+    ProposedForward, ReputationError, ReputationManager,
 };
+use simln_lib::sim_node::{ForwardingError, InterceptRequest, InterceptResolution, Interceptor};
 use simln_lib::NetworkParser;
 use std::collections::hash_map::Entry;
 use std::collections::{HashMap, HashSet};
@@ -13,16 +16,10 @@ use std::ops::Sub;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use ln_resource_mgr::outgoing_reputation::{ForwardManager, ForwardManagerParams};
-use ln_resource_mgr::{
-    EndorsementSignal, ForwardResolution, ForwardingOutcome, HtlcRef, ProposedForward,
-    ReputationError, ReputationManager,
-};
-
 #[derive(Clone)]
-struct HtlcAdd {
-    forwarding_node: PublicKey,
-    htlc: ProposedForward,
+pub struct HtlcAdd {
+    pub forwarding_node: PublicKey,
+    pub htlc: ProposedForward,
 }
 
 struct HtlcResolve {
@@ -65,6 +62,21 @@ impl ReputationPair {
     pub fn outgoing_reputation(&self, risk: u64) -> bool {
         self.outgoing_reputation > self.incoming_revenue + risk as i64
     }
+}
+
+/// Functionality to monitor reputation values in a network.
+#[async_trait]
+pub trait ReputationMonitor {
+    async fn list_reputation_pairs(
+        &self,
+        node: PublicKey,
+        access_ins: Instant,
+    ) -> Result<Vec<ReputationPair>, BoxError>;
+
+    async fn check_htlc_outcome(
+        &self,
+        htlc_add: HtlcAdd,
+    ) -> Result<AllocationCheck, ReputationError>;
 }
 
 /// Implements a network-wide interceptor that implements resource management for every forwarding node in the
@@ -265,18 +277,7 @@ impl ReputationInterceptor {
 
         match fwd_decision {
             ForwardingOutcome::Forward(endorsement) => {
-                let mut outgoing_records = HashMap::new();
-
-                match endorsement {
-                    EndorsementSignal::Endorsed => {
-                        outgoing_records.insert(ENDORSEMENT_TYPE, vec![1]);
-                    }
-                    EndorsementSignal::Unendorsed => {
-                        outgoing_records.insert(ENDORSEMENT_TYPE, vec![0]);
-                    }
-                }
-
-                Ok(Ok(outgoing_records))
+                Ok(Ok(records_from_endorsement(endorsement)))
             }
             ForwardingOutcome::Fail(reason) => Ok(Err(ForwardingError::InterceptorError(
                 reason.to_string().into(),
@@ -314,10 +315,13 @@ impl ReputationInterceptor {
             }
         }
     }
+}
 
+#[async_trait]
+impl ReputationMonitor for ReputationInterceptor {
     /// Returns all reputation pairs for the node provided. For example, if a node has channels 1, 2 and 3 it will
     /// return the following reputation pairs: [1 -> 2], [1 -> 3], [2 -> 1], [2 -> 3], [3 -> 1], [3 -> 2].
-    pub async fn list_reputation_pairs(
+    async fn list_reputation_pairs(
         &self,
         node: PublicKey,
         access_ins: Instant,
@@ -349,6 +353,25 @@ impl ReputationInterceptor {
 
         Ok(pairs)
     }
+
+    /// Checks the forwarding decision for a htlc without adding it to internal state.
+    async fn check_htlc_outcome(
+        &self,
+        htlc_add: HtlcAdd,
+    ) -> Result<AllocationCheck, ReputationError> {
+        match self
+            .network_nodes
+            .lock()
+            .unwrap()
+            .entry(htlc_add.forwarding_node)
+        {
+            Entry::Occupied(e) => e.get().0.get_forwarding_outcome(&htlc_add.htlc),
+            Entry::Vacant(_) => Err(ReputationError::ErrUnrecoverable(format!(
+                "node not found: {}",
+                htlc_add.forwarding_node,
+            ))),
+        }
+    }
 }
 
 #[async_trait]
@@ -359,7 +382,13 @@ impl Interceptor for ReputationInterceptor {
         let outgoing_channel_id = match req.outgoing_channel_id {
             Some(c) => c.into(),
             None => {
-                if let Err(e) = req.response.send(Ok(Ok(CustomRecords::default()))).await {
+                if let Err(e) = req
+                    .response
+                    .send(Ok(Ok(records_from_endorsement(
+                        EndorsementSignal::Unendorsed,
+                    ))))
+                    .await
+                {
                     // TODO: select?
                     println!("Failed to send response: {:?}", e);
                 }
