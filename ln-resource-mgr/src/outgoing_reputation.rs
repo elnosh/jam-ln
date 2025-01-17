@@ -279,7 +279,7 @@ mod reputation_tracker {
             &self,
             fee_msat: u64,
             hold_time: Duration,
-            incoming_endorsed: bool,
+            incoming_endorsed: EndorsementSignal,
             settled: bool,
         ) -> Result<i64, ReputationError> {
             // If the htlc was successful, its fees contribute to our effective fee.
@@ -290,7 +290,7 @@ mod reputation_tracker {
             );
 
             // Unendorsed htlcs do not have a negative impact on reputation.
-            if !incoming_endorsed && effective_fees < 0 {
+            if incoming_endorsed == EndorsementSignal::Unendorsed && effective_fees < 0 {
                 return Ok(0);
             }
 
@@ -458,7 +458,7 @@ mod reputation_tracker {
             let effective_fees = self.params.effective_fees(
                 in_flight.fee_msat,
                 resolved_instant.sub(in_flight.added_instant),
-                in_flight.incoming_endorsed == EndorsementSignal::Endorsed,
+                in_flight.incoming_endorsed,
                 settled,
             )?;
 
