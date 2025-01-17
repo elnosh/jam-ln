@@ -359,7 +359,7 @@ mod reputation_tracker {
 
         /// Returns the total htlc risk of all the endorsed htlcs that are currently in flight. Unendorsed htlcs do not
         /// contribute to risk, so no option is given to count unendorsed risk.
-        fn total_in_flight_risk(&self) -> u64 {
+        fn total_incoming_risk_msat(&self) -> u64 {
             self.outgoing_in_flight
                 .iter()
                 .filter(|(_, v)| v.incoming_endorsed == EndorsementSignal::Endorsed)
@@ -392,7 +392,7 @@ mod reputation_tracker {
             forward: &ProposedForward,
         ) -> Result<ReputationCheck, ReputationError> {
             let outgoing_reputation = self.outgoing_reputation(access_instant)?;
-            let in_flight_total_risk = self.total_in_flight_risk();
+            let in_flight_total_risk = self.total_incoming_risk_msat();
             let htlc_risk = self
                 .params
                 // The underlying simulation is block height agnostic, and starts its routes with a height of zero, so
