@@ -302,7 +302,7 @@ mod reputation_tracker {
     pub(super) struct InFlightHtlc {
         pub fee_msat: u64,
         hold_blocks: u32,
-        amount_msat: u64,
+        outgoing_amt_msat: u64,
         added_instant: Instant,
         incoming_endorsed: EndorsementSignal,
     }
@@ -368,11 +368,11 @@ mod reputation_tracker {
         }
 
         /// Returns the total balance of htlcs in flight in msat, filtering by provided endorsement signal.
-        fn total_in_flight_msat(&self, endorsed: EndorsementSignal) -> u64 {
+        fn total_outgoing_in_flight_msat(&self, endorsed: EndorsementSignal) -> u64 {
             self.outgoing_in_flight
                 .iter()
                 .filter(|(_, v)| v.incoming_endorsed == endorsed)
-                .map(|(_, v)| v.amount_msat)
+                .map(|(_, v)| v.outgoing_amt_msat)
                 .sum()
         }
 
@@ -414,7 +414,7 @@ mod reputation_tracker {
                 general_slots_used: self.total_in_flight_count(EndorsementSignal::Unendorsed),
                 general_slots_availabe: self.general_slot_count,
                 general_liquidity_msat_used: self
-                    .total_in_flight_msat(EndorsementSignal::Unendorsed),
+                    .total_outgoing_in_flight_msat(EndorsementSignal::Unendorsed),
                 general_liquidity_msat_available: self.general_liquidity_msat,
             }
         }
@@ -429,7 +429,7 @@ mod reputation_tracker {
                 Entry::Vacant(v) => {
                     v.insert(InFlightHtlc {
                         hold_blocks: forward.expiry_in_height,
-                        amount_msat: forward.amount_out_msat,
+                        outgoing_amt_msat: forward.amount_out_msat,
                         fee_msat: forward.fee_msat(),
                         added_instant: forward.added_at,
                         incoming_endorsed: forward.incoming_endorsed,
