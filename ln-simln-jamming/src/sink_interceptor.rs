@@ -388,7 +388,9 @@ impl<C: InstantClock + Clock, R: Interceptor + ReputationMonitor> Interceptor
         // the recipient so we take no action.
         if let Some(outgoing_channel_id) = req.outgoing_channel_id {
             if let Some(target_chan) = self.target_channels.get(&outgoing_channel_id) {
-                if *target_chan == TargetChannelType::Peer {
+                if *target_chan == TargetChannelType::Peer
+                    && req.forwarding_node != self.target_pubkey
+                {
                     if let Err(e) = self.intercept_peer_outgoing(req.clone()).await {
                         log::error!("Could not intercept peer outgoing: {e}");
                         self.shutdown.trigger();
@@ -586,7 +588,7 @@ mod tests {
 
     /// Tests attacker interception of htlcs from the target.
     #[tokio::test]
-    async fn test_target_to_attacker() {
+    async fn test_attacker_from_target() {
         let interceptor = setup_interceptor_test();
 
         // Intercepted on attacker unendorsed: target -(0)-> attacker -(5)-> should just be forwarded unendorsed.
@@ -719,15 +721,34 @@ mod tests {
         ));
     }
 
-    /// Tests that the target node will upgrade any htlcs received to be endorsed, but otherwise take no action.
+    /// Tests that forwards through the target node to its peers will be upgraded to endorsed.
     #[tokio::test]
-    async fn test_target_endorses() {
+    async fn test_target_to_peer() {
         let mut interceptor = setup_interceptor_test();
 
         let (target_forward, _) = setup_test_request(
             interceptor.target_pubkey,
-            1,
-            0,
+            1, // Honest channel
+            2, // Honest channel
+            EndorsementSignal::Unendorsed,
+        );
+
+        let mut expected_req = target_forward.clone();
+        expected_req.incoming_custom_records =
+            records_from_endorsement(EndorsementSignal::Endorsed);
+        mock_intercept_htlc(&mut interceptor.reputation_interceptor, &expected_req);
+        interceptor.intercept_htlc(target_forward).await;
+    }
+
+    /// Tests that forwards through the target node to the attacker will be upgraded to endorsed.
+    #[tokio::test]
+    async fn test_target_to_attacker() {
+        let mut interceptor = setup_interceptor_test();
+
+        let (target_forward, _) = setup_test_request(
+            interceptor.target_pubkey,
+            1, // Honest channel
+            0, // Attacker
             EndorsementSignal::Unendorsed,
         );
 
