@@ -721,13 +721,13 @@ mod tests {
 
     /// Tests that the target node will upgrade any htlcs received to be endorsed, but otherwise take no action.
     #[tokio::test]
-    async fn test_target_endorses() {
+    async fn test_target_to_attacker() {
         let mut interceptor = setup_interceptor_test();
 
         let (target_forward, _) = setup_test_request(
             interceptor.target_pubkey,
-            1,
-            0,
+            1, // Honest channel
+            0, // Attacker
             EndorsementSignal::Unendorsed,
         );
 
