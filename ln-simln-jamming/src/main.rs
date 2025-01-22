@@ -14,7 +14,7 @@ use simln_lib::clock::Clock;
 use simln_lib::clock::SimulationClock;
 use simln_lib::interceptors::LatencyIntercepor;
 use simln_lib::sim_node::{Interceptor, SimulatedChannel};
-use simln_lib::{NetworkParser, Simulation, SimulationCfg};
+use simln_lib::{NetworkParser, ShortChannelID, Simulation, SimulationCfg};
 use simple_logger::SimpleLogger;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -56,21 +56,50 @@ async fn main() -> Result<(), BoxError> {
     let target_pubkey = find_pubkey_by_alias(target_alias, &sim_network)?;
     let attacker_pubkey = find_pubkey_by_alias("50", &sim_network)?;
 
-    let mut monitor_nodes = sim_network
-        .iter()
-        .filter_map(|c| {
-            if c.node_1.pubkey == target_pubkey && c.node_2.pubkey != attacker_pubkey {
-                return Some((c.node_2.pubkey, c.node_2.alias.clone()));
-            }
+    let target_channels =
+        get_target_channel_descriptions(&sim_network, attacker_pubkey, target_pubkey);
 
-            if c.node_2.pubkey == target_pubkey && c.node_1.pubkey != attacker_pubkey {
-                return Some((c.node_1.pubkey, c.node_1.alias.clone()));
+    // We want to monitor results for all non-attacking nodes and the target node.
+    let mut monitor_nodes = target_channels
+        .iter()
+        .filter_map(|(_, channel)| {
+            if channel.channel_type == TargetChannelType::Peer {
+                return Some((channel.peer_pubkey, channel.alias.clone()));
             }
 
             None
         })
         .collect::<Vec<(PublicKey, String)>>();
     monitor_nodes.push((target_pubkey, target_alias.to_string()));
+
+    // Create a map of all the target's channels, and a vec of its non-attacking peers.
+    let target_channel_map = target_channels
+        .values()
+        .map(|channel| (channel.scid, channel.channel_type.clone()))
+        .collect();
+
+    let honest_peers = target_channels
+        .iter()
+        .filter_map(|(_, channel)| {
+            if channel.channel_type == TargetChannelType::Peer {
+                Some(channel.peer_pubkey)
+            } else {
+                None
+            }
+        })
+        .collect();
+
+    let jammed_peers = target_channels
+        .iter()
+        .filter_map(|(scid, channel)| {
+            if channel.channel_type == TargetChannelType::Peer {
+                let scid = *scid;
+                Some((channel.peer_pubkey, scid.into()))
+            } else {
+                None
+            }
+        })
+        .collect();
 
     // Pull history that bootstraps the simulation in a network with the attacker's channels present and calculate
     // revenue for the target node during this bootstrap period.
@@ -129,11 +158,12 @@ async fn main() -> Result<(), BoxError> {
         clock.clone(),
         attacker_pubkey,
         target_pubkey,
-        &sim_network,
+        target_channel_map,
+        honest_peers,
         ReputationInterceptor::new_with_bootstrap(
             forward_params,
             &sim_network,
-            HashMap::new(),
+            jammed_peers,
             &history,
             clock.clone(),
             Some(results_writer),
@@ -255,6 +285,55 @@ async fn main() -> Result<(), BoxError> {
     graph.lock().await.wait_for_shutdown().await;
 
     Ok(())
+}
+
+struct TargetChannel {
+    /// The public key of the target's counterparty.
+    peer_pubkey: PublicKey,
+    scid: ShortChannelID,
+    alias: String,
+    channel_type: TargetChannelType,
+}
+
+fn get_target_channel_descriptions(
+    edges: &[NetworkParser],
+    attacker_pubkey: PublicKey,
+    target_pubkey: PublicKey,
+) -> HashMap<ShortChannelID, TargetChannel> {
+    let mut target_channels = HashMap::new();
+
+    for channel in edges.iter() {
+        let node_1_target = channel.node_1.pubkey == target_pubkey;
+        let node_2_target = channel.node_2.pubkey == target_pubkey;
+
+        if !(node_1_target || node_2_target) {
+            continue;
+        }
+
+        let chan_policy = if node_1_target {
+            &channel.node_2
+        } else {
+            &channel.node_1
+        };
+
+        let channel_type = if chan_policy.pubkey == attacker_pubkey {
+            TargetChannelType::Attacker
+        } else {
+            TargetChannelType::Peer
+        };
+
+        target_channels.insert(
+            channel.scid,
+            TargetChannel {
+                peer_pubkey: chan_policy.pubkey,
+                scid: channel.scid,
+                alias: chan_policy.alias.clone(),
+                channel_type,
+            },
+        );
+    }
+
+    target_channels
 }
 
 fn find_pubkey_by_alias(alias: &str, sim_network: &[NetworkParser]) -> Result<PublicKey, BoxError> {

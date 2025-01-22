@@ -8,7 +8,7 @@ use ln_resource_mgr::outgoing_reputation::ForwardManagerParams;
 use ln_resource_mgr::{EndorsementSignal, ForwardingOutcome, HtlcRef, ProposedForward};
 use simln_lib::clock::Clock;
 use simln_lib::sim_node::{ForwardingError, InterceptRequest, InterceptResolution, Interceptor};
-use simln_lib::{NetworkParser, ShortChannelID};
+use simln_lib::ShortChannelID;
 use std::collections::{HashMap, HashSet};
 use std::error::Error;
 use std::sync::Arc;
@@ -132,46 +132,17 @@ impl<C: InstantClock + Clock, R: Interceptor + ReputationMonitor> SinkIntercepto
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn new_for_network(
         clock: Arc<C>,
         attacker_pubkey: PublicKey,
         target_pubkey: PublicKey,
-        edges: &[NetworkParser],
+        target_channels: HashMap<ShortChannelID, TargetChannelType>,
+        honest_peers: Vec<PublicKey>,
         reputation_interceptor: R,
         listener: Listener,
         shutdown: Trigger,
     ) -> Self {
-        let mut target_channels = HashMap::new();
-        let mut honest_peers = Vec::new();
-
-        for channel in edges.iter() {
-            let node_1_target = channel.node_1.pubkey == target_pubkey;
-            let node_2_target = channel.node_2.pubkey == target_pubkey;
-
-            if !(node_1_target || node_2_target) {
-                continue;
-            }
-
-            let channel_type = if node_1_target && channel.node_2.pubkey == attacker_pubkey {
-                TargetChannelType::Attacker
-            } else if node_1_target {
-                TargetChannelType::Peer
-            } else if node_2_target && channel.node_1.pubkey == attacker_pubkey {
-                TargetChannelType::Attacker
-            } else {
-                TargetChannelType::Peer
-            };
-
-            if channel_type == TargetChannelType::Peer {
-                honest_peers.push(if node_1_target {
-                    channel.node_2.pubkey
-                } else {
-                    channel.node_1.pubkey
-                });
-            }
-            target_channels.insert(channel.scid, channel_type);
-        }
-
         Self::new(
             clock,
             attacker_pubkey,
