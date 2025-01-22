@@ -307,7 +307,7 @@ impl<C: InstantClock + Clock, R: Interceptor + ReputationMonitor> SinkIntercepto
                 };
 
                 // Query forwarding outcome as if the htlc was endorsed to see whether we'd make the cut.
-                let resp = match allocation_check
+                match allocation_check
                     .forwarding_outcome(req.outgoing_amount_msat, EndorsementSignal::Endorsed)
                 {
                     ForwardingOutcome::Forward(_) => {
@@ -317,21 +317,15 @@ impl<C: InstantClock + Clock, R: Interceptor + ReputationMonitor> SinkIntercepto
                         // incoming htlc was endorsed.
                         req.incoming_custom_records =
                             records_from_endorsement(EndorsementSignal::Endorsed);
-                        self.reputation_interceptor.intercept_htlc(req).await;
-                        return Ok(());
                     }
                     ForwardingOutcome::Fail(_) => {
                         log::info!(
                             "HTLC from peer -> target has insufficient reputation, general jamming"
                         );
-
-                        Ok(Err(ForwardingError::InterceptorError(
-                            "general jamming unendorsed".to_string().into(),
-                        )))
                     }
                 };
 
-                send_intercept_result!(req, resp, self.shutdown)
+                self.reputation_interceptor.intercept_htlc(req).await;
             }
         };
 
@@ -666,7 +660,7 @@ mod tests {
     async fn test_peer_to_target_general_jammed() {
         let mut interceptor = setup_interceptor_test();
 
-        let (peer_to_target, mut receiver) = setup_test_request(
+        let (peer_to_target, _) = setup_test_request(
             interceptor.honest_peers[0],
             5,
             1,
@@ -685,11 +679,8 @@ mod tests {
             }))
             .return_once(|_| Ok(test_allocation_check(false)));
 
+        mock_intercept_htlc(&mut interceptor.reputation_interceptor, &peer_to_target);
         interceptor.intercept_htlc(peer_to_target).await;
-        assert!(matches!(
-            receiver.recv().await.unwrap().unwrap().err().unwrap(),
-            ForwardingError::InterceptorError(_)
-        ));
     }
 
     /// Tests that forwards through the target node to its peers will be upgraded to endorsed.
