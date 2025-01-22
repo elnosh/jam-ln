@@ -80,11 +80,24 @@ pub trait ReputationMonitor {
     ) -> Result<AllocationCheck, ReputationError>;
 }
 
+struct Node {
+    forward_manager: ForwardManager,
+    alias: String,
+}
+
+impl Node {
+    fn new(forward_manager: ForwardManager, alias: String) -> Self {
+        Node {
+            forward_manager,
+            alias,
+        }
+    }
+}
 /// Implements a network-wide interceptor that implements resource management for every forwarding node in the
 /// network.
 #[derive(Clone)]
 pub struct ReputationInterceptor {
-    network_nodes: Arc<Mutex<HashMap<PublicKey, (ForwardManager, String)>>>,
+    network_nodes: Arc<Mutex<HashMap<PublicKey, Node>>>,
     clock: Arc<dyn InstantClock + Send + Sync>,
     shutdown: Trigger,
 }
@@ -96,7 +109,7 @@ impl ReputationInterceptor {
         clock: Arc<dyn InstantClock + Send + Sync>,
         shutdown: Trigger,
     ) -> Result<Self, BoxError> {
-        let mut network_nodes: HashMap<PublicKey, (ForwardManager, String)> = HashMap::new();
+        let mut network_nodes: HashMap<PublicKey, Node> = HashMap::new();
 
         macro_rules! add_node_to_network {
             ($network_nodes:expr, $node_pubkey:expr, $node_alias:expr, $channel:expr) => {
@@ -107,12 +120,12 @@ impl ReputationInterceptor {
                         let _ = forward_manager
                             .add_channel($channel.scid.into(), $channel.capacity_msat)?;
 
-                        e.insert((forward_manager, $node_alias));
+                        e.insert(Node::new(forward_manager, $node_alias));
                     }
                     Entry::Occupied(mut e) => {
                         let _ = e
                             .get_mut()
-                            .0
+                            .forward_manager
                             .add_channel($channel.scid.into(), $channel.capacity_msat)?;
                     }
                 }
@@ -256,8 +269,11 @@ impl ReputationInterceptor {
             .entry(htlc_add.forwarding_node)
         {
             Entry::Occupied(mut e) => {
-                let (node, alias) = e.get_mut();
-                (node.add_outgoing_hltc(&htlc_add.htlc)?, alias.to_string())
+                let node = e.get_mut();
+                (
+                    node.forward_manager.add_outgoing_hltc(&htlc_add.htlc)?,
+                    node.alias.to_string(),
+                )
             }
             Entry::Vacant(_) => {
                 return Err(ReputationError::ErrUnrecoverable(format!(
@@ -309,7 +325,7 @@ impl ReputationInterceptor {
             .map_err(|e| ReputationError::ErrUnrecoverable(e.to_string()))?
             .entry(resolved_htlc.forwarding_node)
         {
-            Entry::Occupied(mut e) => Ok(e.get_mut().0.resolve_htlc(
+            Entry::Occupied(mut e) => Ok(e.get_mut().forward_manager.resolve_htlc(
                 resolved_htlc.outgoing_channel_id,
                 resolved_htlc.incoming_htlc,
                 resolved_htlc.forward_resolution,
@@ -337,7 +353,7 @@ impl ReputationMonitor for ReputationInterceptor {
             .map_err(|e| ReputationError::ErrUnrecoverable(e.to_string()))?
             .get(&node)
             .ok_or(format!("node: {node} not found"))?
-            .0
+            .forward_manager
             .list_reputation(access_ins)?;
 
         let mut pairs = Vec::with_capacity(reputations.len() * (reputations.len() - 1));
@@ -370,7 +386,10 @@ impl ReputationMonitor for ReputationInterceptor {
             .unwrap()
             .entry(htlc_add.forwarding_node)
         {
-            Entry::Occupied(e) => e.get().0.get_forwarding_outcome(&htlc_add.htlc),
+            Entry::Occupied(e) => e
+                .get()
+                .forward_manager
+                .get_forwarding_outcome(&htlc_add.htlc),
             Entry::Vacant(_) => Err(ReputationError::ErrUnrecoverable(format!(
                 "node not found: {}",
                 htlc_add.forwarding_node,
