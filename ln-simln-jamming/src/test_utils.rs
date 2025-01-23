@@ -1,14 +1,13 @@
 use std::error::Error;
 use std::time::Instant;
 
+use bitcoin::secp256k1::{PublicKey, Secp256k1, SecretKey};
 use lightning::ln::PaymentHash;
 use ln_resource_mgr::{
     AllocationCheck, EndorsementSignal, ForwardingOutcome, ProposedForward, ReputationCheck,
     ResourceCheck,
 };
 use rand::{distributions::Uniform, Rng};
-
-use bitcoin::secp256k1::{PublicKey, Secp256k1, SecretKey};
 use simln_lib::sim_node::{CustomRecords, ForwardingError, InterceptRequest};
 use simln_lib::ShortChannelID;
 

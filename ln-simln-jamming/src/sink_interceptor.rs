@@ -411,11 +411,10 @@ mod tests {
     use std::sync::Arc;
 
     use crate::reputation_interceptor::{HtlcAdd, ReputationMonitor, ReputationPair};
-    use crate::test_utils::get_random_keypair;
+    use crate::test_utils::{get_random_keypair, setup_test_request};
     use crate::{endorsement_from_records, records_from_endorsement, test_utils, BoxError};
     use async_trait::async_trait;
     use bitcoin::secp256k1::PublicKey;
-    use lightning::ln::PaymentHash;
     use ln_resource_mgr::{
         AllocationCheck, EndorsementSignal, ForwardingOutcome, ReputationCheck, ReputationError,
         ResourceCheck,
@@ -423,9 +422,7 @@ mod tests {
     use mockall::mock;
     use mockall::predicate::function;
     use simln_lib::clock::SimulationClock;
-    use simln_lib::sim_node::{
-        CustomRecords, ForwardingError, HtlcRef, InterceptRequest, InterceptResolution, Interceptor,
-    };
+    use simln_lib::sim_node::{InterceptRequest, InterceptResolution, Interceptor};
     use simln_lib::ShortChannelID;
 
     use super::{SinkInterceptor, TargetChannelType};
@@ -476,39 +473,6 @@ mod tests {
         );
 
         interceptor
-    }
-
-    fn setup_test_request(
-        forwarding_node: PublicKey,
-        channel_in: u64,
-        channel_out: u64,
-        incoming_endorsed: EndorsementSignal,
-    ) -> (
-        InterceptRequest,
-        tokio::sync::mpsc::Receiver<
-            Result<Result<CustomRecords, ForwardingError>, Box<dyn Error + Send + Sync + 'static>>,
-        >,
-    ) {
-        let (response, receiver) = tokio::sync::mpsc::channel(1);
-
-        (
-            InterceptRequest {
-                forwarding_node,
-                payment_hash: PaymentHash([1; 32]),
-                incoming_htlc: HtlcRef {
-                    channel_id: channel_in.into(),
-                    index: 0,
-                },
-                incoming_custom_records: records_from_endorsement(incoming_endorsed),
-                outgoing_channel_id: Some(ShortChannelID::from(channel_out)),
-                incoming_amount_msat: 100,
-                outgoing_amount_msat: 50,
-                incoming_expiry_height: 600_010,
-                outgoing_expiry_height: 600_000,
-                response,
-            },
-            receiver,
-        )
     }
 
     /// Primes the mock to expect intercept_htlc called with the request provided.
