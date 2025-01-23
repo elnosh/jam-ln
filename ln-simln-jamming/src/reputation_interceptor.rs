@@ -554,7 +554,8 @@ mod tests {
     };
     use mockall::mock;
     use simln_lib::clock::SimulationClock;
-    use simln_lib::sim_node::Interceptor;
+    use simln_lib::sim_node::{InterceptResolution, Interceptor};
+    use simln_lib::ShortChannelID;
     use std::collections::HashMap;
     use std::sync::{Arc, Mutex};
     use std::time::Instant;
@@ -737,5 +738,61 @@ mod tests {
             endorsement_from_records(&receiver.recv().await.unwrap().unwrap().unwrap()),
             EndorsementSignal::Unendorsed
         ));
+    }
+
+    /// Tests that we do not notify resolution of last hop htlcs.
+    #[tokio::test]
+    async fn test_final_hop_notify() {
+        let (interceptor, pubkeys) = setup_test_interceptor();
+        let (mut request, _) = setup_test_request(pubkeys[0], 0, 1, EndorsementSignal::Unendorsed);
+
+        request.outgoing_channel_id = None;
+        interceptor
+            .notify_resolution(InterceptResolution {
+                forwarding_node: pubkeys[0],
+                incoming_htlc: simln_lib::sim_node::HtlcRef {
+                    channel_id: ShortChannelID::from(0),
+                    index: 0,
+                },
+                outgoing_channel_id: None,
+                success: true,
+            })
+            .await
+            .unwrap();
+    }
+
+    /// Tests that we error on notification of a resolution on an unknown node.
+    #[tokio::test]
+    async fn test_unknown_node_notify() {
+        let (interceptor, _) = setup_test_interceptor();
+
+        assert!(interceptor
+            .notify_resolution(InterceptResolution {
+                forwarding_node: get_random_keypair().1,
+                incoming_htlc: simln_lib::sim_node::HtlcRef {
+                    channel_id: ShortChannelID::from(0),
+                    index: 0,
+                },
+                outgoing_channel_id: Some(ShortChannelID::from(1)),
+                success: true,
+            })
+            .await
+            .is_err());
+    }
+
+    /// Tests successful removal of a htlc from the reputation interceptor.
+    #[tokio::test]
+    async fn test_successful_notify() {
+        let (interceptor, pubkeys) = setup_test_interceptor();
+
+        interceptor
+            .network_nodes
+            .lock()
+            .unwrap()
+            .get_mut(&pubkeys[0])
+            .unwrap()
+            .forward_manager
+            .expect_resolve_htlc()
+            .return_once(|_, _, _, _| Ok(()));
     }
 }
