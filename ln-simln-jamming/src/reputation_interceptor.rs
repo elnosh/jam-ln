@@ -557,7 +557,7 @@ mod tests {
     };
     use mockall::mock;
     use simln_lib::clock::SimulationClock;
-    use simln_lib::sim_node::{ChannelPolicy, InterceptResolution, Interceptor};
+    use simln_lib::sim_node::{ChannelPolicy, ForwardingError, InterceptResolution, Interceptor};
     use simln_lib::{NetworkParser, ShortChannelID};
     use std::collections::HashMap;
     use std::sync::{Arc, Mutex};
@@ -566,6 +566,7 @@ mod tests {
 
     use crate::analysis::BatchForwardWriter;
     use crate::endorsement_from_records;
+    use crate::reputation_interceptor::BootstrapForward;
     use crate::test_utils::{get_random_keypair, setup_test_request, test_allocation_check};
 
     use super::{Node, ReputationInterceptor, ReputationMonitor};
@@ -908,5 +909,92 @@ mod tests {
                 .len(),
             0
         );
+    }
+
+    /// Tests that nodes marked to be general jammed appropriately have their general resources slashed, but are still
+    /// able to bootstrap reputation.
+    #[tokio::test]
+    async fn test_bootstrap_and_general_jam() {
+        let (shutdown, _) = triggered::trigger();
+        let (params, edges) = setup_three_hop_network_edges();
+
+        let bob_pk = edges[0].node_2.pubkey;
+        let alice_to_bob: u64 = edges[0].scid.into();
+        let bob_to_carol: u64 = edges[1].scid.into();
+
+        // Create a bootstraped forward that'll be forwarded over the general jammed channel.
+        let boostrap = vec![BootstrapForward {
+            incoming_amt: 1000,
+            outgoing_amt: 500,
+            incoming_expiry: 100,
+            outgoing_expiry: 50,
+            added_ns: 900_000,
+            settled_ns: 1_000_000,
+            forwarding_node: bob_pk,
+            channel_in_id: alice_to_bob,
+            channel_out_id: bob_to_carol,
+        }];
+
+        // Create an interceptor that is intended to general jam payments on Bob -> Carol in the three hop network
+        // Alice -> Bob -> Carol.
+        let interceptor: ReputationInterceptor<BatchForwardWriter, ForwardManager> =
+            ReputationInterceptor::new_with_bootstrap(
+                params,
+                &edges,
+                HashMap::from([(edges[1].node_1.pubkey, bob_to_carol)]),
+                &boostrap,
+                Arc::new(SimulationClock::new(1).unwrap()),
+                None,
+                shutdown,
+            )
+            .await
+            .unwrap();
+
+        let bob_reputation = interceptor
+            .network_nodes
+            .lock()
+            .unwrap()
+            .get(&bob_pk)
+            .unwrap()
+            .forward_manager
+            .list_reputation(Instant::now())
+            .unwrap();
+
+        assert!(bob_reputation.get(&alice_to_bob).unwrap().incoming_revenue != 0);
+        assert!(
+            bob_reputation
+                .get(&bob_to_carol)
+                .unwrap()
+                .outgoing_reputation
+                != 0
+        );
+
+        // An unendorsed payment in the non-jammed direction should be forwarded through unendorsed.
+        let (request, mut receiver) = setup_test_request(
+            edges[1].node_1.pubkey,
+            bob_to_carol,
+            alice_to_bob,
+            EndorsementSignal::Unendorsed,
+        );
+
+        interceptor.intercept_htlc(request).await;
+        assert!(matches!(
+            endorsement_from_records(&receiver.recv().await.unwrap().unwrap().unwrap()),
+            EndorsementSignal::Unendorsed,
+        ));
+
+        // An unendorsed htlc using the jammed channel should be failed because there are no resources.
+        let (request, mut receiver) = setup_test_request(
+            edges[1].node_1.pubkey,
+            alice_to_bob,
+            bob_to_carol,
+            EndorsementSignal::Unendorsed,
+        );
+
+        interceptor.intercept_htlc(request).await;
+        assert!(matches!(
+            receiver.recv().await.unwrap().unwrap().err().unwrap(),
+            ForwardingError::InterceptorError(_),
+        ));
     }
 }
