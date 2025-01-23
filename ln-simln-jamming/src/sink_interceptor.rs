@@ -411,14 +411,11 @@ mod tests {
     use std::sync::Arc;
 
     use crate::reputation_interceptor::{HtlcAdd, ReputationMonitor, ReputationPair};
-    use crate::test_utils::{get_random_keypair, setup_test_request};
+    use crate::test_utils::{get_random_keypair, setup_test_request, test_allocation_check};
     use crate::{endorsement_from_records, records_from_endorsement, test_utils, BoxError};
     use async_trait::async_trait;
     use bitcoin::secp256k1::PublicKey;
-    use ln_resource_mgr::{
-        AllocationCheck, EndorsementSignal, ForwardingOutcome, ReputationCheck, ReputationError,
-        ResourceCheck,
-    };
+    use ln_resource_mgr::{AllocationCheck, EndorsementSignal, ReputationError};
     use mockall::mock;
     use mockall::predicate::function;
     use simln_lib::clock::SimulationClock;
@@ -487,32 +484,6 @@ mod tests {
                     && args.outgoing_channel_id.unwrap() == expected_outgoing
             }))
             .return_once(|_| {});
-    }
-
-    fn test_allocation_check(forward_succeeds: bool) -> AllocationCheck {
-        let check = AllocationCheck {
-            reputation_check: ReputationCheck {
-                outgoing_reputation: 100_000,
-                incoming_revenue: if forward_succeeds { 0 } else { 200_000 },
-                in_flight_total_risk: 0,
-                htlc_risk: 0,
-            },
-            resource_check: ResourceCheck {
-                general_slots_used: 0,
-                general_slots_availabe: 10,
-                general_liquidity_msat_used: 0,
-                general_liquidity_msat_available: 100_000,
-            },
-        };
-
-        assert!(
-            matches!(
-                check.forwarding_outcome(0, EndorsementSignal::Endorsed),
-                ForwardingOutcome::Forward(_)
-            ) == forward_succeeds
-        );
-
-        check
     }
 
     /// Tests attacker interception of htlcs from the target.
