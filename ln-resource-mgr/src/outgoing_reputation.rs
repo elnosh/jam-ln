@@ -40,6 +40,11 @@ struct TrackedChannel {
     incoming_revenue: DecayingAverage,
 }
 
+/// Defines special actions that can be taken during a simulation that wouldn't otherwise be used in regular operation.
+pub trait SimualtionDebugManager {
+    fn general_jam_channel(&self, channel: u64) -> Result<(), ReputationError>;
+}
+
 /// Implements outgoing reputation algorithm and resource bucketing for an individual node.
 #[derive(Debug)]
 pub struct ForwardManager {
@@ -80,6 +85,20 @@ impl ForwardManager {
         }
 
         Ok(reputations)
+    }
+}
+
+impl SimualtionDebugManager for ForwardManager {
+    fn general_jam_channel(&self, channel: u64) -> Result<(), ReputationError> {
+        self.channels
+            .lock()
+            .map_err(|e| ReputationError::ErrUnrecoverable(e.to_string()))?
+            .get_mut(&channel)
+            .ok_or(ReputationError::ErrChannelNotFound(channel))?
+            .outgoing_reputation
+            .general_jam_channel();
+
+        Ok(())
     }
 }
 
@@ -468,6 +487,11 @@ mod reputation_tracker {
                 .add_value(effective_fees, resolved_instant)?;
 
             Ok(in_flight)
+        }
+
+        pub(super) fn general_jam_channel(&mut self) {
+            self.general_slot_count = 0;
+            self.general_liquidity_msat = 0;
         }
     }
 

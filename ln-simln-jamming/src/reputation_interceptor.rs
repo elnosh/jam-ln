@@ -3,7 +3,9 @@ use crate::clock::InstantClock;
 use crate::{endorsement_from_records, records_from_endorsement, BoxError};
 use async_trait::async_trait;
 use bitcoin::secp256k1::PublicKey;
-use ln_resource_mgr::outgoing_reputation::{ForwardManager, ForwardManagerParams};
+use ln_resource_mgr::outgoing_reputation::{
+    ForwardManager, ForwardManagerParams, SimualtionDebugManager,
+};
 use ln_resource_mgr::{
     AllocationCheck, EndorsementSignal, ForwardResolution, ForwardingOutcome, HtlcRef,
     ProposedForward, ReputationError, ReputationManager,
@@ -169,6 +171,7 @@ where
     pub async fn new_with_bootstrap(
         params: ForwardManagerParams,
         edges: &[NetworkParser],
+        general_jammed: HashMap<PublicKey, u64>,
         history: &[BootstrapForward],
         clock: Arc<dyn InstantClock + Send + Sync>,
         results: Option<Arc<Mutex<R>>>,
@@ -177,6 +180,19 @@ where
         let mut interceptor = Self::new_for_network(params, edges, clock, results, shutdown)
             .map_err(|_| "could not create network")?;
         interceptor.bootstrap_network_history(history).await?;
+
+        // After the network has been bootstrapped, we can go ahead and general jam required channels.
+        for (pubkey, channel) in general_jammed.iter() {
+            interceptor
+                .network_nodes
+                .lock()
+                .map_err(|e| format!("mutex err: {e}"))?
+                .get_mut(pubkey)
+                .ok_or(format!("jammed node: {} not found", pubkey))?
+                .forward_manager
+                .general_jam_channel(*channel)?;
+        }
+
         Ok(interceptor)
     }
 

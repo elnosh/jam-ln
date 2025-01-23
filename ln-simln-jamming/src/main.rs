@@ -16,6 +16,7 @@ use simln_lib::interceptors::LatencyIntercepor;
 use simln_lib::sim_node::{Interceptor, SimulatedChannel};
 use simln_lib::{NetworkParser, Simulation, SimulationCfg};
 use simple_logger::SimpleLogger;
+use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use std::{fs, usize};
@@ -132,6 +133,7 @@ async fn main() -> Result<(), BoxError> {
         ReputationInterceptor::new_with_bootstrap(
             forward_params,
             &sim_network,
+            HashMap::new(),
             &history,
             clock.clone(),
             Some(results_writer),
