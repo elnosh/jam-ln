@@ -83,33 +83,41 @@ pub trait ReputationMonitor {
     ) -> Result<AllocationCheck, ReputationError>;
 }
 
-struct Node {
-    forward_manager: ForwardManager,
+struct Node<M>
+where
+    M: ReputationManager,
+{
+    forward_manager: M,
     alias: String,
 }
 
-impl Node {
-    fn new(forward_manager: ForwardManager, alias: String) -> Self {
+impl<M> Node<M>
+where
+    M: ReputationManager,
+{
+    fn new(forward_manager: M, alias: String) -> Self {
         Node {
             forward_manager,
             alias,
         }
     }
 }
+
 /// Implements a network-wide interceptor that implements resource management for every forwarding node in the
 /// network.
 #[derive(Clone)]
-pub struct ReputationInterceptor<R>
+pub struct ReputationInterceptor<R, M>
 where
     R: ForwardReporter,
+    M: ReputationManager,
 {
-    network_nodes: Arc<Mutex<HashMap<PublicKey, Node>>>,
+    network_nodes: Arc<Mutex<HashMap<PublicKey, Node<M>>>>,
     clock: Arc<dyn InstantClock + Send + Sync>,
     results: Option<Arc<Mutex<R>>>,
     shutdown: Trigger,
 }
 
-impl<R> ReputationInterceptor<R>
+impl<R> ReputationInterceptor<R, ForwardManager>
 where
     R: ForwardReporter,
 {
@@ -120,7 +128,7 @@ where
         results: Option<Arc<Mutex<R>>>,
         shutdown: Trigger,
     ) -> Result<Self, BoxError> {
-        let mut network_nodes: HashMap<PublicKey, Node> = HashMap::new();
+        let mut network_nodes: HashMap<PublicKey, Node<ForwardManager>> = HashMap::new();
 
         macro_rules! add_node_to_network {
             ($network_nodes:expr, $node_pubkey:expr, $node_alias:expr, $channel:expr) => {
@@ -281,7 +289,13 @@ where
 
         Ok(())
     }
+}
 
+impl<R, M> ReputationInterceptor<R, M>
+where
+    R: ForwardReporter,
+    M: ReputationManager,
+{
     /// Adds a htlc forward to the jamming interceptor, performing forwarding checks and returning the decided
     /// forwarding outcome for the htlc. Callers should fail if the outer result is an error, because an unexpected
     /// error has occurred.
@@ -381,9 +395,10 @@ where
 }
 
 #[async_trait]
-impl<R> ReputationMonitor for ReputationInterceptor<R>
+impl<R, M> ReputationMonitor for ReputationInterceptor<R, M>
 where
     R: ForwardReporter,
+    M: ReputationManager + Send,
 {
     /// Returns all reputation pairs for the node provided. For example, if a node has channels 1, 2 and 3 it will
     /// return the following reputation pairs: [1 -> 2], [1 -> 3], [2 -> 1], [2 -> 3], [3 -> 1], [3 -> 2].
@@ -444,9 +459,10 @@ where
 }
 
 #[async_trait]
-impl<R> Interceptor for ReputationInterceptor<R>
+impl<R, M> Interceptor for ReputationInterceptor<R, M>
 where
     R: ForwardReporter,
+    M: ReputationManager + Send + Sync,
 {
     /// Implemented by HTLC interceptors that provide input on the resolution of HTLCs forwarded in the simulation.
     async fn intercept_htlc(&self, req: InterceptRequest) {
