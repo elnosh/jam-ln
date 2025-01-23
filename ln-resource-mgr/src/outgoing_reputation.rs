@@ -3,7 +3,7 @@ pub use reputation_tracker::ReputationParams;
 use crate::decaying_average::DecayingAverage;
 use crate::{
     AllocationCheck, ForwardResolution, ForwardingOutcome, HtlcRef, ProposedForward,
-    ReputationError, ReputationManager,
+    ReputationError, ReputationManager, ReputationSnapshot,
 };
 use reputation_tracker::ReputationTracker;
 use std::collections::hash_map::Entry;
@@ -24,13 +24,6 @@ impl ForwardManagerParams {
         self.reputation_params
             .opportunity_cost(fee_msat, Duration::from_secs(expiry as u64 * 10 * 60))
     }
-}
-
-/// Provides a reputation check snapshot for an incoming/outgoing channel pair.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct ReputationSnapshot {
-    pub outgoing_reputation: i64,
-    pub incoming_revenue: i64,
 }
 
 /// Tracks reputation and revenue for a channel.
@@ -58,33 +51,6 @@ impl ForwardManager {
             params,
             channels: Mutex::new(HashMap::new()),
         }
-    }
-
-    /// Lists the reputation scores of each channel at the access instant provided. This function will mutate the
-    /// underlying decaying averages to be tracked at the instant provided.
-    pub fn list_reputation(
-        &self,
-        access_ins: Instant,
-    ) -> Result<HashMap<u64, ReputationSnapshot>, ReputationError> {
-        let mut chan_lock = self
-            .channels
-            .lock()
-            .map_err(|e| ReputationError::ErrUnrecoverable(e.to_string()))?;
-
-        let mut reputations = HashMap::with_capacity(chan_lock.len());
-        for (scid, channel) in chan_lock.iter_mut() {
-            reputations.insert(
-                *scid,
-                ReputationSnapshot {
-                    outgoing_reputation: channel
-                        .outgoing_reputation
-                        .outgoing_reputation(access_ins)?,
-                    incoming_revenue: channel.incoming_revenue.value_at_instant(access_ins)?,
-                },
-            );
-        }
-
-        Ok(reputations)
     }
 }
 
@@ -248,6 +214,33 @@ impl ReputationManager for ForwardManager {
             .add_value(fee_i64, resolved_instant)?;
 
         Ok(())
+    }
+
+    /// Lists the reputation scores of each channel at the access instant provided. This function will mutate the
+    /// underlying decaying averages to be tracked at the instant provided.
+    fn list_reputation(
+        &self,
+        access_ins: Instant,
+    ) -> Result<HashMap<u64, ReputationSnapshot>, ReputationError> {
+        let mut chan_lock = self
+            .channels
+            .lock()
+            .map_err(|e| ReputationError::ErrUnrecoverable(e.to_string()))?;
+
+        let mut reputations = HashMap::with_capacity(chan_lock.len());
+        for (scid, channel) in chan_lock.iter_mut() {
+            reputations.insert(
+                *scid,
+                ReputationSnapshot {
+                    outgoing_reputation: channel
+                        .outgoing_reputation
+                        .outgoing_reputation(access_ins)?,
+                    incoming_revenue: channel.incoming_revenue.value_at_instant(access_ins)?,
+                },
+            );
+        }
+
+        Ok(reputations)
     }
 }
 
