@@ -548,23 +548,27 @@ where
 mod tests {
     use async_trait::async_trait;
     use bitcoin::secp256k1::PublicKey;
+    use ln_resource_mgr::outgoing_reputation::{
+        ForwardManager, ForwardManagerParams, ReputationParams,
+    };
     use ln_resource_mgr::{
         AllocationCheck, EndorsementSignal, ForwardResolution, HtlcRef, ProposedForward,
         ReputationError, ReputationManager, ReputationSnapshot,
     };
     use mockall::mock;
     use simln_lib::clock::SimulationClock;
-    use simln_lib::sim_node::{InterceptResolution, Interceptor};
-    use simln_lib::ShortChannelID;
+    use simln_lib::sim_node::{ChannelPolicy, InterceptResolution, Interceptor};
+    use simln_lib::{NetworkParser, ShortChannelID};
     use std::collections::HashMap;
     use std::sync::{Arc, Mutex};
+    use std::time::Duration;
     use std::time::Instant;
 
     use crate::analysis::BatchForwardWriter;
     use crate::endorsement_from_records;
     use crate::test_utils::{get_random_keypair, setup_test_request, test_allocation_check};
 
-    use super::{Node, ReputationInterceptor};
+    use super::{Node, ReputationInterceptor, ReputationMonitor};
 
     mock! {
         ForwardManager{}
@@ -794,5 +798,115 @@ mod tests {
             .forward_manager
             .expect_resolve_htlc()
             .return_once(|_, _, _, _| Ok(()));
+    }
+
+    fn setup_test_policy(node: PublicKey) -> ChannelPolicy {
+        ChannelPolicy {
+            pubkey: node,
+            alias: "".to_string(),
+            max_htlc_count: 483,
+            max_in_flight_msat: 100_000,
+            min_htlc_size_msat: 1,
+            max_htlc_size_msat: 100_000,
+            cltv_expiry_delta: 40,
+            base_fee: 1000,
+            fee_rate_prop: 2000,
+        }
+    }
+
+    fn setup_test_edge(
+        scid: ShortChannelID,
+        node_1: PublicKey,
+        node_2: PublicKey,
+    ) -> NetworkParser {
+        NetworkParser {
+            scid: scid,
+            capacity_msat: 100_000,
+            node_1: setup_test_policy(node_1),
+            node_2: setup_test_policy(node_2),
+            forward_only: false,
+        }
+    }
+
+    /// Creates a reputation interceptor for a three hop network: Alice - Bob - Carol.
+    fn setup_three_hop_network_edges() -> (ForwardManagerParams, Vec<NetworkParser>) {
+        // Create a network with three channels
+        let alice = get_random_keypair().1;
+        let bob = get_random_keypair().1;
+        let carol = get_random_keypair().1;
+
+        let alice_bob = ShortChannelID::from(1);
+        let bob_carol = ShortChannelID::from(2);
+
+        let params = ForwardManagerParams {
+            reputation_params: ReputationParams {
+                revenue_window: Duration::from_secs(60),
+                reputation_multiplier: 60,
+                resolution_period: Duration::from_secs(90),
+                expected_block_speed: None,
+            },
+            general_slot_portion: 50,
+            general_liquidity_portion: 50,
+        };
+
+        let edges = vec![
+            setup_test_edge(alice_bob, alice, bob),
+            setup_test_edge(bob_carol, bob, carol),
+        ];
+
+        (params, edges)
+    }
+
+    /// Tests that nodes are appropriately set up when an interceptor is created from a set of edges.
+    #[tokio::test]
+    async fn test_new_for_network_node_creation() {
+        let (shutdown, _) = triggered::trigger();
+        let (params, edges) = setup_three_hop_network_edges();
+
+        let interceptor: ReputationInterceptor<BatchForwardWriter, ForwardManager> =
+            ReputationInterceptor::new_for_network(
+                params,
+                &edges,
+                Arc::new(SimulationClock::new(1).unwrap()),
+                None,
+                shutdown,
+            )
+            .unwrap();
+
+        // Alice has one channel, so will not have any reputation pairs.
+        assert_eq!(
+            interceptor
+                .list_reputation_pairs(edges[0].node_1.pubkey, Instant::now())
+                .await
+                .unwrap()
+                .len(),
+            0
+        );
+
+        // Bob has two channels, so will have two pairs (one for each direction).
+        assert_eq!(edges[0].node_2.pubkey, edges[1].node_1.pubkey);
+        let bob_edges = interceptor
+            .list_reputation_pairs(edges[1].node_1.pubkey, Instant::now())
+            .await
+            .unwrap();
+        assert_eq!(bob_edges.len(), 2);
+
+        // Assert that the pairs are for the two channels we expect.
+        assert!(bob_edges.iter().all(|pair| {
+            (pair.incoming_scid == edges[0].scid.into()
+                || pair.incoming_scid == edges[1].scid.into())
+                && (pair.outgoing_scid == edges[0].scid.into()
+                    || pair.outgoing_scid == edges[1].scid.into())
+        }));
+
+        // Carol has one channel, so will not have any reputation pairs.
+        assert_eq!(
+            interceptor
+                .list_reputation_pairs(edges[1].node_2.pubkey, Instant::now())
+                .await
+                .unwrap()
+                .len(),
+            0
+        );
     }
 }
