@@ -543,3 +543,199 @@ where
         "channel jammer".to_string()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use async_trait::async_trait;
+    use bitcoin::secp256k1::PublicKey;
+    use ln_resource_mgr::{
+        AllocationCheck, EndorsementSignal, ForwardResolution, HtlcRef, ProposedForward,
+        ReputationError, ReputationManager, ReputationSnapshot,
+    };
+    use mockall::mock;
+    use simln_lib::clock::SimulationClock;
+    use simln_lib::sim_node::Interceptor;
+    use std::collections::HashMap;
+    use std::sync::{Arc, Mutex};
+    use std::time::Instant;
+
+    use crate::analysis::BatchForwardWriter;
+    use crate::endorsement_from_records;
+    use crate::test_utils::{get_random_keypair, setup_test_request, test_allocation_check};
+
+    use super::{Node, ReputationInterceptor};
+
+    mock! {
+        ForwardManager{}
+
+        #[async_trait]
+        impl ReputationManager for ForwardManager{
+            fn add_channel(
+                &self,
+                channel_id: u64,
+                capacity_msat: u64,
+            ) -> Result<(), ln_resource_mgr::ReputationError>;
+
+            fn remove_channel(&self, channel_id: u64) -> Result<(), ReputationError>;
+
+            fn get_forwarding_outcome(
+                &self,
+                forward: &ProposedForward,
+            ) -> Result<AllocationCheck, ReputationError>;
+
+            fn add_outgoing_hltc(
+                &self,
+                forward: &ProposedForward
+            ) -> Result<AllocationCheck, ReputationError>;
+            fn resolve_htlc(
+                &self,
+                outgoing_channel: u64,
+                incoming_ref: HtlcRef,
+                resolution: ForwardResolution,
+                resolved_instant: Instant
+            ) -> Result<(), ReputationError>;
+
+            fn list_reputation(
+                &self,
+                access_ins: Instant
+            ) -> Result<HashMap<u64, ReputationSnapshot>, ReputationError>;
+        }
+    }
+
+    /// Creates a test interceptor with three nodes in the network and a vector of their public keys.
+    fn setup_test_interceptor() -> (
+        ReputationInterceptor<BatchForwardWriter, MockForwardManager>,
+        Vec<PublicKey>,
+    ) {
+        let (shutdown, _) = triggered::trigger();
+        let pubkeys = vec![
+            get_random_keypair().1,
+            get_random_keypair().1,
+            get_random_keypair().1,
+        ];
+
+        let nodes = HashMap::from([
+            (
+                pubkeys[0],
+                Node {
+                    forward_manager: MockForwardManager::new(),
+                    alias: "0".to_string(),
+                },
+            ),
+            (
+                pubkeys[1],
+                Node {
+                    forward_manager: MockForwardManager::new(),
+                    alias: "1".to_string(),
+                },
+            ),
+            (
+                pubkeys[2],
+                Node {
+                    forward_manager: MockForwardManager::new(),
+                    alias: "2".to_string(),
+                },
+            ),
+        ]);
+
+        (
+            ReputationInterceptor {
+                network_nodes: Arc::new(Mutex::new(nodes)),
+                clock: Arc::new(SimulationClock::new(1).unwrap()),
+                results: None,
+                shutdown,
+            },
+            pubkeys,
+        )
+    }
+
+    /// Tests that we do not intercept when the forwarding node is the recipient.
+    #[tokio::test]
+    async fn test_final_hop_intercept() {
+        let (interceptor, pubkeys) = setup_test_interceptor();
+        let (mut request, mut receiver) =
+            setup_test_request(pubkeys[0], 0, 1, EndorsementSignal::Unendorsed);
+
+        request.outgoing_channel_id = None;
+        interceptor.intercept_htlc(request).await;
+
+        assert!(matches!(
+            endorsement_from_records(&receiver.recv().await.unwrap().unwrap().unwrap()),
+            EndorsementSignal::Unendorsed
+        ));
+    }
+
+    /// Tests failure if a forward from an unknown node is intercepted.
+    #[tokio::test]
+    async fn test_unknown_intercept_node() {
+        let (interceptor, _) = setup_test_interceptor();
+        let (request, mut receiver) =
+            setup_test_request(get_random_keypair().1, 0, 1, EndorsementSignal::Unendorsed);
+
+        interceptor.intercept_htlc(request).await;
+
+        assert!(matches!(
+            receiver
+                .recv()
+                .await
+                .unwrap()
+                .err()
+                .unwrap()
+                .downcast_ref::<ReputationError>()
+                .unwrap(),
+            ReputationError::ErrUnrecoverable(_),
+        ));
+    }
+
+    /// Tests interception of a htlc that should be forwarded as endorsed.
+    #[tokio::test]
+    async fn test_forward_endorsed_htlc() {
+        let (interceptor, pubkeys) = setup_test_interceptor();
+        let (request, mut receiver) =
+            setup_test_request(pubkeys[0], 0, 1, EndorsementSignal::Endorsed);
+
+        interceptor
+            .network_nodes
+            .lock()
+            .unwrap()
+            .get_mut(&pubkeys[0])
+            .unwrap()
+            .forward_manager
+            .expect_add_outgoing_hltc()
+            .return_once(|_| Ok(test_allocation_check(true)));
+
+        interceptor.intercept_htlc(request).await;
+
+        // should call add_outgoing_htlc + return a reputation check that passes
+        assert!(matches!(
+            endorsement_from_records(&receiver.recv().await.unwrap().unwrap().unwrap()),
+            EndorsementSignal::Endorsed
+        ));
+    }
+
+    /// Tests interception of a htlc that should be forwarded as unendorsed.
+    #[tokio::test]
+    async fn test_forward_unendorsed_htlc() {
+        let (interceptor, pubkeys) = setup_test_interceptor();
+        let (request, mut receiver) =
+            setup_test_request(pubkeys[0], 0, 1, EndorsementSignal::Unendorsed);
+
+        interceptor
+            .network_nodes
+            .lock()
+            .unwrap()
+            .get_mut(&pubkeys[0])
+            .unwrap()
+            .forward_manager
+            .expect_add_outgoing_hltc()
+            .return_once(|_| Ok(test_allocation_check(false)));
+
+        interceptor.intercept_htlc(request).await;
+
+        // should call add_outgoing_htlc + return a reputation check that passes
+        assert!(matches!(
+            endorsement_from_records(&receiver.recv().await.unwrap().unwrap().unwrap()),
+            EndorsementSignal::Unendorsed
+        ));
+    }
+}
