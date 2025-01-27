@@ -1,6 +1,7 @@
 use bitcoin::secp256k1::PublicKey;
 use clap::Parser;
 use ln_resource_mgr::outgoing_reputation::{ForwardManagerParams, ReputationParams};
+use ln_simln_jamming::analysis::BatchForwardWriter;
 use ln_simln_jamming::clock::InstantClock;
 use ln_simln_jamming::parsing::{history_from_file, Cli};
 use ln_simln_jamming::reputation_interceptor::{ReputationInterceptor, ReputationMonitor};
@@ -13,9 +14,10 @@ use simln_lib::clock::Clock;
 use simln_lib::clock::SimulationClock;
 use simln_lib::interceptors::LatencyIntercepor;
 use simln_lib::sim_node::{Interceptor, SimulatedChannel};
-use simln_lib::{NetworkParser, Simulation, SimulationCfg};
+use simln_lib::{NetworkParser, ShortChannelID, Simulation, SimulationCfg};
 use simple_logger::SimpleLogger;
-use std::sync::Arc;
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use std::{fs, usize};
 use tokio::select;
@@ -45,25 +47,63 @@ async fn main() -> Result<(), BoxError> {
     let SimNetwork { sim_network } =
         serde_json::from_str(&fs::read_to_string(cli.sim_file.as_path())?)?;
 
-    // Match the target alias using pubkeys provided in sim network file.
-    let target_alias = "22".to_string(); // TODO: cli argument
-    let target_channel = sim_network
-        .iter()
-        .find(|hist| hist.node_1.alias == target_alias || hist.node_2.alias == target_alias)
-        .ok_or(format!(
-            "attacker alias: {target_alias} not found in sim file"
-        ))?;
+    let mut tasks = JoinSet::new();
+    let (shutdown, listener) = triggered::trigger();
 
-    let target_pubkey = if target_channel.node_1.alias == target_alias {
-        target_channel.node_1.pubkey
-    } else {
-        target_channel.node_2.pubkey
-    };
+    // Match the target alias using pubkeys provided in sim network file, then collect the pubkeys of all the
+    // non-attacker target peers.
+    let target_alias = "22";
+    let target_pubkey = find_pubkey_by_alias(target_alias, &sim_network)?;
+    let attacker_pubkey = find_pubkey_by_alias("50", &sim_network)?;
+
+    let target_channels =
+        get_target_channel_descriptions(&sim_network, attacker_pubkey, target_pubkey);
+
+    // We want to monitor results for all non-attacking nodes and the target node.
+    let mut monitor_nodes = target_channels
+        .iter()
+        .filter_map(|(_, channel)| {
+            if channel.channel_type == TargetChannelType::Peer {
+                return Some((channel.peer_pubkey, channel.alias.clone()));
+            }
+
+            None
+        })
+        .collect::<Vec<(PublicKey, String)>>();
+    monitor_nodes.push((target_pubkey, target_alias.to_string()));
+
+    // Create a map of all the target's channels, and a vec of its non-attacking peers.
+    let target_channel_map = target_channels
+        .values()
+        .map(|channel| (channel.scid, channel.channel_type.clone()))
+        .collect();
+
+    let honest_peers = target_channels
+        .iter()
+        .filter_map(|(_, channel)| {
+            if channel.channel_type == TargetChannelType::Peer {
+                Some(channel.peer_pubkey)
+            } else {
+                None
+            }
+        })
+        .collect();
+
+    let jammed_peers = target_channels
+        .iter()
+        .filter_map(|(scid, channel)| {
+            if channel.channel_type == TargetChannelType::Peer {
+                let scid = *scid;
+                Some((channel.peer_pubkey, scid.into()))
+            } else {
+                None
+            }
+        })
+        .collect();
 
     // Pull history that bootstraps the simulation in a network with the attacker's channels present and calculate
     // revenue for the target node during this bootstrap period.
     let history = history_from_file(&cli.bootstrap_file, Some(cli.bootstrap_duration))?;
-
     let bootstrap_revenue = history.iter().fold(0, |acc, item| {
         if item.forwarding_node == target_pubkey {
             acc + item.incoming_amt - item.outgoing_amt
@@ -71,10 +111,6 @@ async fn main() -> Result<(), BoxError> {
             acc
         }
     });
-
-    // TODO: args!
-    let target_pubkey = find_pubkey_by_alias("22", &sim_network)?;
-    let attacker_pubkey = find_pubkey_by_alias("50", &sim_network)?;
 
     // Use the channel jamming interceptor and latency for simulated payments.
     let latency_interceptor: Arc<dyn Interceptor> =
@@ -92,17 +128,45 @@ async fn main() -> Result<(), BoxError> {
         general_liquidity_portion: 50,
     };
 
-    let (shutdown, listener) = triggered::trigger();
+    // Create a writer to store results for nodes that we care about.
+    let results_writer = Arc::new(Mutex::new(BatchForwardWriter::new(
+        &monitor_nodes,
+        cli.result_batch_size,
+    )));
+
+    let results_writer_1 = results_writer.clone();
+    let results_listener = listener.clone();
+    let results_shutdown = shutdown.clone();
+    let results_clock = clock.clone();
+    tasks.spawn(async move {
+        let interval = Duration::from_secs(60);
+        loop {
+            select! {
+                _ = results_listener.clone() => return,
+                _ = results_clock.sleep(interval) => {
+                      if let Err(e) = results_writer_1.lock().unwrap().write(){
+                        log::error!("Error writing results: {e}");
+                        results_shutdown.trigger();
+                        return
+                    }
+                }
+            }
+        }
+    });
+
     let attack_interceptor = SinkInterceptor::new_for_network(
         clock.clone(),
         attacker_pubkey,
         target_pubkey,
-        &sim_network,
+        target_channel_map,
+        honest_peers,
         ReputationInterceptor::new_with_bootstrap(
             forward_params,
             &sim_network,
+            jammed_peers,
             &history,
             clock.clone(),
+            Some(results_writer),
             shutdown.clone(),
         )
         .await?,
@@ -124,7 +188,6 @@ async fn main() -> Result<(), BoxError> {
     let attack_interceptor = Arc::new(attack_interceptor);
 
     // Spawn a task that will trigger shutdown of the simulation if the attacker loses reputation.
-    let mut tasks = JoinSet::new();
     let attack_interceptor_1 = attack_interceptor.clone();
     let attack_clock = clock.clone();
     let attack_listener = listener.clone();
@@ -222,6 +285,55 @@ async fn main() -> Result<(), BoxError> {
     graph.lock().await.wait_for_shutdown().await;
 
     Ok(())
+}
+
+struct TargetChannel {
+    /// The public key of the target's counterparty.
+    peer_pubkey: PublicKey,
+    scid: ShortChannelID,
+    alias: String,
+    channel_type: TargetChannelType,
+}
+
+fn get_target_channel_descriptions(
+    edges: &[NetworkParser],
+    attacker_pubkey: PublicKey,
+    target_pubkey: PublicKey,
+) -> HashMap<ShortChannelID, TargetChannel> {
+    let mut target_channels = HashMap::new();
+
+    for channel in edges.iter() {
+        let node_1_target = channel.node_1.pubkey == target_pubkey;
+        let node_2_target = channel.node_2.pubkey == target_pubkey;
+
+        if !(node_1_target || node_2_target) {
+            continue;
+        }
+
+        let chan_policy = if node_1_target {
+            &channel.node_2
+        } else {
+            &channel.node_1
+        };
+
+        let channel_type = if chan_policy.pubkey == attacker_pubkey {
+            TargetChannelType::Attacker
+        } else {
+            TargetChannelType::Peer
+        };
+
+        target_channels.insert(
+            channel.scid,
+            TargetChannel {
+                peer_pubkey: chan_policy.pubkey,
+                scid: channel.scid,
+                alias: chan_policy.alias.clone(),
+                channel_type,
+            },
+        );
+    }
+
+    target_channels
 }
 
 fn find_pubkey_by_alias(alias: &str, sim_network: &[NetworkParser]) -> Result<PublicKey, BoxError> {

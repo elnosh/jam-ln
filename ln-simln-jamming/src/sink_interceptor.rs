@@ -8,7 +8,7 @@ use ln_resource_mgr::outgoing_reputation::ForwardManagerParams;
 use ln_resource_mgr::{EndorsementSignal, ForwardingOutcome, HtlcRef, ProposedForward};
 use simln_lib::clock::Clock;
 use simln_lib::sim_node::{ForwardingError, InterceptRequest, InterceptResolution, Interceptor};
-use simln_lib::{NetworkParser, ShortChannelID};
+use simln_lib::ShortChannelID;
 use std::collections::{HashMap, HashSet};
 use std::error::Error;
 use std::sync::Arc;
@@ -132,46 +132,17 @@ impl<C: InstantClock + Clock, R: Interceptor + ReputationMonitor> SinkIntercepto
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn new_for_network(
         clock: Arc<C>,
         attacker_pubkey: PublicKey,
         target_pubkey: PublicKey,
-        edges: &[NetworkParser],
+        target_channels: HashMap<ShortChannelID, TargetChannelType>,
+        honest_peers: Vec<PublicKey>,
         reputation_interceptor: R,
         listener: Listener,
         shutdown: Trigger,
     ) -> Self {
-        let mut target_channels = HashMap::new();
-        let mut honest_peers = Vec::new();
-
-        for channel in edges.iter() {
-            let node_1_target = channel.node_1.pubkey == target_pubkey;
-            let node_2_target = channel.node_2.pubkey == target_pubkey;
-
-            if !(node_1_target || node_2_target) {
-                continue;
-            }
-
-            let channel_type = if node_1_target && channel.node_2.pubkey == attacker_pubkey {
-                TargetChannelType::Attacker
-            } else if node_1_target {
-                TargetChannelType::Peer
-            } else if node_2_target && channel.node_1.pubkey == attacker_pubkey {
-                TargetChannelType::Attacker
-            } else {
-                TargetChannelType::Peer
-            };
-
-            if channel_type == TargetChannelType::Peer {
-                honest_peers.push(if node_1_target {
-                    channel.node_2.pubkey
-                } else {
-                    channel.node_1.pubkey
-                });
-            }
-            target_channels.insert(channel.scid, channel_type);
-        }
-
         Self::new(
             clock,
             attacker_pubkey,
@@ -336,7 +307,7 @@ impl<C: InstantClock + Clock, R: Interceptor + ReputationMonitor> SinkIntercepto
                 };
 
                 // Query forwarding outcome as if the htlc was endorsed to see whether we'd make the cut.
-                let resp = match allocation_check
+                match allocation_check
                     .forwarding_outcome(req.outgoing_amount_msat, EndorsementSignal::Endorsed)
                 {
                     ForwardingOutcome::Forward(_) => {
@@ -346,21 +317,15 @@ impl<C: InstantClock + Clock, R: Interceptor + ReputationMonitor> SinkIntercepto
                         // incoming htlc was endorsed.
                         req.incoming_custom_records =
                             records_from_endorsement(EndorsementSignal::Endorsed);
-                        self.reputation_interceptor.intercept_htlc(req).await;
-                        return Ok(());
                     }
                     ForwardingOutcome::Fail(_) => {
                         log::info!(
                             "HTLC from peer -> target has insufficient reputation, general jamming"
                         );
-
-                        Ok(Err(ForwardingError::InterceptorError(
-                            "general jamming unendorsed".to_string().into(),
-                        )))
                     }
                 };
 
-                send_intercept_result!(req, resp, self.shutdown)
+                self.reputation_interceptor.intercept_htlc(req).await;
             }
         };
 
@@ -446,21 +411,15 @@ mod tests {
     use std::sync::Arc;
 
     use crate::reputation_interceptor::{HtlcAdd, ReputationMonitor, ReputationPair};
-    use crate::test_utils::get_random_keypair;
+    use crate::test_utils::{get_random_keypair, setup_test_request, test_allocation_check};
     use crate::{endorsement_from_records, records_from_endorsement, test_utils, BoxError};
     use async_trait::async_trait;
     use bitcoin::secp256k1::PublicKey;
-    use lightning::ln::PaymentHash;
-    use ln_resource_mgr::{
-        AllocationCheck, EndorsementSignal, ForwardingOutcome, ReputationCheck, ReputationError,
-        ResourceCheck,
-    };
+    use ln_resource_mgr::{AllocationCheck, EndorsementSignal, ReputationError};
     use mockall::mock;
     use mockall::predicate::function;
     use simln_lib::clock::SimulationClock;
-    use simln_lib::sim_node::{
-        CustomRecords, ForwardingError, HtlcRef, InterceptRequest, InterceptResolution, Interceptor,
-    };
+    use simln_lib::sim_node::{InterceptRequest, InterceptResolution, Interceptor};
     use simln_lib::ShortChannelID;
 
     use super::{SinkInterceptor, TargetChannelType};
@@ -513,39 +472,6 @@ mod tests {
         interceptor
     }
 
-    fn setup_test_request(
-        forwarding_node: PublicKey,
-        channel_in: u64,
-        channel_out: u64,
-        incoming_endorsed: EndorsementSignal,
-    ) -> (
-        InterceptRequest,
-        tokio::sync::mpsc::Receiver<
-            Result<Result<CustomRecords, ForwardingError>, Box<dyn Error + Send + Sync + 'static>>,
-        >,
-    ) {
-        let (response, receiver) = tokio::sync::mpsc::channel(1);
-
-        (
-            InterceptRequest {
-                forwarding_node,
-                payment_hash: PaymentHash([1; 32]),
-                incoming_htlc: HtlcRef {
-                    channel_id: channel_in.into(),
-                    index: 0,
-                },
-                incoming_custom_records: records_from_endorsement(incoming_endorsed),
-                outgoing_channel_id: Some(ShortChannelID::from(channel_out)),
-                incoming_amount_msat: 100,
-                outgoing_amount_msat: 50,
-                incoming_expiry_height: 600_010,
-                outgoing_expiry_height: 600_000,
-                response,
-            },
-            receiver,
-        )
-    }
-
     /// Primes the mock to expect intercept_htlc called with the request provided.
     fn mock_intercept_htlc(interceptor: &mut MockReputationInterceptor, req: &InterceptRequest) {
         let expected_incoming = req.incoming_htlc.channel_id.clone();
@@ -558,32 +484,6 @@ mod tests {
                     && args.outgoing_channel_id.unwrap() == expected_outgoing
             }))
             .return_once(|_| {});
-    }
-
-    fn test_allocation_check(forward_succeeds: bool) -> AllocationCheck {
-        let check = AllocationCheck {
-            reputation_check: ReputationCheck {
-                outgoing_reputation: 100_000,
-                incoming_revenue: if forward_succeeds { 0 } else { 200_000 },
-                in_flight_total_risk: 0,
-                htlc_risk: 0,
-            },
-            resource_check: ResourceCheck {
-                general_slots_used: 0,
-                general_slots_availabe: 10,
-                general_liquidity_msat_used: 0,
-                general_liquidity_msat_available: 100_000,
-            },
-        };
-
-        assert!(
-            matches!(
-                check.forwarding_outcome(0, EndorsementSignal::Endorsed),
-                ForwardingOutcome::Forward(_)
-            ) == forward_succeeds
-        );
-
-        check
     }
 
     /// Tests attacker interception of htlcs from the target.
@@ -695,7 +595,7 @@ mod tests {
     async fn test_peer_to_target_general_jammed() {
         let mut interceptor = setup_interceptor_test();
 
-        let (peer_to_target, mut receiver) = setup_test_request(
+        let (peer_to_target, _) = setup_test_request(
             interceptor.honest_peers[0],
             5,
             1,
@@ -714,11 +614,8 @@ mod tests {
             }))
             .return_once(|_| Ok(test_allocation_check(false)));
 
+        mock_intercept_htlc(&mut interceptor.reputation_interceptor, &peer_to_target);
         interceptor.intercept_htlc(peer_to_target).await;
-        assert!(matches!(
-            receiver.recv().await.unwrap().unwrap().err().unwrap(),
-            ForwardingError::InterceptorError(_)
-        ));
     }
 
     /// Tests that forwards through the target node to its peers will be upgraded to endorsed.

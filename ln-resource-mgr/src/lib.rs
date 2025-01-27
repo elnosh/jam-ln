@@ -1,6 +1,8 @@
 mod decaying_average;
 pub mod outgoing_reputation;
 
+use serde::Serialize;
+use std::collections::HashMap;
 use std::error::Error;
 use std::fmt::Display;
 use std::time::Instant;
@@ -88,7 +90,7 @@ impl Display for ReputationError {
 }
 
 /// The different possible endorsement signals on a htlc's update_add message.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
 pub enum EndorsementSignal {
     Unendorsed,
     Endorsed,
@@ -103,7 +105,7 @@ impl Display for EndorsementSignal {
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 pub enum ForwardingOutcome {
     /// Forward the outgoing htlc with the endorsement signal provided.
     Forward(EndorsementSignal),
@@ -120,7 +122,7 @@ impl Display for ForwardingOutcome {
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 pub enum FailureReason {
     /// There is no space in the outgoing channel's general resource bucket, so the htlc should be failed back. It
     /// may be retired with endorsement set to gain access to protected resources.
@@ -130,7 +132,7 @@ pub enum FailureReason {
 }
 
 /// A snapshot of the reputation and resources available for a forward.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 pub struct AllocationCheck {
     /// The reputation values used to compare the incoming channel's revenue to the outgoing channel's reputation for
     /// the htlc proposed.
@@ -169,7 +171,7 @@ impl AllocationCheck {
 }
 
 /// A snapshot of a reputation check for a htlc forward.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 pub struct ReputationCheck {
     pub outgoing_reputation: i64,
     pub incoming_revenue: i64,
@@ -189,7 +191,7 @@ impl ReputationCheck {
 }
 
 /// A snapshot of the resource check for a htlc forward.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 pub struct ResourceCheck {
     pub general_slots_used: u16,
     pub general_slots_availabe: u16,
@@ -248,7 +250,7 @@ impl Display for ForwardResolution {
 }
 
 /// A unique identifier for a htlc on a channel.
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, Serialize)]
 pub struct HtlcRef {
     pub channel_id: u64,
     /// The unique index used to refer to the htlc in update_add_htlc.
@@ -315,6 +317,13 @@ impl ProposedForward {
     }
 }
 
+/// Provides a reputation check snapshot for an incoming/outgoing channel pair.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ReputationSnapshot {
+    pub outgoing_reputation: i64,
+    pub incoming_revenue: i64,
+}
+
 /// Validates that an msat amount doesn't exceed the total supply cap of bitcoin and casts to i64 to be used in
 /// places where we're dealing with negative numbers. Once we've validated that we're below the supply cap, we can
 /// safely cast to i64 because [`u64::Max`] < total bitcoin supply cap.
@@ -371,4 +380,10 @@ pub trait ReputationManager {
         resolution: ForwardResolution,
         resolved_instant: Instant,
     ) -> Result<(), ReputationError>;
+
+    /// Provides reputation snapshots of per channel at the instant provided.
+    fn list_reputation(
+        &self,
+        access_ins: Instant,
+    ) -> Result<HashMap<u64, ReputationSnapshot>, ReputationError>;
 }

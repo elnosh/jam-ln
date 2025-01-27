@@ -42,6 +42,9 @@ const DEFAULT_REPUTATION_MARGIN_EXIPRY: &str = "200";
 /// in seconds.
 const DEFAULT_ATTACKER_POLL_SECONDS: &str = "300";
 
+/// The default batch size for writing results to disk.
+const DEFAULT_RESULT_BATCH_SIZE: &str = "500";
+
 #[derive(Parser)]
 #[command(version, about)]
 pub struct Cli {
@@ -92,6 +95,10 @@ pub struct Cli {
     /// The interval to poll whether the attacker still has reputation with the target node, expressed in seconds.
     #[arg(long, default_value = DEFAULT_ATTACKER_POLL_SECONDS)]
     pub attacker_poll_interval_seconds: u64,
+
+    /// The size of results batches to write to disk.
+    #[arg(long, default_value = DEFAULT_RESULT_BATCH_SIZE)]
+    pub result_batch_size: u16,
 }
 
 impl Cli {
