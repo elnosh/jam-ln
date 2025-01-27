@@ -1,3 +1,4 @@
+use crate::analysis::ForwardReporter;
 use crate::clock::InstantClock;
 use crate::{endorsement_from_records, records_from_endorsement, BoxError};
 use async_trait::async_trait;
@@ -96,17 +97,25 @@ impl Node {
 /// Implements a network-wide interceptor that implements resource management for every forwarding node in the
 /// network.
 #[derive(Clone)]
-pub struct ReputationInterceptor {
+pub struct ReputationInterceptor<R>
+where
+    R: ForwardReporter,
+{
     network_nodes: Arc<Mutex<HashMap<PublicKey, Node>>>,
     clock: Arc<dyn InstantClock + Send + Sync>,
+    results: Option<Arc<Mutex<R>>>,
     shutdown: Trigger,
 }
 
-impl ReputationInterceptor {
+impl<R> ReputationInterceptor<R>
+where
+    R: ForwardReporter,
+{
     pub fn new_for_network(
         params: ForwardManagerParams,
         edges: &[NetworkParser],
         clock: Arc<dyn InstantClock + Send + Sync>,
+        results: Option<Arc<Mutex<R>>>,
         shutdown: Trigger,
     ) -> Result<Self, BoxError> {
         let mut network_nodes: HashMap<PublicKey, Node> = HashMap::new();
@@ -150,6 +159,7 @@ impl ReputationInterceptor {
         Ok(Self {
             network_nodes: Arc::new(Mutex::new(network_nodes)),
             clock,
+            results,
             shutdown,
         })
     }
@@ -161,9 +171,10 @@ impl ReputationInterceptor {
         edges: &[NetworkParser],
         history: &[BootstrapForward],
         clock: Arc<dyn InstantClock + Send + Sync>,
+        results: Option<Arc<Mutex<R>>>,
         shutdown: Trigger,
     ) -> Result<Self, BoxError> {
-        let mut interceptor = Self::new_for_network(params, edges, clock, shutdown)
+        let mut interceptor = Self::new_for_network(params, edges, clock, results, shutdown)
             .map_err(|_| "could not create network")?;
         interceptor.bootstrap_network_history(history).await?;
         Ok(interceptor)
@@ -238,7 +249,8 @@ impl ReputationInterceptor {
         for e in bootstrap_events {
             match e {
                 BootstrapEvent::BootstrapAdd(htlc_add) => {
-                    if let Err(e) = self.inner_add_htlc(htlc_add.clone()).await? {
+                    // Add to internal state but don't write to results.
+                    if let Err(e) = self.inner_add_htlc(htlc_add.clone(), false).await? {
                         skipped_htlcs.insert(htlc_add.htlc.incoming_ref);
                         log::error!("Routing failure for bootstrap: {e}");
                     }
@@ -260,6 +272,7 @@ impl ReputationInterceptor {
     async fn inner_add_htlc(
         &self,
         htlc_add: HtlcAdd,
+        report: bool,
     ) -> Result<Result<HashMap<u64, Vec<u8>>, ForwardingError>, ReputationError> {
         // If the forwarding node can't be found, we've hit a critical error and can't proceed.
         let (allocation_check, alias) = match self
@@ -288,6 +301,19 @@ impl ReputationInterceptor {
             htlc_add.htlc.amount_out_msat,
             htlc_add.htlc.incoming_endorsed,
         );
+
+        if let Some(r) = &self.results {
+            if report {
+                r.lock()
+                    .map_err(|e| ReputationError::ErrUnrecoverable(e.to_string()))?
+                    .report_forward(
+                        htlc_add.forwarding_node,
+                        allocation_check,
+                        htlc_add.htlc.clone(),
+                    )
+                    .map_err(|e| ReputationError::ErrUnrecoverable(e.to_string()))?;
+            }
+        }
 
         log::info!(
             "Node {} forwarding: {} with outcome {}",
@@ -339,7 +365,10 @@ impl ReputationInterceptor {
 }
 
 #[async_trait]
-impl ReputationMonitor for ReputationInterceptor {
+impl<R> ReputationMonitor for ReputationInterceptor<R>
+where
+    R: ForwardReporter,
+{
     /// Returns all reputation pairs for the node provided. For example, if a node has channels 1, 2 and 3 it will
     /// return the following reputation pairs: [1 -> 2], [1 -> 3], [2 -> 1], [2 -> 3], [3 -> 1], [3 -> 2].
     async fn list_reputation_pairs(
@@ -399,7 +428,10 @@ impl ReputationMonitor for ReputationInterceptor {
 }
 
 #[async_trait]
-impl Interceptor for ReputationInterceptor {
+impl<R> Interceptor for ReputationInterceptor<R>
+where
+    R: ForwardReporter,
+{
     /// Implemented by HTLC interceptors that provide input on the resolution of HTLCs forwarded in the simulation.
     async fn intercept_htlc(&self, req: InterceptRequest) {
         // If the intercept has no outgoing channel, we can just exit early because there's no action to be taken.
@@ -435,10 +467,13 @@ impl Interceptor for ReputationInterceptor {
         };
 
         let resp = self
-            .inner_add_htlc(HtlcAdd {
-                forwarding_node: req.forwarding_node,
-                htlc,
-            })
+            .inner_add_htlc(
+                HtlcAdd {
+                    forwarding_node: req.forwarding_node,
+                    htlc,
+                },
+                true,
+            )
             .await
             .map_err(|e| e.into()); // into maps error enum to erased Box<dyn Error>
 

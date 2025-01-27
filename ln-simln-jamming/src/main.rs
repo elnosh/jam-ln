@@ -1,6 +1,7 @@
 use bitcoin::secp256k1::PublicKey;
 use clap::Parser;
 use ln_resource_mgr::outgoing_reputation::{ForwardManagerParams, ReputationParams};
+use ln_simln_jamming::analysis::BatchForwardWriter;
 use ln_simln_jamming::clock::InstantClock;
 use ln_simln_jamming::parsing::{history_from_file, Cli};
 use ln_simln_jamming::reputation_interceptor::{ReputationInterceptor, ReputationMonitor};
@@ -98,11 +99,12 @@ async fn main() -> Result<(), BoxError> {
         attacker_pubkey,
         target_pubkey,
         &sim_network,
-        ReputationInterceptor::new_with_bootstrap(
+        ReputationInterceptor::<BatchForwardWriter>::new_with_bootstrap(
             forward_params,
             &sim_network,
             &history,
             clock.clone(),
+            None,
             shutdown.clone(),
         )
         .await?,
