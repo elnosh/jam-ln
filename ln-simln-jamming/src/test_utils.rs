@@ -12,6 +12,7 @@ use simln_lib::sim_node::{CustomRecords, ForwardingError, InterceptRequest};
 use simln_lib::ShortChannelID;
 
 use crate::records_from_endorsement;
+use crate::reputation_interceptor::BootstrapForward;
 
 #[allow(dead_code)]
 pub fn get_random_bytes(size: usize) -> Vec<u8> {
@@ -105,5 +106,25 @@ pub fn test_proposed_forward(id: u64) -> ProposedForward {
         expiry_out_height: 40,
         added_at: Instant::now(),
         incoming_endorsed: EndorsementSignal::Endorsed,
+    }
+}
+
+#[allow(dead_code)]
+pub fn test_bootstrap_forward(
+    added_ns: u64,
+    settled_ns: u64,
+    channel_in_id: u64,
+    channel_out_id: u64,
+) -> BootstrapForward {
+    BootstrapForward {
+        incoming_amt: 100_000,
+        outgoing_amt: 90_000,
+        incoming_expiry: 150,
+        outgoing_expiry: 120,
+        added_ns,
+        settled_ns,
+        forwarding_node: get_random_keypair().1,
+        channel_in_id,
+        channel_out_id,
     }
 }
