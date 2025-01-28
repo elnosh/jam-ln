@@ -1,4 +1,4 @@
-use crate::reputation_interceptor::BootstrapForward;
+use crate::reputation_interceptor::{BoostrapRecords, BootstrapForward};
 use crate::revenue_interceptor::RevenueEvent;
 use crate::BoxError;
 use bitcoin::secp256k1::PublicKey;
@@ -45,6 +45,12 @@ const DEFAULT_ATTACKER_POLL_SECONDS: &str = "300";
 /// The default batch size for writing results to disk.
 const DEFAULT_RESULT_BATCH_SIZE: &str = "500";
 
+/// The default window that we consider revenue over (2 weeks = 60 * 60 * 24 * 7).
+const DEFAULT_REVENUE_WINDOW_SECONDS: &str = "1210000";
+
+/// The default multiplier applied to the revenue window to get reputation window.
+const DEFAULT_REPUTATION_MULTIPLIER: &str = "12";
+
 #[derive(Parser)]
 #[command(version, about)]
 pub struct Cli {
@@ -62,10 +68,10 @@ pub struct Cli {
     #[arg(long, default_value = DEFAULT_PEACETIME_FILE)]
     pub peacetime_file: PathBuf,
 
-    /// The duration of time that reputation for the network should be bootstrapped for, expressed as human readable
-    /// values (eg: 1w, 3d).
+    /// The duration of time that reputation of the attacking node should be bootstrapped for, expressed as human
+    /// readable values (eg: 1w, 3d).
     #[arg(long, value_parser = parse_duration)]
-    pub bootstrap_duration: Duration,
+    pub attacker_bootstrap: Duration,
 
     /// The minimum percentage of channel pairs between the target and its honest peers that the target needs to have
     /// good reputation on for the simulation to run.
@@ -99,6 +105,14 @@ pub struct Cli {
     /// The size of results batches to write to disk.
     #[arg(long, default_value = DEFAULT_RESULT_BATCH_SIZE)]
     pub result_batch_size: u16,
+
+    /// The window over which the value of a link's revenue to our node is calculated.
+    #[arg(long, default_value = DEFAULT_REVENUE_WINDOW_SECONDS)]
+    pub revenue_window_seconds: u64,
+
+    /// The multiplier applied to revenue_window_seconds to get the duration over which reputation is bootstrapped.
+    #[arg(long, default_value = DEFAULT_REPUTATION_MULTIPLIER)]
+    pub reputation_multiplier: u8,
 }
 
 impl Cli {
@@ -119,7 +133,22 @@ impl Cli {
             .into());
         }
 
+        if self.reputation_window() < self.attacker_bootstrap {
+            return Err(format!(
+                "attacker_bootstrap {:?} < reputation window {:?} ({} * {})))",
+                self.attacker_bootstrap,
+                self.reputation_window(),
+                self.revenue_window_seconds,
+                self.reputation_multiplier,
+            )
+            .into());
+        }
+
         Ok(())
+    }
+
+    pub fn reputation_window(&self) -> Duration {
+        Duration::from_secs(self.revenue_window_seconds * self.reputation_multiplier as u64)
     }
 }
 
@@ -220,4 +249,126 @@ pub fn peacetime_from_file(
     }
 
     Ok(heap)
+}
+
+/// simulation is configured with (because anything more will just be decayed away). The file provided will then be
+/// filtered to only bootstrap the attacker's payments for the duration configured. For example, if the reputation
+/// window is 30 days and the attacker's bootstrap is 15 days, it'll read 30 days of forwards and remove all attacker
+/// forwards for the first 15 days, so that the bootstrap period is effectively shorter for that node.
+pub fn get_history_for_bootstrap(
+    attacker_bootstrap: Duration,
+    unfiltered_history: Vec<BootstrapForward>,
+    attacker_channel: u64,
+) -> Result<BoostrapRecords, BoxError> {
+    let last_timestamp_nanos = unfiltered_history
+        .iter()
+        .max_by(|x, y| x.settled_ns.cmp(&y.settled_ns))
+        .ok_or("at least one entry required in bootstrap history")?
+        .settled_ns;
+
+    if last_timestamp_nanos < attacker_bootstrap.as_nanos() as u64 {
+        return Err(format!(
+            "last absolute timestamp in bootstrap file: {last_timestamp_nanos} < relative attacker bootstrap: {}",
+            attacker_bootstrap.as_nanos()
+        )
+        .into());
+    }
+    let bootstrap_cutoff = last_timestamp_nanos - attacker_bootstrap.as_nanos() as u64;
+
+    Ok(BoostrapRecords {
+        forwards: unfiltered_history
+            .into_iter()
+            .filter(|forward| {
+                if forward.added_ns >= bootstrap_cutoff {
+                    return true;
+                }
+
+                forward.channel_out_id != attacker_channel
+            })
+            .collect(),
+        last_timestamp_nanos,
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use std::ops::Add;
+    use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+    use crate::parsing::get_history_for_bootstrap;
+    use crate::test_utils::test_bootstrap_forward;
+
+    /// Tests the cases where filtering bootstrap data fails.
+    #[test]
+    fn test_get_history_for_bootstrap_errors() {
+        assert!(get_history_for_bootstrap(Duration::from_secs(1), vec![], 10).is_err());
+
+        // Bootstrapped with a duration that's too high for the data provided.
+        let settled_ts = Duration::from_secs(100);
+        let unfiltered_history = vec![test_bootstrap_forward(
+            settled_ts.as_nanos() as u64 - 10,
+            settled_ts.as_nanos() as u64,
+            123,
+            321,
+        )];
+
+        assert!(get_history_for_bootstrap(
+            settled_ts.add(Duration::from_secs(10)),
+            unfiltered_history,
+            123,
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn test_get_history_for_bootstrap() {
+        let start_time = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos() as u64;
+
+        let attacker_channel = 123;
+        let channel_1 = 456;
+        let channel_2 = 789;
+
+        let unfiltered_history = vec![
+            // Before bootstrap period, one attacker outgoing forward that should be filtered, and incoming attacker
+            // forward that should not be filtered.
+            test_bootstrap_forward(start_time.add(1), start_time.add(10), channel_1, channel_2),
+            test_bootstrap_forward(
+                start_time.add(1),
+                start_time.add(5),
+                channel_1,
+                attacker_channel,
+            ),
+            test_bootstrap_forward(
+                start_time.add(3),
+                start_time.add(4),
+                attacker_channel,
+                channel_1,
+            ),
+            // After bootstrap period, all attacker channels should be filtered.
+            test_bootstrap_forward(
+                start_time.add(7),
+                start_time.add(8),
+                channel_2,
+                attacker_channel,
+            ),
+            test_bootstrap_forward(
+                start_time.add(9),
+                start_time.add(13),
+                attacker_channel,
+                channel_1,
+            ),
+        ];
+
+        let filtered_history = get_history_for_bootstrap(
+            Duration::from_nanos(9),
+            unfiltered_history,
+            attacker_channel,
+        )
+        .unwrap();
+        assert_eq!(filtered_history.forwards.len(), 4);
+        assert_eq!(filtered_history.last_timestamp_nanos, start_time.add(13));
+    }
 }

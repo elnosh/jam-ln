@@ -39,6 +39,11 @@ enum BootstrapEvent {
     BootstrapResolve(HtlcResolve),
 }
 
+pub struct BoostrapRecords {
+    pub forwards: Vec<BootstrapForward>,
+    pub last_timestamp_nanos: u64,
+}
+
 /// Provides details of a htlc forward that is used to bootstrap reputation values for the network.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct BootstrapForward {
@@ -180,14 +185,14 @@ where
         params: ForwardManagerParams,
         edges: &[NetworkParser],
         general_jammed: HashMap<PublicKey, u64>,
-        history: &[BootstrapForward],
+        bootstrap: &BoostrapRecords,
         clock: Arc<dyn InstantClock + Send + Sync>,
         results: Option<Arc<Mutex<R>>>,
         shutdown: Trigger,
     ) -> Result<Self, BoxError> {
         let mut interceptor = Self::new_for_network(params, edges, clock, results, shutdown)
             .map_err(|_| "could not create network")?;
-        interceptor.bootstrap_network_history(history).await?;
+        interceptor.bootstrap_network_history(bootstrap).await?;
 
         // After the network has been bootstrapped, we can go ahead and general jam required channels.
         for (pubkey, channel) in general_jammed.iter() {
@@ -206,21 +211,16 @@ where
 
     async fn bootstrap_network_history(
         &mut self,
-        history: &[BootstrapForward],
+        bootstrap: &BoostrapRecords,
     ) -> Result<(), BoxError> {
         // We'll get all instants relative to the last timestamp we're given, so we get an instant now and track
         // the last timestamp in the set of forwards.
         let start_ins = self.clock.now();
-        let last_ts = history
-            .iter()
-            .max_by(|x, y| x.settled_ns.cmp(&y.settled_ns))
-            .ok_or("at least one entry required in bootstrap history")?
-            .settled_ns;
 
         // Run through history and create instants relative to the current time, we'll have two events per forward
         // so we can allocate accordingly.
-        let mut bootstrap_events = Vec::with_capacity(history.len() * 2);
-        for (i, h) in history.iter().enumerate() {
+        let mut bootstrap_events = Vec::with_capacity(bootstrap.forwards.len() * 2);
+        for (i, h) in bootstrap.forwards.iter().enumerate() {
             let incoming_ref = HtlcRef {
                 channel_id: h.channel_in_id,
                 htlc_index: i as u64,
@@ -236,9 +236,13 @@ where
                     expiry_in_height: h.incoming_expiry,
                     expiry_out_height: h.outgoing_expiry,
                     added_at: start_ins.sub(Duration::from_nanos(
-                        last_ts
+                        bootstrap
+                            .last_timestamp_nanos
                             .checked_sub(h.added_ns)
-                            .ok_or(format!("added ts: {} > last ts: {last_ts}", h.added_ns))?,
+                            .ok_or(format!(
+                                "added ts: {} > last ts: {}",
+                                bootstrap.last_timestamp_nanos, h.added_ns
+                            ))?,
                     )),
                     incoming_endorsed: EndorsementSignal::Unendorsed,
                 },
@@ -249,9 +253,13 @@ where
                 forwarding_node: h.forwarding_node,
                 incoming_htlc: incoming_ref,
                 resolved_ins: start_ins.sub(Duration::from_nanos(
-                    last_ts
+                    bootstrap
+                        .last_timestamp_nanos
                         .checked_sub(h.settled_ns)
-                        .ok_or(format!("settled ts: {} > last ts: {last_ts}", h.settled_ns))?,
+                        .ok_or(format!(
+                            "settled ts: {} > last ts: {}",
+                            bootstrap.last_timestamp_nanos, h.settled_ns
+                        ))?,
                 )),
                 forward_resolution: ForwardResolution::Settled,
             }));
@@ -566,7 +574,7 @@ mod tests {
 
     use crate::analysis::BatchForwardWriter;
     use crate::endorsement_from_records;
-    use crate::reputation_interceptor::BootstrapForward;
+    use crate::reputation_interceptor::{BoostrapRecords, BootstrapForward};
     use crate::test_utils::{get_random_keypair, setup_test_request, test_allocation_check};
 
     use super::{Node, ReputationInterceptor, ReputationMonitor};
@@ -942,7 +950,10 @@ mod tests {
                 params,
                 &edges,
                 HashMap::from([(edges[1].node_1.pubkey, bob_to_carol)]),
-                &boostrap,
+                &BoostrapRecords {
+                    forwards: boostrap,
+                    last_timestamp_nanos: 1_000_000,
+                },
                 Arc::new(SimulationClock::new(1).unwrap()),
                 None,
                 shutdown,

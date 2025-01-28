@@ -3,7 +3,7 @@ use clap::Parser;
 use ln_resource_mgr::outgoing_reputation::{ForwardManagerParams, ReputationParams};
 use ln_simln_jamming::analysis::BatchForwardWriter;
 use ln_simln_jamming::clock::InstantClock;
-use ln_simln_jamming::parsing::{history_from_file, Cli};
+use ln_simln_jamming::parsing::{get_history_for_bootstrap, history_from_file, Cli};
 use ln_simln_jamming::reputation_interceptor::{ReputationInterceptor, ReputationMonitor};
 use ln_simln_jamming::revenue_interceptor::RevenueInterceptor;
 use ln_simln_jamming::sink_interceptor::{SinkInterceptor, TargetChannelType};
@@ -101,10 +101,29 @@ async fn main() -> Result<(), BoxError> {
         })
         .collect();
 
-    // Pull history that bootstraps the simulation in a network with the attacker's channels present and calculate
-    // revenue for the target node during this bootstrap period.
-    let history = history_from_file(&cli.bootstrap_file, Some(cli.bootstrap_duration))?;
-    let bootstrap_revenue = history.iter().fold(0, |acc, item| {
+    let target_to_attacker: Vec<u64> = target_channels
+        .iter()
+        .filter(|(_, channel)| channel.channel_type == TargetChannelType::Attacker)
+        .map(|(scid, _)| u64::from(*scid))
+        .collect();
+
+    if target_to_attacker.len() != 1 {
+        return Err(format!(
+            "expected one target -> attacker channel, got: {}",
+            target_to_attacker.len()
+        )
+        .into());
+    }
+
+    // Pull history that bootstraps the simulation in a network with the attacker's channels present, filter to only
+    // have attacker forwards present when the and calculate revenue for the target node during this bootstrap period.
+    let unfiltered_history = history_from_file(&cli.bootstrap_file, Some(cli.reputation_window()))?;
+    let bootstrap = get_history_for_bootstrap(
+        cli.attacker_bootstrap,
+        unfiltered_history,
+        *target_to_attacker.first().unwrap(),
+    )?;
+    let bootstrap_revenue = bootstrap.forwards.iter().fold(0, |acc, item| {
         if item.forwarding_node == target_pubkey {
             acc + item.incoming_amt - item.outgoing_amt
         } else {
@@ -119,8 +138,8 @@ async fn main() -> Result<(), BoxError> {
     let clock = Arc::new(SimulationClock::new(cli.clock_speedup)?);
     let forward_params = ForwardManagerParams {
         reputation_params: ReputationParams {
-            revenue_window: Duration::from_secs(14 * 24 * 60 * 60),
-            reputation_multiplier: 12,
+            revenue_window: Duration::from_secs(cli.revenue_window_seconds),
+            reputation_multiplier: cli.reputation_multiplier,
             resolution_period: Duration::from_secs(90),
             expected_block_speed: Some(Duration::from_secs(10 * 60)),
         },
@@ -164,7 +183,7 @@ async fn main() -> Result<(), BoxError> {
             forward_params,
             &sim_network,
             jammed_peers,
-            &history,
+            &bootstrap,
             clock.clone(),
             Some(results_writer),
             shutdown.clone(),
@@ -231,7 +250,7 @@ async fn main() -> Result<(), BoxError> {
         clock.clone(),
         target_pubkey,
         bootstrap_revenue,
-        cli.bootstrap_duration,
+        cli.attacker_bootstrap,
         cli.peacetime_file,
         listener.clone(),
         shutdown.clone(),
