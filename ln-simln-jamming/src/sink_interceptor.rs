@@ -185,6 +185,7 @@ impl<C: InstantClock + Clock, R: Interceptor + ReputationMonitor> SinkIntercepto
     /// Gets reputation pairs for the node provided, filtering them for channels that the target node is a part of.
     /// - TargetChannelType::Peer / Node=Peer: reports the target's reputation in the eyes of its peers.
     /// - TargetChannelType::Attacker / Node=Target: reports the attacker's reputation in the eyes of the target.
+	/// 
     /// Note that if the node provided is not the target or one of its peers, nothing will be returned.
     pub async fn get_target_pairs(
         &self,
@@ -205,7 +206,7 @@ impl<C: InstantClock + Clock, R: Interceptor + ReputationMonitor> SinkIntercepto
             .list_reputation_pairs(node, access_ins)
             .await?
             .iter()
-            .filter(|scid| channels.get(&scid.outgoing_scid).is_some())
+            .filter(|scid| channels.contains(&scid.outgoing_scid))
             .copied()
             .collect();
 

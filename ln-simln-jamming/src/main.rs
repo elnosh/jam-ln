@@ -17,9 +17,9 @@ use simln_lib::sim_node::{Interceptor, SimulatedChannel};
 use simln_lib::{NetworkParser, ShortChannelID, Simulation, SimulationCfg};
 use simple_logger::SimpleLogger;
 use std::collections::HashMap;
+use std::fs;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
-use std::{fs, usize};
 use tokio::select;
 use tokio::task::JoinSet;
 
