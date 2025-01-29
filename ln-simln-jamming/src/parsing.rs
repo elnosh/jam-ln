@@ -120,6 +120,14 @@ pub struct Cli {
     /// The directory to write output files to.
     #[arg(long, default_value = DEFAULT_RESULTS_DIR)]
     pub results_dir: PathBuf,
+
+    /// The alias of the target node.
+    #[arg(long)]
+    pub target_alias: String,
+
+    /// The alias of the attacking node.
+    #[arg(long)]
+    pub attacker_alias: String,
 }
 
 impl Cli {
