@@ -51,6 +51,9 @@ const DEFAULT_REVENUE_WINDOW_SECONDS: &str = "1210000";
 /// The default multiplier applied to the revenue window to get reputation window.
 const DEFAULT_REPUTATION_MULTIPLIER: &str = "12";
 
+/// The default location to output results files.
+const DEFAULT_RESULTS_DIR: &str = ".";
+
 #[derive(Parser)]
 #[command(version, about)]
 pub struct Cli {
@@ -113,6 +116,18 @@ pub struct Cli {
     /// The multiplier applied to revenue_window_seconds to get the duration over which reputation is bootstrapped.
     #[arg(long, default_value = DEFAULT_REPUTATION_MULTIPLIER)]
     pub reputation_multiplier: u8,
+
+    /// The directory to write output files to.
+    #[arg(long, default_value = DEFAULT_RESULTS_DIR)]
+    pub results_dir: PathBuf,
+
+    /// The alias of the target node.
+    #[arg(long)]
+    pub target_alias: String,
+
+    /// The alias of the attacking node.
+    #[arg(long)]
+    pub attacker_alias: String,
 }
 
 impl Cli {

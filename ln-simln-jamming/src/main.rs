@@ -52,9 +52,8 @@ async fn main() -> Result<(), BoxError> {
 
     // Match the target alias using pubkeys provided in sim network file, then collect the pubkeys of all the
     // non-attacker target peers.
-    let target_alias = "22";
-    let target_pubkey = find_pubkey_by_alias(target_alias, &sim_network)?;
-    let attacker_pubkey = find_pubkey_by_alias("50", &sim_network)?;
+    let target_pubkey = find_pubkey_by_alias(&cli.target_alias, &sim_network)?;
+    let attacker_pubkey = find_pubkey_by_alias(&cli.attacker_alias, &sim_network)?;
 
     let target_channels =
         get_target_channel_descriptions(&sim_network, attacker_pubkey, target_pubkey);
@@ -70,7 +69,7 @@ async fn main() -> Result<(), BoxError> {
             None
         })
         .collect::<Vec<(PublicKey, String)>>();
-    monitor_nodes.push((target_pubkey, target_alias.to_string()));
+    monitor_nodes.push((target_pubkey, cli.target_alias.to_string()));
 
     // Create a map of all the target's channels, and a vec of its non-attacking peers.
     let target_channel_map = target_channels
@@ -149,6 +148,7 @@ async fn main() -> Result<(), BoxError> {
 
     // Create a writer to store results for nodes that we care about.
     let results_writer = Arc::new(Mutex::new(BatchForwardWriter::new(
+        cli.results_dir.clone(),
         &monitor_nodes,
         cli.result_batch_size,
     )));
