@@ -6,6 +6,7 @@ use serde::ser::SerializeStruct;
 use serde::{Serialize, Serializer};
 use std::collections::HashMap;
 use std::fs::{metadata, OpenOptions};
+use std::path::{Path, PathBuf};
 
 /// Implemented to report forwards for analytics and data recording.
 pub trait ForwardReporter: Send + Sync {
@@ -79,10 +80,11 @@ pub struct BatchForwardWriter {
     /// The number of forwards to accumulate in memory before writing to disk.
     batch_size: u16,
     record_count: u16,
+    path: PathBuf,
 }
 
 impl BatchForwardWriter {
-    pub fn new(nodes: &[(PublicKey, String)], batch_size: u16) -> Self {
+    pub fn new(path: PathBuf, nodes: &[(PublicKey, String)], batch_size: u16) -> Self {
         Self {
             nodes: nodes
                 .iter()
@@ -91,6 +93,7 @@ impl BatchForwardWriter {
                 .collect(),
             batch_size,
             record_count: 0,
+            path,
         }
     }
 
@@ -104,7 +107,7 @@ impl BatchForwardWriter {
                 continue;
             }
 
-            write_records_for_node(get_filename(pubkey, alias.to_string()), records)?;
+            write_records_for_node(get_file(&self.path, pubkey, alias.to_string()), records)?;
             records.clear();
         }
         self.record_count = 0;
@@ -113,17 +116,14 @@ impl BatchForwardWriter {
     }
 }
 
-fn get_filename(node: &PublicKey, alias: String) -> String {
-    format!("{alias}_{}.csv", &node.to_string()[0..6])
+fn get_file(path: &Path, node: &PublicKey, alias: String) -> PathBuf {
+    path.join(format!("{alias}_{}.csv", &node.to_string()[0..6]))
 }
 
-fn write_records_for_node(filename: String, records: &[Record]) -> Result<(), BoxError> {
-    let file_exists = metadata(&filename).is_ok();
+fn write_records_for_node(path: PathBuf, records: &[Record]) -> Result<(), BoxError> {
+    let file_exists = metadata(&path).is_ok();
 
-    let file = OpenOptions::new()
-        .append(true)
-        .create(true)
-        .open(&filename)?;
+    let file = OpenOptions::new().append(true).create(true).open(&path)?;
 
     let mut writer = WriterBuilder::new()
         .has_headers(!file_exists)
@@ -156,10 +156,11 @@ impl ForwardReporter for BatchForwardWriter {
 #[cfg(test)]
 mod tests {
     use std::fs::read_to_string;
-    use std::path::Path;
+    use std::path::{Path, PathBuf};
+    use std::str::FromStr;
     use std::time::SystemTime;
 
-    use crate::analysis::get_filename;
+    use crate::analysis::get_file;
     use crate::test_utils::{get_random_keypair, test_allocation_check, test_proposed_forward};
 
     use super::{BatchForwardWriter, ForwardReporter};
@@ -170,7 +171,11 @@ mod tests {
         let node_0 = get_random_keypair().1;
         let node_1 = get_random_keypair().1;
 
-        let mut writer = BatchForwardWriter::new(&[(node_0, "0".to_string())], 5);
+        let mut writer = BatchForwardWriter::new(
+            PathBuf::from_str(".").unwrap(),
+            &[(node_0, "0".to_string())],
+            5,
+        );
 
         // Tracked node reported.
         let tracked_forward = test_proposed_forward(0);
@@ -208,9 +213,10 @@ mod tests {
                 .unwrap()
                 .as_secs(),
         );
-        let filename = get_filename(&node_0, alias.clone());
+        let path = PathBuf::from_str(".").unwrap();
+        let filename = get_file(&path, &node_0, alias.clone());
 
-        let mut writer = BatchForwardWriter::new(&[(node_0, alias)], 2);
+        let mut writer = BatchForwardWriter::new(path, &[(node_0, alias)], 2);
 
         // Track a forward that should be written to disk.
         writer

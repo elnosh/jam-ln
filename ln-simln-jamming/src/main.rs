@@ -149,6 +149,7 @@ async fn main() -> Result<(), BoxError> {
 
     // Create a writer to store results for nodes that we care about.
     let results_writer = Arc::new(Mutex::new(BatchForwardWriter::new(
+        cli.results_dir.clone(),
         &monitor_nodes,
         cli.result_batch_size,
     )));
