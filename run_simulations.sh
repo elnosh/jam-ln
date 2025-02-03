@@ -1,42 +1,36 @@
 #!/bin/bash
+if [ $# -eq 0 ] || [ $# -gt 2 ]; then
+    echo "Expected network name"
+    exit 1
+fi
+
+network_name="$1"
+target=$(cat data/"$network_name"/target.txt)
 
 # Define the different values to iterate over
-reputation_values=(1000000 5000000 15000000)  # 1 USD, 5 USD, 15 USD
 attacker_bootstrap_values=("30d" "90d" "165d")
 
 # Loop through each combination of attacker-bootstrap and reputation-margin-msat
 for attacker_bootstrap in "${attacker_bootstrap_values[@]}"; do
-  for reputation_margin_msat in "${reputation_values[@]}"; do
-    # Determine the USD value of the reputation margin for the results directory name
-    if [[ $reputation_margin_msat -eq 1000000 ]]; then
-      usd_value="1USD"
-    elif [[ $reputation_margin_msat -eq 5000000 ]]; then
-      usd_value="5USD"
-    else
-      usd_value="15USD"
-    fi
-
-    # Create the results directory based on attacker-bootstrap and USD value of reputation margin
-    results_dir="results/ln50_${attacker_bootstrap}_${usd_value}"
+    results_dir="results/${network_name}_${attacker_bootstrap}"
     mkdir -p "$results_dir"
 
     # Run the cargo command in the background and redirect its output to logs.txt
     cargo run --package ln-simln-jamming \
       -- --attacker-bootstrap="$attacker_bootstrap" \
-      --sim-file data/ln_50/simln_withattacker.json \
-      --peacetime-file data/ln_50/no_attacker.csv \
-      --bootstrap-file data/ln_50/with_attacker.csv \
+      --sim-file data/"$network_name"/simln.json \
+      --peacetime-file data/"$network_name"/peacetime.csv \
+      --bootstrap-file data/"$network_name"/bootstrap.csv \
       --target-reputation-percent=25 \
       --attacker-reputation-percent=25 \
       --clock-speedup 100 \
-      --target-alias=22 \
+      --target-alias="$target" \
       --attacker-alias=50 \
       --results-dir "$results_dir" \
-      --reputation-margin-msat "$reputation_margin_msat" \
+      --reputation-margin-msat 1000000 \
       >> "$results_dir/logs.txt" 2>&1 &
 
-    echo "Started simulation for attacker-bootstrap=$attacker_bootstrap, reputation-margin-msat=$reputation_margin_msat. Logs are being written to $results_dir/logs.txt"
-  done
+    echo "Started simulation for attacker-bootstrap=$attacker_bootstrap, network=$network_name. Logs are being written to $results_dir/logs.txt"
 done
 
 # Wait for all background jobs to finish before exiting
