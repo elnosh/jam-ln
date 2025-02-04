@@ -22,7 +22,9 @@ To run the simulation you will need:
 - `peacetime.csv`: a csv containing projected forwards for the network
   *excluding* the attacker's channels.
 
-TODO: examples of projections.
+Projections are generated using [a sim-ln branch](https://github.com/carlaKC/sim-ln/tree/interceptor-latency)
+that runs on a fully simulated network and outputs forwarding records
+for each node in the network.
 
 To run the simulator with the above files in the current directory:
 ```
