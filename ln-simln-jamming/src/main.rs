@@ -279,7 +279,7 @@ async fn main() -> Result<(), BoxError> {
 
     let interceptors = vec![
         latency_interceptor,
-        attack_interceptor,
+        attack_interceptor.clone(),
         revenue_interceptor.clone(),
     ];
 
@@ -295,7 +295,7 @@ async fn main() -> Result<(), BoxError> {
         SimulationCfg::new(None, 3_800_000, 2.0, None, Some(13995354354227336701)),
         channels,
         vec![], // No activities, we want random activity!
-        clock,
+        clock.clone(),
         interceptors,
         listener,
         shutdown,
@@ -307,8 +307,21 @@ async fn main() -> Result<(), BoxError> {
     simulation.run().await?;
     graph.lock().await.wait_for_shutdown().await;
 
+    // Write start and end state to a summary file.
+    let end_reputation = attack_interceptor
+        .get_reputation_status(InstantClock::now(&*clock))
+        .await?;
+
     let snapshot = revenue_interceptor.get_revenue_difference().await;
-    write_simulation_summary(cli.results_dir, &snapshot)?;
+    write_simulation_summary(
+        cli.results_dir,
+        cli.reputation_margin_msat,
+        cli.reputation_margin_expiry_blocks,
+        &forward_params,
+        &snapshot,
+        &start_reputation,
+        &end_reputation,
+    )?;
 
     Ok(())
 }
@@ -454,7 +467,15 @@ fn check_reputation_status(
     Ok(())
 }
 
-fn write_simulation_summary(data_dir: PathBuf, revenue: &RevenueSnapshot) -> Result<(), BoxError> {
+fn write_simulation_summary(
+    data_dir: PathBuf,
+    reputation_margin_msat: u64,
+    reputation_margin_expiry_blocks: u32,
+    params: &ForwardManagerParams,
+    revenue: &RevenueSnapshot,
+    start_reputation: &NetworkReputation,
+    end_reputation: &NetworkReputation,
+) -> Result<(), BoxError> {
     let file = OpenOptions::new()
         .append(true)
         .create(true)
@@ -488,6 +509,43 @@ fn write_simulation_summary(data_dir: PathBuf, revenue: &RevenueSnapshot) -> Res
         )?;
     }
 
+    let start_count = get_reputation_count(
+        reputation_margin_msat,
+        reputation_margin_expiry_blocks,
+        params,
+        start_reputation,
+    );
+    let end_count = get_reputation_count(
+        reputation_margin_msat,
+        reputation_margin_expiry_blocks,
+        params,
+        end_reputation,
+    );
+    writeln!(
+        writer,
+        "Attacker start reputation (pairs): {}/{}",
+        start_count.0,
+        start_reputation.attacker_reputation.len()
+    )?;
+    writeln!(
+        writer,
+        "Attacker end reputation (pairs): {}/{}",
+        end_count.0,
+        end_reputation.attacker_reputation.len()
+    )?;
+
+    writeln!(
+        writer,
+        "Target start reputation (pairs): {}/{}",
+        start_count.1,
+        start_reputation.target_reputation.len()
+    )?;
+    writeln!(
+        writer,
+        "Target end reputation (pairs): {}/{}",
+        end_count.1,
+        end_reputation.target_reputation.len()
+    )?;
     writer.flush()?;
 
     Ok(())
