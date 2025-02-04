@@ -4,9 +4,9 @@ use ln_resource_mgr::outgoing_reputation::{ForwardManagerParams, ReputationParam
 use ln_simln_jamming::analysis::BatchForwardWriter;
 use ln_simln_jamming::clock::InstantClock;
 use ln_simln_jamming::parsing::{get_history_for_bootstrap, history_from_file, Cli};
-use ln_simln_jamming::reputation_interceptor::{ReputationInterceptor, ReputationMonitor};
-use ln_simln_jamming::revenue_interceptor::{self, RevenueInterceptor, RevenueSnapshot};
-use ln_simln_jamming::sink_interceptor::{SinkInterceptor, TargetChannelType};
+use ln_simln_jamming::reputation_interceptor::ReputationInterceptor;
+use ln_simln_jamming::revenue_interceptor::{RevenueInterceptor, RevenueSnapshot};
+use ln_simln_jamming::sink_interceptor::{NetworkReputation, SinkInterceptor, TargetChannelType};
 use ln_simln_jamming::BoxError;
 use log::LevelFilter;
 use serde::{Deserialize, Serialize};
@@ -21,7 +21,7 @@ use std::fs::{self, OpenOptions};
 use std::io::{BufWriter, Write};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 use tokio::select;
 use tokio::task::JoinSet;
 
@@ -198,14 +198,11 @@ async fn main() -> Result<(), BoxError> {
 
     // Do some preliminary checks on our reputation state - there isn't much point in running if we haven't built up
     // some reputation.
-    check_reputation_status(
-        &attack_interceptor,
-        &cli,
-        forward_params,
-        InstantClock::now(&*clock),
-        true,
-    )
-    .await?;
+    let start_reputation = attack_interceptor
+        .get_reputation_status(InstantClock::now(&*clock))
+        .await?;
+
+    check_reputation_status(&cli, &forward_params, &start_reputation, true)?;
 
     let attack_interceptor = Arc::new(attack_interceptor);
 
@@ -215,7 +212,7 @@ async fn main() -> Result<(), BoxError> {
     let attack_listener = listener.clone();
     let attack_shutdown = shutdown.clone();
     let reputation_threshold = forward_params.htlc_opportunity_cost(
-        get_reputation_margin_fee(&cli),
+        get_reputation_margin_fee(cli.reputation_margin_msat),
         cli.reputation_margin_expiry_blocks,
     );
 
@@ -378,38 +375,40 @@ fn find_pubkey_by_alias(alias: &str, sim_network: &[NetworkParser]) -> Result<Pu
     })
 }
 
-fn get_reputation_margin_fee(cli: &Cli) -> u64 {
-    1000 + (0.0001 * cli.reputation_margin_msat as f64) as u64
+fn get_reputation_margin_fee(reputation_margin_msat: u64) -> u64 {
+    1000 + (0.0001 * reputation_margin_msat as f64) as u64
 }
+
+fn get_reputation_count(
+    reputation_margin_msat: u64,
+    reputation_margin_expiry_blocks: u32,
+    params: &ForwardManagerParams,
+    status: &NetworkReputation,
+) -> (usize, usize) {
+    let margin_fee = get_reputation_margin_fee(reputation_margin_msat);
+
+    let attacker_reputation =
+        status.reputation_count(false, &params, margin_fee, reputation_margin_expiry_blocks);
+
+    let target_reputation =
+        status.reputation_count(true, &params, margin_fee, reputation_margin_expiry_blocks);
+
+    (attacker_reputation, target_reputation)
+}
+
 /// Gets reputation pairs for the target node and attacking node, logs them and optionally checking that each node
 /// meets the configured threshold of good reputation if require_reputation is set.
-async fn check_reputation_status<C, R>(
-    attack_interceptor: &SinkInterceptor<C, R>,
+fn check_reputation_status(
     cli: &Cli,
-    params: ForwardManagerParams,
-    instant: Instant,
+    params: &ForwardManagerParams,
+    status: &NetworkReputation,
     require_reputation: bool,
-) -> Result<(), BoxError>
-where
-    C: InstantClock + Clock,
-    R: Interceptor + ReputationMonitor,
-{
-    let status = attack_interceptor.get_reputation_status(instant).await?;
-
-    let margin_fee = get_reputation_margin_fee(cli);
-
-    let attacker_reputation = status.reputation_count(
-        false,
-        &params,
-        margin_fee,
+) -> Result<(), BoxError> {
+    let (attacker_reputation, target_reputation) = get_reputation_count(
+        cli.reputation_margin_msat,
         cli.reputation_margin_expiry_blocks,
-    );
-
-    let target_reputation = status.reputation_count(
-        true,
-        &params,
-        margin_fee,
-        cli.reputation_margin_expiry_blocks,
+        params,
+        status,
     );
 
     log::info!(
