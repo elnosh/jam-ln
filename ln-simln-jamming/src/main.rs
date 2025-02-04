@@ -5,7 +5,7 @@ use ln_simln_jamming::analysis::BatchForwardWriter;
 use ln_simln_jamming::clock::InstantClock;
 use ln_simln_jamming::parsing::{get_history_for_bootstrap, history_from_file, Cli};
 use ln_simln_jamming::reputation_interceptor::{ReputationInterceptor, ReputationMonitor};
-use ln_simln_jamming::revenue_interceptor::RevenueInterceptor;
+use ln_simln_jamming::revenue_interceptor::{self, RevenueInterceptor, RevenueSnapshot};
 use ln_simln_jamming::sink_interceptor::{SinkInterceptor, TargetChannelType};
 use ln_simln_jamming::BoxError;
 use log::LevelFilter;
@@ -17,7 +17,9 @@ use simln_lib::sim_node::{Interceptor, SimulatedChannel};
 use simln_lib::{NetworkParser, ShortChannelID, Simulation, SimulationCfg};
 use simple_logger::SimpleLogger;
 use std::collections::HashMap;
-use std::fs;
+use std::fs::{self, OpenOptions};
+use std::io::{BufWriter, Write};
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tokio::select;
@@ -278,7 +280,11 @@ async fn main() -> Result<(), BoxError> {
         }
     });
 
-    let interceptors = vec![latency_interceptor, attack_interceptor, revenue_interceptor];
+    let interceptors = vec![
+        latency_interceptor,
+        attack_interceptor,
+        revenue_interceptor.clone(),
+    ];
 
     // Simulated channels for our simulated graph.
     let channels = sim_network
@@ -303,6 +309,9 @@ async fn main() -> Result<(), BoxError> {
     // Run simulation until it shuts down, then wait for the graph to exit.
     simulation.run().await?;
     graph.lock().await.wait_for_shutdown().await;
+
+    let snapshot = revenue_interceptor.get_revenue_difference().await;
+    write_simulation_summary(cli.results_dir, &snapshot)?;
 
     Ok(())
 }
@@ -442,6 +451,45 @@ where
         )
         .into());
     }
+
+    Ok(())
+}
+
+fn write_simulation_summary(data_dir: PathBuf, revenue: &RevenueSnapshot) -> Result<(), BoxError> {
+    let file = OpenOptions::new()
+        .append(true)
+        .create(true)
+        .open(data_dir.join("summary.txt"))?;
+
+    let mut writer = BufWriter::new(file);
+
+    writeln!(writer, "Runtime (seconds): {:?}", revenue.runtime.as_secs())?;
+    writeln!(
+        writer,
+        "Peacetime revenue (msat): {}",
+        revenue.peacetime_revenue_msat
+    )?;
+    writeln!(
+        writer,
+        "Simulation revenue (msat): {}",
+        revenue.simulation_revenue_msat,
+    )?;
+
+    if revenue.simulation_revenue_msat > revenue.peacetime_revenue_msat {
+        writeln!(
+            writer,
+            "Revenue gain in simulation: {}",
+            revenue.simulation_revenue_msat - revenue.peacetime_revenue_msat,
+        )?;
+    } else {
+        writeln!(
+            writer,
+            "Revenue loss in simulation: {}",
+            revenue.peacetime_revenue_msat - revenue.simulation_revenue_msat,
+        )?;
+    }
+
+    writer.flush()?;
 
     Ok(())
 }
