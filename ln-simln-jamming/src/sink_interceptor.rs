@@ -410,6 +410,7 @@ mod tests {
     use std::convert::From;
     use std::error::Error;
     use std::sync::Arc;
+    use std::time::Instant;
 
     use crate::reputation_interceptor::{HtlcAdd, ReputationMonitor, ReputationPair};
     use crate::test_utils::{get_random_keypair, setup_test_request, test_allocation_check};
@@ -671,5 +672,229 @@ mod tests {
             &not_actually_attacker,
         );
         interceptor.intercept_htlc(not_actually_attacker).await;
+    }
+
+    // Gets reputation pair statistics for a network with the following topology:
+    //
+    /// --(4) --+
+    ///         |
+    /// --(5)-- P1 --(1) ---+
+    ///				        |
+    /// --(6)-- P2 --(2) -- Target --(0) -- Attacker
+    ///				        |
+    ///         P3 --(3) ---+
+    #[tokio::test]
+    async fn test_reputation_status() {
+        let mut interceptor = setup_interceptor_test();
+
+        let target_pubkey = interceptor.target_pubkey;
+        let peer_1 = interceptor.honest_peers[0];
+        let peer_2 = interceptor.honest_peers[1];
+        let peer_3 = interceptor.honest_peers[2];
+
+        let attacker_chan = ShortChannelID::from(0).into();
+        let chan_1 = ShortChannelID::from(1).into();
+        let chan_2 = ShortChannelID::from(2).into();
+        let chan_3 = ShortChannelID::from(3).into();
+
+        let peer_1_incoming_1 = ShortChannelID::from(4).into();
+        let peer_1_incoming_2 = ShortChannelID::from(5).into();
+
+        let peer_2_incoming_1 = ShortChannelID::from(6).into();
+
+        // Pairs from target -> attacker from the target's perspective.
+        let target_to_attacker_pairs = vec![
+            ReputationPair {
+                incoming_scid: chan_1,
+                outgoing_scid: attacker_chan,
+                outgoing_reputation: 0,
+                incoming_revenue: 100,
+            },
+            ReputationPair {
+                incoming_scid: chan_2,
+                outgoing_scid: attacker_chan,
+                outgoing_reputation: 0,
+                incoming_revenue: 200,
+            },
+            ReputationPair {
+                incoming_scid: chan_3,
+                outgoing_scid: attacker_chan,
+                outgoing_reputation: 0,
+                incoming_revenue: 300,
+            },
+        ];
+        let target_to_attacker_expected = target_to_attacker_pairs.clone();
+
+        // Paris from peer_1 -> target from the peer's perspective.
+        let peer_1_to_target_pairs = vec![
+            ReputationPair {
+                incoming_scid: peer_1_incoming_1,
+                outgoing_scid: chan_1,
+                outgoing_reputation: 0,
+                incoming_revenue: 400,
+            },
+            ReputationPair {
+                incoming_scid: peer_1_incoming_2,
+                outgoing_scid: chan_1,
+                outgoing_reputation: 0,
+                incoming_revenue: 500,
+            },
+        ];
+
+        // Pairs from peer_2 -> target from the peer's perspective.
+        let peer_2_to_target_pairs = vec![ReputationPair {
+            incoming_scid: peer_2_incoming_1,
+            outgoing_scid: chan_2,
+            outgoing_reputation: 0,
+            incoming_revenue: 600,
+        }];
+
+        let peers_to_target_expected = peer_1_to_target_pairs
+            .iter()
+            .cloned()
+            .chain(peer_2_to_target_pairs.clone())
+            .collect::<Vec<ReputationPair>>();
+
+        // Setup the mock to expect to be called to list peers for each of the target's honest peers and the target
+        // itself. We return each possible pair of channels reputation score, as we're expecting our function to filter
+        // down to the appropriate pairs.
+        interceptor
+            .reputation_interceptor
+            .expect_list_reputation_pairs()
+            .returning(move |node: PublicKey, _: Instant| {
+                if node == target_pubkey {
+                    let pairs = vec![
+                        // Chan 1 as outgoing channel in pair.
+                        ReputationPair {
+                            incoming_scid: attacker_chan,
+                            outgoing_scid: chan_1,
+                            outgoing_reputation: 0,
+                            incoming_revenue: 700,
+                        },
+                        ReputationPair {
+                            incoming_scid: chan_2,
+                            outgoing_scid: chan_1,
+                            outgoing_reputation: 0,
+                            incoming_revenue: 800,
+                        },
+                        ReputationPair {
+                            incoming_scid: chan_3,
+                            outgoing_scid: chan_1,
+                            outgoing_reputation: 0,
+                            incoming_revenue: 900,
+                        },
+                        // Chan 2 as outgoing channel in pair.
+                        ReputationPair {
+                            incoming_scid: attacker_chan,
+                            outgoing_scid: chan_2,
+                            outgoing_reputation: 0,
+                            incoming_revenue: 1000,
+                        },
+                        ReputationPair {
+                            incoming_scid: chan_1,
+                            outgoing_scid: chan_2,
+                            outgoing_reputation: 0,
+                            incoming_revenue: 1100,
+                        },
+                        ReputationPair {
+                            incoming_scid: chan_3,
+                            outgoing_scid: chan_2,
+                            outgoing_reputation: 0,
+                            incoming_revenue: 1200,
+                        },
+                        // Chan 3 as outgoing channel in pair.
+                        ReputationPair {
+                            incoming_scid: attacker_chan,
+                            outgoing_scid: chan_3,
+                            outgoing_reputation: 0,
+                            incoming_revenue: 1300,
+                        },
+                        ReputationPair {
+                            incoming_scid: chan_1,
+                            outgoing_scid: chan_3,
+                            outgoing_reputation: 0,
+                            incoming_revenue: 1400,
+                        },
+                        ReputationPair {
+                            incoming_scid: chan_2,
+                            outgoing_scid: chan_3,
+                            outgoing_reputation: 0,
+                            incoming_revenue: 1500,
+                        },
+                    ];
+
+                    return Ok(target_to_attacker_pairs
+                        .iter()
+                        .cloned()
+                        .chain(pairs)
+                        .collect());
+                }
+
+                if node == peer_1 {
+                    let pairs = vec![
+                        // Incoming 1 as outgoing channel.
+                        ReputationPair {
+                            incoming_scid: chan_1,
+                            outgoing_scid: peer_1_incoming_1,
+                            outgoing_reputation: 0,
+                            incoming_revenue: 1600,
+                        },
+                        ReputationPair {
+                            incoming_scid: peer_1_incoming_2,
+                            outgoing_scid: peer_1_incoming_1,
+                            outgoing_reputation: 0,
+                            incoming_revenue: 1700,
+                        },
+                        // Incoming 2 as outgoing channel.
+                        ReputationPair {
+                            incoming_scid: chan_1,
+                            outgoing_scid: peer_1_incoming_2,
+                            outgoing_reputation: 0,
+                            incoming_revenue: 1800,
+                        },
+                        ReputationPair {
+                            incoming_scid: peer_1_incoming_1,
+                            outgoing_scid: peer_1_incoming_2,
+                            outgoing_reputation: 0,
+                            incoming_revenue: 1900,
+                        },
+                    ];
+
+                    return Ok(peer_1_to_target_pairs
+                        .iter()
+                        .cloned()
+                        .chain(pairs)
+                        .collect());
+                }
+
+                if node == peer_2 {
+                    let pairs = vec![ReputationPair {
+                        incoming_scid: chan_2,
+                        outgoing_scid: peer_1_incoming_2,
+                        outgoing_reputation: 0,
+                        incoming_revenue: 2000,
+                    }];
+
+                    return Ok(peer_2_to_target_pairs
+                        .iter()
+                        .cloned()
+                        .chain(pairs)
+                        .collect());
+                }
+
+                if node == peer_3 {
+                    return Ok(vec![]);
+                }
+
+                Err(format!("unknown node: {node}").into())
+            });
+
+        let status = interceptor
+            .get_reputation_status(Instant::now())
+            .await
+            .unwrap();
+
+        assert_eq!(status.attacker_reputation, target_to_attacker_expected);
+        assert_eq!(status.target_reputation, peers_to_target_expected);
     }
 }
