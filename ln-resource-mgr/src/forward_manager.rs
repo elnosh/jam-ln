@@ -102,6 +102,43 @@ struct ForwardManagerImpl {
     channels: HashMap<u64, TrackedChannel>,
 }
 
+impl ForwardManagerImpl {
+    fn get_forwarding_outcome(
+        &mut self,
+        forward: &ProposedForward,
+    ) -> Result<AllocationCheck, ReputationError> {
+        forward.validate()?;
+
+        // Get the incoming revenue threshold that the outgoing channel must meet.
+        let incoming_threshold = self
+            .channels
+            .get_mut(&forward.incoming_ref.channel_id)
+            .ok_or(ReputationError::ErrIncomingNotFound(
+                forward.incoming_ref.channel_id,
+            ))?
+            .incoming_revenue
+            .value_at_instant(forward.added_at)?;
+
+        // Check reputation and resources available for the forward.
+        let outgoing_channel = &mut self
+            .channels
+            .get_mut(&forward.outgoing_channel_id)
+            .ok_or(ReputationError::ErrOutgoingNotFound(
+                forward.outgoing_channel_id,
+            ))?
+            .outgoing_direction;
+
+        Ok(AllocationCheck {
+            reputation_check: outgoing_channel.new_reputation_check(
+                forward.added_at,
+                incoming_threshold,
+                forward,
+            )?,
+            resource_check: outgoing_channel.general_bucket_resources(),
+        })
+    }
+}
+
 impl ForwardManager {
     pub fn new(params: ForwardManagerParams) -> Self {
         Self {
@@ -176,51 +213,24 @@ impl ReputationManager for ForwardManager {
         &self,
         forward: &ProposedForward,
     ) -> Result<AllocationCheck, ReputationError> {
-        forward.validate()?;
-
-        let inner_lock = &mut self
-            .inner
+        self.inner
             .lock()
             .map_err(|e| ReputationError::ErrUnrecoverable(e.to_string()))?
-            .channels;
-
-        // Get the incoming revenue threshold that the outgoing channel must meet.
-        let incoming_threshold = inner_lock
-            .get_mut(&forward.incoming_ref.channel_id)
-            .ok_or(ReputationError::ErrIncomingNotFound(
-                forward.incoming_ref.channel_id,
-            ))?
-            .incoming_revenue
-            .value_at_instant(forward.added_at)?;
-
-        // Check reputation and resources available for the forward.
-        let outgoing_channel = &mut inner_lock
-            .get_mut(&forward.outgoing_channel_id)
-            .ok_or(ReputationError::ErrOutgoingNotFound(
-                forward.outgoing_channel_id,
-            ))?
-            .outgoing_direction;
-
-        Ok(AllocationCheck {
-            reputation_check: outgoing_channel.new_reputation_check(
-                forward.added_at,
-                incoming_threshold,
-                forward,
-            )?,
-            resource_check: outgoing_channel.general_bucket_resources(),
-        })
+            .get_forwarding_outcome(forward)
     }
 
     fn add_htlc(&self, forward: &ProposedForward) -> Result<AllocationCheck, ReputationError> {
-        // TODO: locks not atomic
-        let allocation_check = self.get_forwarding_outcome(forward)?;
+        let mut inner_lock = self
+            .inner
+            .lock()
+            .map_err(|e| ReputationError::ErrUnrecoverable(e.to_string()))?;
+
+        let allocation_check = inner_lock.get_forwarding_outcome(forward)?;
 
         if let ForwardingOutcome::Forward(_) =
             allocation_check.forwarding_outcome(forward.amount_out_msat, forward.incoming_endorsed)
         {
-            self.inner
-                .lock()
-                .map_err(|e| ReputationError::ErrUnrecoverable(e.to_string()))?
+            inner_lock
                 .channels
                 .get_mut(&forward.outgoing_channel_id)
                 .ok_or(ReputationError::ErrOutgoingNotFound(
