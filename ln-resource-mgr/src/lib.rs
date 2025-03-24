@@ -1,5 +1,6 @@
 mod decaying_average;
-pub mod outgoing_reputation;
+pub mod forward_manager;
+mod outgoing_reputation;
 
 use serde::Serialize;
 use std::collections::HashMap;

@@ -3,7 +3,7 @@ use crate::clock::InstantClock;
 use crate::{endorsement_from_records, records_from_endorsement, BoxError};
 use async_trait::async_trait;
 use bitcoin::secp256k1::PublicKey;
-use ln_resource_mgr::outgoing_reputation::{
+use ln_resource_mgr::forward_manager::{
     ForwardManager, ForwardManagerParams, SimualtionDebugManager,
 };
 use ln_resource_mgr::{
@@ -556,7 +556,7 @@ where
 mod tests {
     use async_trait::async_trait;
     use bitcoin::secp256k1::PublicKey;
-    use ln_resource_mgr::outgoing_reputation::{
+    use ln_resource_mgr::forward_manager::{
         ForwardManager, ForwardManagerParams, ReputationParams,
     };
     use ln_resource_mgr::{
