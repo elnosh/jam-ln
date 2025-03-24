@@ -2,7 +2,7 @@ mod decaying_average;
 pub mod forward_manager;
 pub use htlc_manager::ReputationParams;
 mod htlc_manager;
-mod outgoing_reputation;
+mod outgoing_channel;
 
 use serde::Serialize;
 use std::collections::HashMap;

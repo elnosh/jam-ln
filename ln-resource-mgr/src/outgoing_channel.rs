@@ -5,6 +5,8 @@ use crate::decaying_average::DecayingAverage;
 use crate::htlc_manager::{InFlightHtlc, ReputationParams};
 use crate::{ForwardResolution, ReputationError};
 
+/// Tracks information about the usage of a channel when it utilized as the outgoing direction in
+/// a htlc forward.
 #[derive(Clone, Debug)]
 pub(super) struct OutgoingChannel {
     params: ReputationParams,

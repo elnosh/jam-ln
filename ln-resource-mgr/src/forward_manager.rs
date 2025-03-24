@@ -1,6 +1,6 @@
 use crate::decaying_average::DecayingAverage;
 use crate::htlc_manager::{ChannelFilter, InFlightHtlc, InFlightManager};
-use crate::outgoing_reputation::OutgoingChannel;
+use crate::outgoing_channel::OutgoingChannel;
 use crate::{
     AllocationCheck, ForwardResolution, HtlcRef, ProposedForward, ReputationCheck, ReputationError,
     ReputationManager, ReputationParams, ReputationSnapshot, ResourceBucketType, ResourceCheck,
