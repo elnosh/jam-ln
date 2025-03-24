@@ -1,67 +1,14 @@
 use crate::decaying_average::DecayingAverage;
+use crate::htlc_manager::{ChannelFilter, InFlightHtlc, InFlightManager};
 use crate::outgoing_reputation::OutgoingChannel;
 use crate::{
-    validate_msat, AllocationCheck, EndorsementSignal, ForwardResolution, HtlcRef, ProposedForward,
-    ReputationError, ReputationManager, ReputationSnapshot,
+    AllocationCheck, ForwardResolution, HtlcRef, ProposedForward, ReputationCheck, ReputationError,
+    ReputationManager, ReputationParams, ReputationSnapshot, ResourceBucketType, ResourceCheck,
 };
 use std::collections::hash_map::Entry;
 use std::collections::HashMap;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct ReputationParams {
-    /// The period of time that revenue should be tracked to determine the threshold for reputation decisions.
-    pub revenue_window: Duration,
-    /// The multiplier applied to [`revenue_window`] that determines the period that reputation is built over.
-    pub reputation_multiplier: u8,
-    /// The threshold above which htlcs will be penalized for slow resolution.
-    pub resolution_period: Duration,
-    /// Expected block speed, surfaced to allow test networks to set different durations, defaults to 10 minutes
-    /// otherwise.
-    pub expected_block_speed: Option<Duration>,
-}
-
-impl ReputationParams {
-    /// Calculates the opportunity_cost of a htlc being held on our channel - allowing one [`reputation_period`]'s
-    /// grace period, then charging for every subsequent period.
-    pub(super) fn opportunity_cost(&self, fee_msat: u64, hold_time: Duration) -> u64 {
-        (hold_time.as_secs() / self.resolution_period.as_secs()).saturating_mul(fee_msat)
-    }
-
-    /// Calculates the worst case reputation damage of a htlc, assuming it'll be held for its full expiry_delta.
-    pub(super) fn htlc_risk(&self, fee_msat: u64, expiry_delta: u32) -> u64 {
-        let max_hold_time = self
-            .expected_block_speed
-            .unwrap_or_else(|| Duration::from_secs(60 * 10))
-            * expiry_delta;
-
-        self.opportunity_cost(fee_msat, max_hold_time)
-    }
-
-    /// Calculates the fee contribution of a htlc, based on its hold time, endorsement and resolution.
-    pub(super) fn effective_fees(
-        &self,
-        fee_msat: u64,
-        hold_time: Duration,
-        incoming_endorsed: EndorsementSignal,
-        settled: bool,
-    ) -> Result<i64, ReputationError> {
-        // If the htlc was successful, its fees contribute to our effective fee.
-        let paid_fees = if settled { validate_msat(fee_msat)? } else { 0 };
-
-        let effective_fees = paid_fees.saturating_sub(
-            i64::try_from(self.opportunity_cost(fee_msat, hold_time)).unwrap_or(i64::MAX),
-        );
-
-        // Unendorsed htlcs do not have a negative impact on reputation.
-        if incoming_endorsed == EndorsementSignal::Unendorsed && effective_fees < 0 {
-            return Ok(0);
-        }
-
-        Ok(effective_fees)
-    }
-}
 
 /// Tracks reputation and revenue for a channel.
 #[derive(Debug)]
@@ -100,6 +47,7 @@ pub struct ForwardManager {
 #[derive(Debug)]
 struct ForwardManagerImpl {
     channels: HashMap<u64, TrackedChannel>,
+    htlcs: InFlightManager,
 }
 
 impl ForwardManagerImpl {
@@ -129,12 +77,31 @@ impl ForwardManagerImpl {
             .outgoing_direction;
 
         Ok(AllocationCheck {
-            reputation_check: outgoing_channel.new_reputation_check(
-                forward.added_at,
-                incoming_threshold,
-                forward,
-            )?,
-            resource_check: outgoing_channel.general_bucket_resources(),
+            reputation_check: ReputationCheck {
+                outgoing_reputation: outgoing_channel.outgoing_reputation(forward.added_at)?,
+                incoming_revenue: incoming_threshold,
+                in_flight_total_risk: self.htlcs.channel_in_flight_risk(
+                    ChannelFilter::OutgoingChannel(forward.outgoing_channel_id),
+                ),
+                // The underlying simulation is block height agnostic, and starts its routes with a height of zero, so
+                // we can just use the incoming expiry to reflect "maximum time htlc can be held on channel", because
+                // we're calculating expiry_in_height - 0.
+                htlc_risk: self
+                    .htlcs
+                    .htlc_risk(forward.fee_msat(), forward.expiry_in_height),
+            },
+            resource_check: ResourceCheck {
+                general_slots_used: self.htlcs.bucket_in_flight_count(
+                    forward.outgoing_channel_id,
+                    ResourceBucketType::General,
+                ),
+                general_slots_availabe: outgoing_channel.general_slot_count,
+                general_liquidity_msat_used: self.htlcs.bucket_in_flight_msat(
+                    forward.outgoing_channel_id,
+                    ResourceBucketType::General,
+                ),
+                general_liquidity_msat_available: outgoing_channel.general_liquidity_msat,
+            },
         })
     }
 }
@@ -145,6 +112,7 @@ impl ForwardManager {
             params,
             inner: Mutex::new(ForwardManagerImpl {
                 channels: HashMap::new(),
+                htlcs: InFlightManager::new(params.reputation_params),
             }),
         }
     }
@@ -227,17 +195,21 @@ impl ReputationManager for ForwardManager {
 
         let allocation_check = inner_lock.get_forwarding_outcome(forward)?;
 
-        if let Ok(_) = allocation_check
+        if let Ok(bucket) = allocation_check
             .inner_forwarding_outcome(forward.amount_out_msat, forward.incoming_endorsed)
         {
-            inner_lock
-                .channels
-                .get_mut(&forward.outgoing_channel_id)
-                .ok_or(ReputationError::ErrOutgoingNotFound(
-                    forward.outgoing_channel_id,
-                ))?
-                .outgoing_direction
-                .add_outgoing_htlc(forward)?;
+            inner_lock.htlcs.add_htlc(
+                forward.incoming_ref,
+                InFlightHtlc {
+                    outgoing_channel_id: forward.outgoing_channel_id,
+                    hold_blocks: forward.expiry_in_height,
+                    outgoing_amt_msat: forward.amount_out_msat,
+                    fee_msat: forward.fee_msat(),
+                    added_instant: forward.added_at,
+                    incoming_endorsed: forward.incoming_endorsed,
+                    bucket,
+                },
+            )?;
         }
 
         Ok(allocation_check)
@@ -253,18 +225,22 @@ impl ReputationManager for ForwardManager {
         let inner_lock = &mut self
             .inner
             .lock()
-            .map_err(|e| ReputationError::ErrUnrecoverable(e.to_string()))?
-            .channels;
+            .map_err(|e| ReputationError::ErrUnrecoverable(e.to_string()))?;
 
         // Remove from outgoing channel, which will return the amount that we need to add to the incoming channel's
         // revenue for forwarding the htlc.
+        let in_flight = inner_lock
+            .htlcs
+            .remove_htlc(outgoing_channel, incoming_ref)?;
+
         let outgoing_channel_tracker = inner_lock
+            .channels
             .get_mut(&outgoing_channel)
             .ok_or(ReputationError::ErrOutgoingNotFound(outgoing_channel))?;
 
-        let in_flight = outgoing_channel_tracker
+        outgoing_channel_tracker
             .outgoing_direction
-            .remove_outgoing_htlc(outgoing_channel, incoming_ref, resolution, resolved_instant)?;
+            .remove_outgoing_htlc(&in_flight, resolution, resolved_instant)?;
 
         if resolution == ForwardResolution::Failed {
             return Ok(());
@@ -278,6 +254,7 @@ impl ReputationManager for ForwardManager {
             .add_value(fee_i64, resolved_instant)?;
 
         inner_lock
+            .channels
             .get_mut(&incoming_ref.channel_id)
             .ok_or(ReputationError::ErrIncomingNotFound(
                 incoming_ref.channel_id,

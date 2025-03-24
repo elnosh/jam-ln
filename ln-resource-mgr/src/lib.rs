@@ -1,5 +1,7 @@
 mod decaying_average;
 pub mod forward_manager;
+pub use htlc_manager::ReputationParams;
+mod htlc_manager;
 mod outgoing_reputation;
 
 use serde::Serialize;
@@ -143,6 +145,7 @@ pub struct AllocationCheck {
 }
 
 /// Represents the different resource buckets that htlcs can be assigned to.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ResourceBucketType {
     Protected,
     General,

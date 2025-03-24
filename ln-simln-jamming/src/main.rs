@@ -1,6 +1,7 @@
 use bitcoin::secp256k1::PublicKey;
 use clap::Parser;
-use ln_resource_mgr::forward_manager::{ForwardManagerParams, ReputationParams};
+use ln_resource_mgr::forward_manager::ForwardManagerParams;
+use ln_resource_mgr::ReputationParams;
 use ln_simln_jamming::analysis::BatchForwardWriter;
 use ln_simln_jamming::clock::InstantClock;
 use ln_simln_jamming::parsing::{get_history_for_bootstrap, history_from_file, Cli};

@@ -556,12 +556,10 @@ where
 mod tests {
     use async_trait::async_trait;
     use bitcoin::secp256k1::PublicKey;
-    use ln_resource_mgr::forward_manager::{
-        ForwardManager, ForwardManagerParams, ReputationParams,
-    };
+    use ln_resource_mgr::forward_manager::{ForwardManager, ForwardManagerParams};
     use ln_resource_mgr::{
         AllocationCheck, EndorsementSignal, ForwardResolution, HtlcRef, ProposedForward,
-        ReputationError, ReputationManager, ReputationSnapshot,
+        ReputationError, ReputationManager, ReputationParams, ReputationSnapshot,
     };
     use mockall::mock;
     use simln_lib::clock::SimulationClock;
