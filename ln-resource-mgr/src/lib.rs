@@ -342,7 +342,7 @@ pub fn validate_msat(amount_msat: u64) -> Result<i64, ReputationError> {
 
 pub trait ReputationManager {
     /// Should be called to add a channel to the manager to track its reputation and revenue, must be called before
-    /// any calls to [`get_forwarding_outcome`] or [`add_outgoing_htlc`] reference the channel.
+    /// any calls to [`get_forwarding_outcome`] or [`add_htlc`] reference the channel.
     fn add_channel(&self, channel_id: u64, capacity_msat: u64) -> Result<(), ReputationError>;
 
     /// Called to clean up a channel once it has been closed and is no longer usable for htlc forwards.
@@ -366,12 +366,9 @@ pub trait ReputationManager {
     ///
     /// Note that this API is not currently replay-safe, so any htlcs that are replayed on restart will return
     /// [`ReputationError::ErrDuplicateHtlc`].
-    fn add_outgoing_hltc(
-        &self,
-        forward: &ProposedForward,
-    ) -> Result<AllocationCheck, ReputationError>;
+    fn add_htlc(&self, forward: &ProposedForward) -> Result<AllocationCheck, ReputationError>;
 
-    /// Resolves a htlc that was previously added using [`add_outgoing_htlc`], returning
+    /// Resolves a htlc that was previously added using [`add_htlc`], returning
     /// [`ReputationError::ErrForwardNotFound`] if the htlc is not found.
     fn resolve_htlc(
         &self,

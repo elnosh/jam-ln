@@ -322,7 +322,7 @@ where
             Entry::Occupied(mut e) => {
                 let node = e.get_mut();
                 (
-                    node.forward_manager.add_outgoing_hltc(&htlc_add.htlc)?,
+                    node.forward_manager.add_htlc(&htlc_add.htlc)?,
                     node.alias.to_string(),
                 )
             }
@@ -597,7 +597,7 @@ mod tests {
                 forward: &ProposedForward,
             ) -> Result<AllocationCheck, ReputationError>;
 
-            fn add_outgoing_hltc(
+            fn add_htlc(
                 &self,
                 forward: &ProposedForward
             ) -> Result<AllocationCheck, ReputationError>;
@@ -715,12 +715,12 @@ mod tests {
             .get_mut(&pubkeys[0])
             .unwrap()
             .forward_manager
-            .expect_add_outgoing_hltc()
+            .expect_add_htlc()
             .return_once(|_| Ok(test_allocation_check(true)));
 
         interceptor.intercept_htlc(request).await;
 
-        // should call add_outgoing_htlc + return a reputation check that passes
+        // should call add_htlc + return a reputation check that passes
         assert!(matches!(
             endorsement_from_records(&receiver.recv().await.unwrap().unwrap().unwrap()),
             EndorsementSignal::Endorsed
@@ -741,12 +741,12 @@ mod tests {
             .get_mut(&pubkeys[0])
             .unwrap()
             .forward_manager
-            .expect_add_outgoing_hltc()
+            .expect_add_htlc()
             .return_once(|_| Ok(test_allocation_check(false)));
 
         interceptor.intercept_htlc(request).await;
 
-        // should call add_outgoing_htlc + return a reputation check that passes
+        // should call add_htlc + return a reputation check that passes
         assert!(matches!(
             endorsement_from_records(&receiver.recv().await.unwrap().unwrap().unwrap()),
             EndorsementSignal::Unendorsed

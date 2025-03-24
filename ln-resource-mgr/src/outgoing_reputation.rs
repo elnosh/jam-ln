@@ -148,10 +148,7 @@ impl ReputationManager for ForwardManager {
         })
     }
 
-    fn add_outgoing_hltc(
-        &self,
-        forward: &ProposedForward,
-    ) -> Result<AllocationCheck, ReputationError> {
+    fn add_htlc(&self, forward: &ProposedForward) -> Result<AllocationCheck, ReputationError> {
         // TODO: locks not atomic
         let allocation_check = self.get_forwarding_outcome(forward)?;
 
