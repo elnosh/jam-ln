@@ -1,5 +1,5 @@
 use crate::decaying_average::DecayingAverage;
-use crate::outgoing_reputation::OutgoingReputation;
+use crate::outgoing_reputation::OutgoingChannel;
 use crate::{
     validate_msat, AllocationCheck, EndorsementSignal, ForwardResolution, ForwardingOutcome,
     HtlcRef, ProposedForward, ReputationError, ReputationManager, ReputationSnapshot,
@@ -66,7 +66,7 @@ impl ReputationParams {
 /// Tracks reputation and revenue for a channel.
 #[derive(Debug)]
 struct TrackedChannel {
-    outgoing_reputation: OutgoingReputation,
+    outgoing_direction: OutgoingChannel,
     incoming_revenue: DecayingAverage,
 }
 
@@ -113,7 +113,7 @@ impl SimualtionDebugManager for ForwardManager {
             .map_err(|e| ReputationError::ErrUnrecoverable(e.to_string()))?
             .get_mut(&channel)
             .ok_or(ReputationError::ErrChannelNotFound(channel))?
-            .outgoing_reputation
+            .outgoing_direction
             .general_jam_channel();
 
         Ok(())
@@ -135,7 +135,7 @@ impl ReputationManager for ForwardManager {
                     capacity_msat * self.params.general_liquidity_portion as u64 / 100;
 
                 v.insert(TrackedChannel {
-                    outgoing_reputation: OutgoingReputation::new(
+                    outgoing_direction: OutgoingChannel::new(
                         self.params.reputation_params,
                         general_slot_count,
                         general_liquidity_amount,
@@ -188,7 +188,7 @@ impl ReputationManager for ForwardManager {
             .ok_or(ReputationError::ErrOutgoingNotFound(
                 forward.outgoing_channel_id,
             ))?
-            .outgoing_reputation;
+            .outgoing_direction;
 
         Ok(AllocationCheck {
             reputation_check: outgoing_channel.new_reputation_check(
@@ -214,7 +214,7 @@ impl ReputationManager for ForwardManager {
                 .ok_or(ReputationError::ErrOutgoingNotFound(
                     forward.outgoing_channel_id,
                 ))?
-                .outgoing_reputation
+                .outgoing_direction
                 .add_outgoing_htlc(forward)?;
         }
 
@@ -240,7 +240,7 @@ impl ReputationManager for ForwardManager {
             .ok_or(ReputationError::ErrOutgoingNotFound(outgoing_channel))?;
 
         let in_flight = outgoing_channel_tracker
-            .outgoing_reputation
+            .outgoing_direction
             .remove_outgoing_htlc(outgoing_channel, incoming_ref, resolution, resolved_instant)?;
 
         if resolution == ForwardResolution::Failed {
@@ -282,7 +282,7 @@ impl ReputationManager for ForwardManager {
                 *scid,
                 ReputationSnapshot {
                     outgoing_reputation: channel
-                        .outgoing_reputation
+                        .outgoing_direction
                         .outgoing_reputation(access_ins)?,
                     incoming_revenue: channel.incoming_revenue.value_at_instant(access_ins)?,
                 },

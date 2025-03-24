@@ -20,7 +20,7 @@ pub(super) struct InFlightHtlc {
 }
 
 #[derive(Clone, Debug)]
-pub(super) struct OutgoingReputation {
+pub(super) struct OutgoingChannel {
     params: ReputationParams,
 
     /// The reputation that the channel has accrued as the outgoing link in htlc forwards. Tracked as a decaying
@@ -39,7 +39,7 @@ pub(super) struct OutgoingReputation {
     general_liquidity_msat: u64,
 }
 
-impl OutgoingReputation {
+impl OutgoingChannel {
     pub(super) fn new(
         params: ReputationParams,
         general_slot_count: u16,
@@ -198,7 +198,7 @@ mod tests {
         ReputationError, ResourceCheck,
     };
 
-    use super::OutgoingReputation;
+    use super::OutgoingChannel;
 
     fn get_test_params() -> ReputationParams {
         ReputationParams {
@@ -210,8 +210,8 @@ mod tests {
     }
 
     /// Returns a ReputationTracker with 100 general slots and 100_00 msat of general liquidity.
-    fn get_test_tracker() -> OutgoingReputation {
-        OutgoingReputation::new(get_test_params(), 100, 100_000).unwrap()
+    fn get_test_tracker() -> OutgoingChannel {
+        OutgoingChannel::new(get_test_params(), 100, 100_000).unwrap()
     }
 
     fn get_test_htlc(id: u64, endorsed: EndorsementSignal, fee_msat: u64) -> ProposedForward {
