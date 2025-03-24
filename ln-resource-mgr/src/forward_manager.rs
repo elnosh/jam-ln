@@ -94,23 +94,31 @@ pub trait SimualtionDebugManager {
 #[derive(Debug)]
 pub struct ForwardManager {
     params: ForwardManagerParams,
-    channels: Mutex<HashMap<u64, TrackedChannel>>,
+    inner: Mutex<ForwardManagerImpl>,
+}
+
+#[derive(Debug)]
+struct ForwardManagerImpl {
+    channels: HashMap<u64, TrackedChannel>,
 }
 
 impl ForwardManager {
     pub fn new(params: ForwardManagerParams) -> Self {
         Self {
             params,
-            channels: Mutex::new(HashMap::new()),
+            inner: Mutex::new(ForwardManagerImpl {
+                channels: HashMap::new(),
+            }),
         }
     }
 }
 
 impl SimualtionDebugManager for ForwardManager {
     fn general_jam_channel(&self, channel: u64) -> Result<(), ReputationError> {
-        self.channels
+        self.inner
             .lock()
             .map_err(|e| ReputationError::ErrUnrecoverable(e.to_string()))?
+            .channels
             .get_mut(&channel)
             .ok_or(ReputationError::ErrChannelNotFound(channel))?
             .outgoing_direction
@@ -123,9 +131,10 @@ impl SimualtionDebugManager for ForwardManager {
 impl ReputationManager for ForwardManager {
     fn add_channel(&self, channel_id: u64, capacity_msat: u64) -> Result<(), ReputationError> {
         match self
-            .channels
+            .inner
             .lock()
             .map_err(|e| ReputationError::ErrUnrecoverable(e.to_string()))?
+            .channels
             .entry(channel_id)
         {
             Entry::Occupied(_) => Err(ReputationError::ErrChannelExists(channel_id)),
@@ -152,9 +161,10 @@ impl ReputationManager for ForwardManager {
 
     fn remove_channel(&self, channel_id: u64) -> Result<(), ReputationError> {
         match self
-            .channels
+            .inner
             .lock()
             .map_err(|e| ReputationError::ErrUnrecoverable(e.to_string()))?
+            .channels
             .remove(&channel_id)
         {
             Some(_) => Ok(()),
@@ -168,13 +178,14 @@ impl ReputationManager for ForwardManager {
     ) -> Result<AllocationCheck, ReputationError> {
         forward.validate()?;
 
-        let mut chan_lock = self
-            .channels
+        let inner_lock = &mut self
+            .inner
             .lock()
-            .map_err(|e| ReputationError::ErrUnrecoverable(e.to_string()))?;
+            .map_err(|e| ReputationError::ErrUnrecoverable(e.to_string()))?
+            .channels;
 
         // Get the incoming revenue threshold that the outgoing channel must meet.
-        let incoming_threshold = chan_lock
+        let incoming_threshold = inner_lock
             .get_mut(&forward.incoming_ref.channel_id)
             .ok_or(ReputationError::ErrIncomingNotFound(
                 forward.incoming_ref.channel_id,
@@ -183,7 +194,7 @@ impl ReputationManager for ForwardManager {
             .value_at_instant(forward.added_at)?;
 
         // Check reputation and resources available for the forward.
-        let outgoing_channel = &mut chan_lock
+        let outgoing_channel = &mut inner_lock
             .get_mut(&forward.outgoing_channel_id)
             .ok_or(ReputationError::ErrOutgoingNotFound(
                 forward.outgoing_channel_id,
@@ -207,9 +218,10 @@ impl ReputationManager for ForwardManager {
         if let ForwardingOutcome::Forward(_) =
             allocation_check.forwarding_outcome(forward.amount_out_msat, forward.incoming_endorsed)
         {
-            self.channels
+            self.inner
                 .lock()
                 .map_err(|e| ReputationError::ErrUnrecoverable(e.to_string()))?
+                .channels
                 .get_mut(&forward.outgoing_channel_id)
                 .ok_or(ReputationError::ErrOutgoingNotFound(
                     forward.outgoing_channel_id,
@@ -228,14 +240,15 @@ impl ReputationManager for ForwardManager {
         resolution: ForwardResolution,
         resolved_instant: Instant,
     ) -> Result<(), ReputationError> {
-        let mut chan_lock = self
-            .channels
+        let inner_lock = &mut self
+            .inner
             .lock()
-            .map_err(|e| ReputationError::ErrUnrecoverable(e.to_string()))?;
+            .map_err(|e| ReputationError::ErrUnrecoverable(e.to_string()))?
+            .channels;
 
         // Remove from outgoing channel, which will return the amount that we need to add to the incoming channel's
         // revenue for forwarding the htlc.
-        let outgoing_channel_tracker = chan_lock
+        let outgoing_channel_tracker = inner_lock
             .get_mut(&outgoing_channel)
             .ok_or(ReputationError::ErrOutgoingNotFound(outgoing_channel))?;
 
@@ -254,7 +267,7 @@ impl ReputationManager for ForwardManager {
             .incoming_revenue
             .add_value(fee_i64, resolved_instant)?;
 
-        chan_lock
+        inner_lock
             .get_mut(&incoming_ref.channel_id)
             .ok_or(ReputationError::ErrIncomingNotFound(
                 incoming_ref.channel_id,
@@ -271,13 +284,14 @@ impl ReputationManager for ForwardManager {
         &self,
         access_ins: Instant,
     ) -> Result<HashMap<u64, ReputationSnapshot>, ReputationError> {
-        let mut chan_lock = self
-            .channels
+        let inner_lock = &mut self
+            .inner
             .lock()
-            .map_err(|e| ReputationError::ErrUnrecoverable(e.to_string()))?;
+            .map_err(|e| ReputationError::ErrUnrecoverable(e.to_string()))?
+            .channels;
 
-        let mut reputations = HashMap::with_capacity(chan_lock.len());
-        for (scid, channel) in chan_lock.iter_mut() {
+        let mut reputations = HashMap::with_capacity(inner_lock.len());
+        for (scid, channel) in inner_lock.iter_mut() {
             reputations.insert(
                 *scid,
                 ReputationSnapshot {
