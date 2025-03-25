@@ -188,7 +188,8 @@ impl AllocationCheck {
             EndorsementSignal::Unendorsed => {
                 if self
                     .resource_check
-                    .general_resources_available(htlc_amt_msat)
+                    .general_bucket
+                    .resources_available(htlc_amt_msat)
                 {
                     Ok(ResourceBucketType::General)
                 } else {
@@ -222,20 +223,25 @@ impl ReputationCheck {
 /// A snapshot of the resource check for a htlc forward.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 pub struct ResourceCheck {
-    pub general_slots_used: u16,
-    pub general_slots_availabe: u16,
-    pub general_liquidity_msat_used: u64,
-    pub general_liquidity_msat_available: u64,
+    pub general_bucket: BucketResources,
 }
 
-impl ResourceCheck {
-    fn general_resources_available(&self, htlc_amt_mast: u64) -> bool {
-        if self.general_liquidity_msat_used + htlc_amt_mast > self.general_liquidity_msat_available
-        {
+/// Describes the resources currently used in a bucket.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct BucketResources {
+    pub slots_used: u16,
+    pub slots_available: u16,
+    pub liquidity_used_msat: u64,
+    pub liquidity_available_msat: u64,
+}
+
+impl BucketResources {
+    fn resources_available(&self, htlc_amt_mast: u64) -> bool {
+        if self.liquidity_used_msat + htlc_amt_mast > self.liquidity_available_msat {
             return false;
         }
 
-        if self.general_slots_used + 1 > self.general_slots_availabe {
+        if self.slots_used + 1 > self.slots_available {
             return false;
         }
 

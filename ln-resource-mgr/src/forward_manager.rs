@@ -2,8 +2,9 @@ use crate::decaying_average::DecayingAverage;
 use crate::htlc_manager::{ChannelFilter, InFlightHtlc, InFlightManager};
 use crate::outgoing_channel::{BucketParameters, OutgoingChannel};
 use crate::{
-    AllocationCheck, ForwardResolution, HtlcRef, ProposedForward, ReputationCheck, ReputationError,
-    ReputationManager, ReputationParams, ReputationSnapshot, ResourceBucketType, ResourceCheck,
+    AllocationCheck, BucketResources, ForwardResolution, HtlcRef, ProposedForward, ReputationCheck,
+    ReputationError, ReputationManager, ReputationParams, ReputationSnapshot, ResourceBucketType,
+    ResourceCheck,
 };
 use std::collections::hash_map::Entry;
 use std::collections::HashMap;
@@ -93,16 +94,18 @@ impl ForwardManagerImpl {
                     .htlc_risk(forward.fee_msat(), forward.expiry_in_height),
             },
             resource_check: ResourceCheck {
-                general_slots_used: self.htlcs.bucket_in_flight_count(
-                    forward.outgoing_channel_id,
-                    ResourceBucketType::General,
-                ),
-                general_slots_availabe: outgoing_channel.general_bucket.slot_count,
-                general_liquidity_msat_used: self.htlcs.bucket_in_flight_msat(
-                    forward.outgoing_channel_id,
-                    ResourceBucketType::General,
-                ),
-                general_liquidity_msat_available: outgoing_channel.general_bucket.liquidity_msat,
+                general_bucket: BucketResources {
+                    slots_used: self.htlcs.bucket_in_flight_count(
+                        forward.outgoing_channel_id,
+                        ResourceBucketType::General,
+                    ),
+                    slots_available: outgoing_channel.general_bucket.slot_count,
+                    liquidity_used_msat: self.htlcs.bucket_in_flight_msat(
+                        forward.outgoing_channel_id,
+                        ResourceBucketType::General,
+                    ),
+                    liquidity_available_msat: outgoing_channel.general_bucket.liquidity_msat,
+                },
             },
         })
     }

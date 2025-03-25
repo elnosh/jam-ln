@@ -71,14 +71,15 @@ impl Serialize for Record {
         )?;
         state.serialize_field(
             "slots_available",
-            &self.decision.resource_check.general_slots_availabe,
+            &self.decision.resource_check.general_bucket.slots_available,
         )?;
         state.serialize_field(
             "liquidity_available",
             &self
                 .decision
                 .resource_check
-                .general_liquidity_msat_available,
+                .general_bucket
+                .liquidity_available_msat,
         )?;
         state.end()
     }
