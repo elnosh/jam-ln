@@ -402,10 +402,10 @@ fn get_reputation_count(
     let margin_fee = get_reputation_margin_fee(reputation_margin_msat);
 
     let attacker_reputation =
-        status.reputation_count(false, &params, margin_fee, reputation_margin_expiry_blocks);
+        status.reputation_count(false, params, margin_fee, reputation_margin_expiry_blocks);
 
     let target_reputation =
-        status.reputation_count(true, &params, margin_fee, reputation_margin_expiry_blocks);
+        status.reputation_count(true, params, margin_fee, reputation_margin_expiry_blocks);
 
     (attacker_reputation, target_reputation)
 }
