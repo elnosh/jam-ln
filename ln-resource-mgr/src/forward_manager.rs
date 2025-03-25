@@ -1,6 +1,6 @@
 use crate::decaying_average::DecayingAverage;
 use crate::htlc_manager::{ChannelFilter, InFlightHtlc, InFlightManager};
-use crate::outgoing_channel::OutgoingChannel;
+use crate::outgoing_channel::{BucketParameters, OutgoingChannel};
 use crate::{
     AllocationCheck, ForwardResolution, HtlcRef, ProposedForward, ReputationCheck, ReputationError,
     ReputationManager, ReputationParams, ReputationSnapshot, ResourceBucketType, ResourceCheck,
@@ -97,12 +97,12 @@ impl ForwardManagerImpl {
                     forward.outgoing_channel_id,
                     ResourceBucketType::General,
                 ),
-                general_slots_availabe: outgoing_channel.general_slot_count,
+                general_slots_availabe: outgoing_channel.general_bucket.slot_count,
                 general_liquidity_msat_used: self.htlcs.bucket_in_flight_msat(
                     forward.outgoing_channel_id,
                     ResourceBucketType::General,
                 ),
-                general_liquidity_msat_available: outgoing_channel.general_liquidity_msat,
+                general_liquidity_msat_available: outgoing_channel.general_bucket.liquidity_msat,
             },
         })
     }
@@ -153,8 +153,10 @@ impl ReputationManager for ForwardManager {
                 v.insert(TrackedChannel {
                     outgoing_direction: OutgoingChannel::new(
                         self.params.reputation_params,
-                        general_slot_count,
-                        general_liquidity_amount,
+                        BucketParameters {
+                            slot_count: general_slot_count,
+                            liquidity_msat: general_liquidity_amount,
+                        },
                     )?,
                     bidirectional_revenue: DecayingAverage::new(
                         self.params.reputation_params.revenue_window,

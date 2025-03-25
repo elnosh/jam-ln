@@ -5,6 +5,15 @@ use crate::decaying_average::DecayingAverage;
 use crate::htlc_manager::{InFlightHtlc, ReputationParams};
 use crate::{ForwardResolution, ReputationError};
 
+/// Describes the size of a resource bucket.
+#[derive(Clone, Debug)]
+pub struct BucketParameters {
+    /// The number of HTLC slots available in the bucket.
+    pub slot_count: u16,
+    /// The amount of liquidity available in the bucket.
+    pub liquidity_msat: u64,
+}
+
 /// Tracks information about the usage of a channel when it utilized as the outgoing direction in
 /// a htlc forward.
 #[derive(Clone, Debug)]
@@ -15,18 +24,14 @@ pub(super) struct OutgoingChannel {
     /// average over the reputation_window that the tracker is created with.
     outgoing_reputation: DecayingAverage,
 
-    /// The number of slots available in the general bucket.
-    pub(super) general_slot_count: u16,
-
-    /// The amount of liquidity available in general bucket.
-    pub(super) general_liquidity_msat: u64,
+    /// The resources available for htlcs that are not endorsed, or are not sent by a peer with sufficient reputation.
+    pub(super) general_bucket: BucketParameters,
 }
 
 impl OutgoingChannel {
     pub(super) fn new(
         params: ReputationParams,
-        general_slot_count: u16,
-        general_liquidity_msat: u64,
+        general_bucket: BucketParameters,
     ) -> Result<Self, ReputationError> {
         if params.reputation_multiplier <= 1 {
             return Err(ReputationError::ErrInvalidMultiplier);
@@ -37,8 +42,7 @@ impl OutgoingChannel {
             outgoing_reputation: DecayingAverage::new(
                 params.revenue_window * params.reputation_multiplier.into(),
             ),
-            general_slot_count,
-            general_liquidity_msat,
+            general_bucket,
         })
     }
 
@@ -76,8 +80,10 @@ impl OutgoingChannel {
     }
 
     pub(super) fn general_jam_channel(&mut self) {
-        self.general_slot_count = 0;
-        self.general_liquidity_msat = 0;
+        self.general_bucket = BucketParameters {
+            slot_count: 0,
+            liquidity_msat: 0,
+        };
     }
 }
 
@@ -88,7 +94,7 @@ mod tests {
     use crate::htlc_manager::ReputationParams;
     use crate::{EndorsementSignal, ForwardResolution, ResourceBucketType};
 
-    use super::{InFlightHtlc, OutgoingChannel};
+    use super::{BucketParameters, InFlightHtlc, OutgoingChannel};
 
     fn get_test_params() -> ReputationParams {
         ReputationParams {
@@ -101,7 +107,14 @@ mod tests {
 
     /// Returns a ReputationTracker with 100 general slots and 100_00 msat of general liquidity.
     fn get_test_tracker() -> OutgoingChannel {
-        OutgoingChannel::new(get_test_params(), 100, 100_000).unwrap()
+        OutgoingChannel::new(
+            get_test_params(),
+            BucketParameters {
+                slot_count: 100,
+                liquidity_msat: 100_000,
+            },
+        )
+        .unwrap()
     }
 
     fn get_test_htlc(endorsed: EndorsementSignal, fee_msat: u64) -> InFlightHtlc {
