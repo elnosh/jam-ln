@@ -142,6 +142,12 @@ pub struct AllocationCheck {
     pub resource_check: ResourceCheck,
 }
 
+/// Represents the different resource buckets that htlcs can be assigned to.
+pub enum ResourceBucketType {
+    Protected,
+    General,
+}
+
 impl AllocationCheck {
     /// The recommended action to be taken for the htlc forward.
     pub fn forwarding_outcome(
@@ -149,12 +155,31 @@ impl AllocationCheck {
         htlc_amt_msat: u64,
         incoming_endorsed: EndorsementSignal,
     ) -> ForwardingOutcome {
+        match self.inner_forwarding_outcome(htlc_amt_msat, incoming_endorsed) {
+            Ok(bucket) => match bucket {
+                ResourceBucketType::General => {
+                    ForwardingOutcome::Forward(EndorsementSignal::Unendorsed)
+                }
+                ResourceBucketType::Protected => {
+                    ForwardingOutcome::Forward(EndorsementSignal::Endorsed)
+                }
+            },
+            Err(fail_reason) => ForwardingOutcome::Fail(fail_reason),
+        }
+    }
+
+    /// Returns the bucket assignment or failure reason for a htlc.
+    fn inner_forwarding_outcome(
+        &self,
+        htlc_amt_msat: u64,
+        incoming_endorsed: EndorsementSignal,
+    ) -> Result<ResourceBucketType, FailureReason> {
         match incoming_endorsed {
             EndorsementSignal::Endorsed => {
                 if self.reputation_check.sufficient_reputation() {
-                    ForwardingOutcome::Forward(EndorsementSignal::Endorsed)
+                    Ok(ResourceBucketType::Protected)
                 } else {
-                    ForwardingOutcome::Fail(FailureReason::NoReputation)
+                    Err(FailureReason::NoReputation)
                 }
             }
             EndorsementSignal::Unendorsed => {
@@ -162,9 +187,9 @@ impl AllocationCheck {
                     .resource_check
                     .general_resources_available(htlc_amt_msat)
                 {
-                    ForwardingOutcome::Forward(EndorsementSignal::Unendorsed)
+                    Ok(ResourceBucketType::General)
                 } else {
-                    ForwardingOutcome::Fail(FailureReason::NoResources)
+                    Err(FailureReason::NoResources)
                 }
             }
         }

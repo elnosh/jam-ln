@@ -1,8 +1,8 @@
 use crate::decaying_average::DecayingAverage;
 use crate::outgoing_reputation::OutgoingChannel;
 use crate::{
-    validate_msat, AllocationCheck, EndorsementSignal, ForwardResolution, ForwardingOutcome,
-    HtlcRef, ProposedForward, ReputationError, ReputationManager, ReputationSnapshot,
+    validate_msat, AllocationCheck, EndorsementSignal, ForwardResolution, HtlcRef, ProposedForward,
+    ReputationError, ReputationManager, ReputationSnapshot,
 };
 use std::collections::hash_map::Entry;
 use std::collections::HashMap;
@@ -227,8 +227,8 @@ impl ReputationManager for ForwardManager {
 
         let allocation_check = inner_lock.get_forwarding_outcome(forward)?;
 
-        if let ForwardingOutcome::Forward(_) =
-            allocation_check.forwarding_outcome(forward.amount_out_msat, forward.incoming_endorsed)
+        if let Ok(_) = allocation_check
+            .inner_forwarding_outcome(forward.amount_out_msat, forward.incoming_endorsed)
         {
             inner_lock
                 .channels
