@@ -1,6 +1,7 @@
 use bitcoin::secp256k1::PublicKey;
 use clap::Parser;
-use ln_resource_mgr::outgoing_reputation::{ForwardManagerParams, ReputationParams};
+use ln_resource_mgr::forward_manager::ForwardManagerParams;
+use ln_resource_mgr::ReputationParams;
 use ln_simln_jamming::analysis::BatchForwardWriter;
 use ln_simln_jamming::clock::InstantClock;
 use ln_simln_jamming::parsing::{get_history_for_bootstrap, history_from_file, Cli};
@@ -401,10 +402,10 @@ fn get_reputation_count(
     let margin_fee = get_reputation_margin_fee(reputation_margin_msat);
 
     let attacker_reputation =
-        status.reputation_count(false, &params, margin_fee, reputation_margin_expiry_blocks);
+        status.reputation_count(false, params, margin_fee, reputation_margin_expiry_blocks);
 
     let target_reputation =
-        status.reputation_count(true, &params, margin_fee, reputation_margin_expiry_blocks);
+        status.reputation_count(true, params, margin_fee, reputation_margin_expiry_blocks);
 
     (attacker_reputation, target_reputation)
 }

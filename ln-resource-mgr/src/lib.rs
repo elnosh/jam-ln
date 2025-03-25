@@ -1,5 +1,8 @@
 mod decaying_average;
-pub mod outgoing_reputation;
+pub mod forward_manager;
+pub use htlc_manager::ReputationParams;
+mod htlc_manager;
+mod outgoing_channel;
 
 use serde::Serialize;
 use std::collections::HashMap;
@@ -141,6 +144,13 @@ pub struct AllocationCheck {
     pub resource_check: ResourceCheck,
 }
 
+/// Represents the different resource buckets that htlcs can be assigned to.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ResourceBucketType {
+    Protected,
+    General,
+}
+
 impl AllocationCheck {
     /// The recommended action to be taken for the htlc forward.
     pub fn forwarding_outcome(
@@ -148,22 +158,42 @@ impl AllocationCheck {
         htlc_amt_msat: u64,
         incoming_endorsed: EndorsementSignal,
     ) -> ForwardingOutcome {
+        match self.inner_forwarding_outcome(htlc_amt_msat, incoming_endorsed) {
+            Ok(bucket) => match bucket {
+                ResourceBucketType::General => {
+                    ForwardingOutcome::Forward(EndorsementSignal::Unendorsed)
+                }
+                ResourceBucketType::Protected => {
+                    ForwardingOutcome::Forward(EndorsementSignal::Endorsed)
+                }
+            },
+            Err(fail_reason) => ForwardingOutcome::Fail(fail_reason),
+        }
+    }
+
+    /// Returns the bucket assignment or failure reason for a htlc.
+    fn inner_forwarding_outcome(
+        &self,
+        htlc_amt_msat: u64,
+        incoming_endorsed: EndorsementSignal,
+    ) -> Result<ResourceBucketType, FailureReason> {
         match incoming_endorsed {
             EndorsementSignal::Endorsed => {
                 if self.reputation_check.sufficient_reputation() {
-                    ForwardingOutcome::Forward(EndorsementSignal::Endorsed)
+                    Ok(ResourceBucketType::Protected)
                 } else {
-                    ForwardingOutcome::Fail(FailureReason::NoReputation)
+                    Err(FailureReason::NoReputation)
                 }
             }
             EndorsementSignal::Unendorsed => {
                 if self
                     .resource_check
-                    .general_resources_available(htlc_amt_msat)
+                    .general_bucket
+                    .resources_available(htlc_amt_msat)
                 {
-                    ForwardingOutcome::Forward(EndorsementSignal::Unendorsed)
+                    Ok(ResourceBucketType::General)
                 } else {
-                    ForwardingOutcome::Fail(FailureReason::NoResources)
+                    Err(FailureReason::NoResources)
                 }
             }
         }
@@ -193,20 +223,25 @@ impl ReputationCheck {
 /// A snapshot of the resource check for a htlc forward.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 pub struct ResourceCheck {
-    pub general_slots_used: u16,
-    pub general_slots_availabe: u16,
-    pub general_liquidity_msat_used: u64,
-    pub general_liquidity_msat_available: u64,
+    pub general_bucket: BucketResources,
 }
 
-impl ResourceCheck {
-    fn general_resources_available(&self, htlc_amt_mast: u64) -> bool {
-        if self.general_liquidity_msat_used + htlc_amt_mast > self.general_liquidity_msat_available
-        {
+/// Describes the resources currently used in a bucket.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct BucketResources {
+    pub slots_used: u16,
+    pub slots_available: u16,
+    pub liquidity_used_msat: u64,
+    pub liquidity_available_msat: u64,
+}
+
+impl BucketResources {
+    fn resources_available(&self, htlc_amt_mast: u64) -> bool {
+        if self.liquidity_used_msat + htlc_amt_mast > self.liquidity_available_msat {
             return false;
         }
 
-        if self.general_slots_used + 1 > self.general_slots_availabe {
+        if self.slots_used + 1 > self.slots_available {
             return false;
         }
 
@@ -342,7 +377,7 @@ pub fn validate_msat(amount_msat: u64) -> Result<i64, ReputationError> {
 
 pub trait ReputationManager {
     /// Should be called to add a channel to the manager to track its reputation and revenue, must be called before
-    /// any calls to [`get_forwarding_outcome`] or [`add_outgoing_htlc`] reference the channel.
+    /// any calls to [`get_forwarding_outcome`] or [`add_htlc`] reference the channel.
     fn add_channel(&self, channel_id: u64, capacity_msat: u64) -> Result<(), ReputationError>;
 
     /// Called to clean up a channel once it has been closed and is no longer usable for htlc forwards.
@@ -366,12 +401,9 @@ pub trait ReputationManager {
     ///
     /// Note that this API is not currently replay-safe, so any htlcs that are replayed on restart will return
     /// [`ReputationError::ErrDuplicateHtlc`].
-    fn add_outgoing_hltc(
-        &self,
-        forward: &ProposedForward,
-    ) -> Result<AllocationCheck, ReputationError>;
+    fn add_htlc(&self, forward: &ProposedForward) -> Result<AllocationCheck, ReputationError>;
 
-    /// Resolves a htlc that was previously added using [`add_outgoing_htlc`], returning
+    /// Resolves a htlc that was previously added using [`add_htlc`], returning
     /// [`ReputationError::ErrForwardNotFound`] if the htlc is not found.
     fn resolve_htlc(
         &self,

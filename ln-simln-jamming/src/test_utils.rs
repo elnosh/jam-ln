@@ -4,8 +4,8 @@ use std::time::Instant;
 use bitcoin::secp256k1::{PublicKey, Secp256k1, SecretKey};
 use lightning::ln::PaymentHash;
 use ln_resource_mgr::{
-    AllocationCheck, EndorsementSignal, ForwardingOutcome, ProposedForward, ReputationCheck,
-    ResourceCheck,
+    AllocationCheck, BucketResources, EndorsementSignal, ForwardingOutcome, ProposedForward,
+    ReputationCheck, ResourceCheck,
 };
 use rand::{distributions::Uniform, Rng};
 use simln_lib::sim_node::{CustomRecords, ForwardingError, InterceptRequest};
@@ -75,10 +75,12 @@ pub fn test_allocation_check(forward_succeeds: bool) -> AllocationCheck {
             htlc_risk: 0,
         },
         resource_check: ResourceCheck {
-            general_slots_used: 0,
-            general_slots_availabe: 10,
-            general_liquidity_msat_used: 0,
-            general_liquidity_msat_available: 100_000,
+            general_bucket: BucketResources {
+                slots_used: 0,
+                slots_available: 10,
+                liquidity_used_msat: 0,
+                liquidity_available_msat: 100_000,
+            },
         },
     };
 

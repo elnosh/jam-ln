@@ -4,7 +4,7 @@ use crate::{endorsement_from_records, records_from_endorsement, BoxError};
 use async_trait::async_trait;
 use bitcoin::secp256k1::PublicKey;
 use futures::future::join_all;
-use ln_resource_mgr::outgoing_reputation::ForwardManagerParams;
+use ln_resource_mgr::forward_manager::ForwardManagerParams;
 use ln_resource_mgr::{EndorsementSignal, ForwardingOutcome, HtlcRef, ProposedForward};
 use simln_lib::clock::Clock;
 use simln_lib::sim_node::{ForwardingError, InterceptRequest, InterceptResolution, Interceptor};
