@@ -14,7 +14,9 @@ use std::time::{Duration, Instant};
 #[derive(Debug)]
 struct TrackedChannel {
     outgoing_direction: OutgoingChannel,
-    incoming_revenue: DecayingAverage,
+    /// Tracks the revenue that this channel has been responsible for, considering htlcs where the channel has been the
+    /// incoming or outgoing forwarding channel.
+    bidirectional_revenue: DecayingAverage,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -64,7 +66,7 @@ impl ForwardManagerImpl {
             .ok_or(ReputationError::ErrIncomingNotFound(
                 forward.incoming_ref.channel_id,
             ))?
-            .incoming_revenue
+            .bidirectional_revenue
             .value_at_instant(forward.added_at)?;
 
         // Check reputation and resources available for the forward.
@@ -154,7 +156,7 @@ impl ReputationManager for ForwardManager {
                         general_slot_count,
                         general_liquidity_amount,
                     )?,
-                    incoming_revenue: DecayingAverage::new(
+                    bidirectional_revenue: DecayingAverage::new(
                         self.params.reputation_params.revenue_window,
                     ),
                 });
@@ -250,7 +252,7 @@ impl ReputationManager for ForwardManager {
         let fee_i64 = i64::try_from(in_flight.fee_msat).unwrap_or(i64::MAX);
 
         let _ = outgoing_channel_tracker
-            .incoming_revenue
+            .bidirectional_revenue
             .add_value(fee_i64, resolved_instant)?;
 
         inner_lock
@@ -259,7 +261,7 @@ impl ReputationManager for ForwardManager {
             .ok_or(ReputationError::ErrIncomingNotFound(
                 incoming_ref.channel_id,
             ))?
-            .incoming_revenue
+            .bidirectional_revenue
             .add_value(fee_i64, resolved_instant)?;
 
         Ok(())
@@ -285,7 +287,7 @@ impl ReputationManager for ForwardManager {
                     outgoing_reputation: channel
                         .outgoing_direction
                         .outgoing_reputation(access_ins)?,
-                    incoming_revenue: channel.incoming_revenue.value_at_instant(access_ins)?,
+                    incoming_revenue: channel.bidirectional_revenue.value_at_instant(access_ins)?,
                 },
             );
         }
