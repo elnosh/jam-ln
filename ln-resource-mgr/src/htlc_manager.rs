@@ -195,6 +195,7 @@ mod tests {
 
     fn get_test_htlc(
         outgoing_channel: u64,
+        incoming_endorsed: bool,
         bucket: ResourceBucketType,
         fee_msat: u64,
     ) -> InFlightHtlc {
@@ -204,150 +205,256 @@ mod tests {
             outgoing_amt_msat: 2000,
             fee_msat,
             added_instant: Instant::now(),
-            incoming_endorsed: EndorsementSignal::Endorsed,
+            incoming_endorsed: if incoming_endorsed {
+                EndorsementSignal::Endorsed
+            } else {
+                EndorsementSignal::Unendorsed
+            },
             bucket,
         }
     }
 
+    /// Tests adding and removal of HTLCs from the tracker.
     #[test]
     fn test_add_htlc() {
         let mut tracker = get_test_manager();
         let channel_0 = 0;
         let channel_1 = 1;
+
+        // HTLC forwarded on 0 -> 1.
+        let htlc_1_ref = HtlcRef {
+            channel_id: channel_0,
+            htlc_index: 0,
+        };
+        let htlc_1 = get_test_htlc(channel_1, true, ResourceBucketType::Protected, 1000);
+        tracker.add_htlc(htlc_1_ref, htlc_1.clone()).unwrap();
+
+        // Check that HTLC counts for buckets are correct.
+        assert_eq!(
+            tracker.bucket_in_flight_count(channel_1, ResourceBucketType::Protected),
+            1
+        );
+        assert_eq!(
+            tracker.bucket_in_flight_count(channel_1, ResourceBucketType::General),
+            0
+        );
+        assert_eq!(
+            tracker.bucket_in_flight_count(channel_0, ResourceBucketType::Protected),
+            0
+        );
+        assert_eq!(
+            tracker.bucket_in_flight_count(channel_0, ResourceBucketType::General),
+            0
+        );
+
+        // Duplicate add fails.
+        assert!(matches!(
+            tracker.add_htlc(htlc_1_ref, htlc_1.clone()).err().unwrap(),
+            ReputationError::ErrDuplicateHtlc(_)
+        ));
+
+        // HTLC forwarded on  1 -> 0.
+        let htlc_2_ref = HtlcRef {
+            channel_id: channel_1,
+            htlc_index: 0,
+        };
+        let htlc_2 = get_test_htlc(channel_0, false, ResourceBucketType::General, 2000);
+
+        // Remove unknown fails.
+        assert!(matches!(
+            tracker
+                .remove_htlc(htlc_2.outgoing_channel_id, htlc_2_ref)
+                .err()
+                .unwrap(),
+            ReputationError::ErrForwardNotFound(_, _)
+        ));
+
+        assert!(tracker.add_htlc(htlc_2_ref, htlc_2).is_ok());
+        assert_eq!(
+            tracker.bucket_in_flight_count(channel_1, ResourceBucketType::Protected),
+            1
+        );
+        assert_eq!(
+            tracker.bucket_in_flight_count(channel_1, ResourceBucketType::General),
+            0
+        );
+        assert_eq!(
+            tracker.bucket_in_flight_count(channel_0, ResourceBucketType::Protected),
+            0
+        );
+        assert_eq!(
+            tracker.bucket_in_flight_count(channel_0, ResourceBucketType::General),
+            1
+        );
+
+        // Removing outgoing htlc updates buckets accordingly.
+        assert!(tracker
+            .remove_htlc(htlc_1.outgoing_channel_id, htlc_1_ref)
+            .is_ok());
+        assert_eq!(
+            tracker.bucket_in_flight_count(channel_1, ResourceBucketType::Protected),
+            0
+        );
+        assert_eq!(
+            tracker.bucket_in_flight_count(channel_1, ResourceBucketType::General),
+            0
+        );
+    }
+
+    /// Tests calculation of in flight risk on outgoing channels.
+    #[test]
+    fn test_in_flight_risk() {
+        let mut tracker = get_test_manager();
+        let channel_0 = 0;
+        let channel_1 = 1;
         let channel_2 = 2;
+
+        assert_eq!(
+            tracker.channel_in_flight_risk(ChannelFilter::OutgoingChannel(channel_0)),
+            0
+        );
+        assert_eq!(
+            tracker.channel_in_flight_risk(ChannelFilter::OutgoingChannel(channel_1)),
+            0
+        );
 
         // Endorsed htlc contribute to in flight risk and count, 0 -> 1.
         let htlc_1_ref = HtlcRef {
             channel_id: channel_0,
             htlc_index: 0,
         };
-        let htlc_1 = get_test_htlc(channel_1, ResourceBucketType::Protected, 1000);
+        let htlc_1 = get_test_htlc(channel_1, true, ResourceBucketType::Protected, 1000);
         let htlc_1_risk = tracker
             .params
             .htlc_risk(htlc_1.fee_msat, htlc_1.hold_blocks);
 
-        // Incoming risk is only reflected for channel 1, as it is the outgoing channel.
-        assert!(tracker.add_htlc(htlc_1_ref, htlc_1.clone()).is_ok());
-        assert_eq!(
-            tracker.channel_in_flight_risk(ChannelFilter::OutgoingChannel(1)),
-            htlc_1_risk
-        );
-        assert_eq!(
-            tracker.channel_in_flight_risk(ChannelFilter::OutgoingChannel(0)),
-            0
-        );
-
-        // Balance and count only reflect on outgoing channel.
-        assert_eq!(
-            tracker.bucket_in_flight_msat(channel_1, ResourceBucketType::Protected),
-            htlc_1.outgoing_amt_msat,
-        );
-        assert_eq!(
-            tracker.bucket_in_flight_count(channel_1, ResourceBucketType::Protected),
-            1
-        );
-
-        assert_eq!(
-            tracker.bucket_in_flight_msat(channel_0, ResourceBucketType::General),
-            0
-        );
-        assert_eq!(
-            tracker.bucket_in_flight_count(channel_0, ResourceBucketType::General),
-            0
-        );
-
-        assert!(matches!(
-            tracker.add_htlc(htlc_1_ref, htlc_1).err().unwrap(),
-            ReputationError::ErrDuplicateHtlc(_)
-        ));
-
-        // Unendorsed doesn't contribute to in flight risk, but counted in other tracking, 0 -> 1.
+        // Endorsed htlc contribute to in flight risk and count despite general bucket, 0 -> 1.
         let htlc_2_ref = HtlcRef {
-            channel_id: channel_0,
-            htlc_index: 1,
-        };
-        let mut htlc_2 = get_test_htlc(channel_1, ResourceBucketType::General, 2000);
-        htlc_2.incoming_endorsed = EndorsementSignal::Unendorsed;
-
-        assert!(tracker.add_htlc(htlc_2_ref, htlc_2.clone()).is_ok());
-        assert_eq!(
-            tracker.channel_in_flight_risk(ChannelFilter::OutgoingChannel(channel_1)),
-            htlc_1_risk
-        );
-        assert_eq!(
-            tracker.bucket_in_flight_msat(channel_1, ResourceBucketType::Protected),
-            htlc_2.outgoing_amt_msat,
-        );
-        assert_eq!(
-            tracker.bucket_in_flight_count(channel_0, ResourceBucketType::General),
-            0
-        );
-
-        // Endorsed htlc over different set of channels, 1 -> 2.
-        let htlc_3_ref = HtlcRef {
             channel_id: channel_1,
             htlc_index: 0,
         };
-        let htlc_3 = get_test_htlc(channel_2, ResourceBucketType::General, 150);
-        let htlc_3_risk = tracker
+        let htlc_2 = get_test_htlc(channel_0, true, ResourceBucketType::General, 5000);
+        let htlc_2_risk = tracker
             .params
-            .htlc_risk(htlc_3.fee_msat, htlc_3.hold_blocks);
+            .htlc_risk(htlc_2.fee_msat, htlc_2.hold_blocks);
 
+        // Unendorsed htlc no contribution to in flight risk, 1 -> 2.
+        let htlc_3_ref = HtlcRef {
+            channel_id: channel_1,
+            htlc_index: 1,
+        };
+        let htlc_3 = get_test_htlc(channel_2, false, ResourceBucketType::General, 100000);
+
+        assert!(tracker.add_htlc(htlc_1_ref, htlc_1).is_ok());
+        assert!(tracker.add_htlc(htlc_2_ref, htlc_2).is_ok());
         assert!(tracker.add_htlc(htlc_3_ref, htlc_3).is_ok());
+
+        assert_eq!(
+            tracker.channel_in_flight_risk(ChannelFilter::OutgoingChannel(channel_0)),
+            htlc_2_risk
+        );
+        assert_eq!(
+            tracker.channel_in_flight_risk(ChannelFilter::OutgoingChannel(channel_1)),
+            htlc_1_risk,
+        );
         assert_eq!(
             tracker.channel_in_flight_risk(ChannelFilter::OutgoingChannel(channel_2)),
-            htlc_3_risk
+            0, // Unendorsed does not contribute to risk, so no htlc_3.
+        );
+
+        assert_eq!(
+            tracker.channel_in_flight_risk(ChannelFilter::IncomingChannel(channel_0)),
+            htlc_1_risk,
         );
         assert_eq!(
-            tracker.bucket_in_flight_count(channel_0, ResourceBucketType::General),
-            0
+            tracker.channel_in_flight_risk(ChannelFilter::IncomingChannel(channel_1)),
+            htlc_2_risk, // Unendorsed does not contribute to risk, so no htlc_3.
         );
         assert_eq!(
-            tracker.bucket_in_flight_count(channel_1, ResourceBucketType::General),
-            1
-        );
-        assert_eq!(
-            tracker.bucket_in_flight_count(channel_2, ResourceBucketType::General),
-            1
+            tracker.channel_in_flight_risk(ChannelFilter::IncomingChannel(channel_2)),
+            0,
         );
     }
 
-    /// Tests addition / removal of a successfully settled htlc.
+    /// Tests tracking of in flight counts and liquidity in buckets.
     #[test]
-    fn test_remove_htlc() {
+    fn test_bucket_in_flight() {
         let mut tracker = get_test_manager();
         let channel_0 = 0;
         let channel_1 = 1;
 
+        // Buckets always empty to start.
+        assert_eq!(
+            tracker.bucket_in_flight_count(channel_0, ResourceBucketType::Protected),
+            0
+        );
+        assert_eq!(
+            tracker.bucket_in_flight_count(channel_0, ResourceBucketType::General),
+            0
+        );
+        assert_eq!(
+            tracker.bucket_in_flight_count(channel_1, ResourceBucketType::Protected),
+            0
+        );
+        assert_eq!(
+            tracker.bucket_in_flight_count(channel_1, ResourceBucketType::General),
+            0
+        );
+
+        // Endorsed htlc 0 -> 1.
         let htlc_1_ref = HtlcRef {
             channel_id: channel_0,
             htlc_index: 0,
         };
-        let htlc_1 = get_test_htlc(channel_1, ResourceBucketType::General, 1000);
-        let htlc_2_ref = HtlcRef {
-            channel_id: channel_0,
-            htlc_index: 1,
-        };
-        let htlc_2 = get_test_htlc(channel_1, ResourceBucketType::Protected, 5000);
-
-        tracker.add_htlc(htlc_1_ref, htlc_1.clone()).unwrap();
-        tracker.add_htlc(htlc_2_ref, htlc_2.clone()).unwrap();
-
-        let mut remove_htlc_1 = || tracker.remove_htlc(htlc_1.outgoing_channel_id, htlc_1_ref);
-
-        assert!(remove_htlc_1().is_ok());
-        assert!(matches!(
-            remove_htlc_1().err().unwrap(),
-            ReputationError::ErrForwardNotFound(_, _)
-        ));
+        let htlc_1 = get_test_htlc(channel_1, true, ResourceBucketType::Protected, 1000);
+        assert!(tracker.add_htlc(htlc_1_ref, htlc_1.clone()).is_ok());
 
         assert_eq!(
             tracker.bucket_in_flight_count(channel_1, ResourceBucketType::Protected),
             1
         );
         assert_eq!(
-            tracker.bucket_in_flight_count(channel_1, ResourceBucketType::General),
+            tracker.bucket_in_flight_msat(channel_1, ResourceBucketType::Protected),
+            htlc_1.outgoing_amt_msat,
+        );
+
+        assert_eq!(
+            tracker.bucket_in_flight_count(channel_0, ResourceBucketType::Protected),
             0
+        );
+        assert_eq!(
+            tracker.bucket_in_flight_msat(channel_0, ResourceBucketType::Protected),
+            0,
+        );
+
+        let htlc_2_ref = HtlcRef {
+            channel_id: channel_0,
+            htlc_index: 1,
+        };
+        let mut htlc_2 = get_test_htlc(channel_1, true, ResourceBucketType::Protected, 20);
+        htlc_2.incoming_endorsed = EndorsementSignal::Unendorsed;
+
+        assert!(tracker.add_htlc(htlc_2_ref, htlc_2.clone()).is_ok());
+        assert_eq!(
+            tracker.bucket_in_flight_count(channel_1, ResourceBucketType::Protected),
+            2
+        );
+        assert_eq!(
+            tracker.bucket_in_flight_msat(channel_1, ResourceBucketType::Protected),
+            htlc_1.outgoing_amt_msat + htlc_2.outgoing_amt_msat,
+        );
+
+        // Removing htlc updates accordingly.
+        assert!(tracker
+            .remove_htlc(htlc_1.outgoing_channel_id, htlc_1_ref)
+            .is_ok());
+        assert_eq!(
+            tracker.bucket_in_flight_count(channel_1, ResourceBucketType::Protected),
+            1
+        );
+        assert_eq!(
+            tracker.bucket_in_flight_msat(channel_1, ResourceBucketType::Protected),
+            htlc_2.outgoing_amt_msat,
         );
     }
 }
