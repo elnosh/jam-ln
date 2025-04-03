@@ -167,7 +167,12 @@ impl SimualtionDebugManager for ForwardManager {
 }
 
 impl ReputationManager for ForwardManager {
-    fn add_channel(&self, channel_id: u64, capacity_msat: u64) -> Result<(), ReputationError> {
+    fn add_channel(
+        &self,
+        channel_id: u64,
+        capacity_msat: u64,
+        add_ins: Instant,
+    ) -> Result<(), ReputationError> {
         match self
             .inner
             .lock()

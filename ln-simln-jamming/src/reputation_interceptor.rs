@@ -141,16 +141,20 @@ where
                     Entry::Vacant(e) => {
                         let forward_manager = ForwardManager::new(params);
 
-                        let _ = forward_manager
-                            .add_channel($channel.scid.into(), $channel.capacity_msat)?;
+                        let _ = forward_manager.add_channel(
+                            $channel.scid.into(),
+                            $channel.capacity_msat,
+                            clock.now(),
+                        )?;
 
                         e.insert(Node::new(forward_manager, $node_alias));
                     }
                     Entry::Occupied(mut e) => {
-                        let _ = e
-                            .get_mut()
-                            .forward_manager
-                            .add_channel($channel.scid.into(), $channel.capacity_msat)?;
+                        let _ = e.get_mut().forward_manager.add_channel(
+                            $channel.scid.into(),
+                            $channel.capacity_msat,
+                            clock.now(),
+                        )?;
                     }
                 }
             };
@@ -586,6 +590,7 @@ mod tests {
                 &self,
                 channel_id: u64,
                 capacity_msat: u64,
+                add_ins: Instant,
             ) -> Result<(), ln_resource_mgr::ReputationError>;
 
             fn remove_channel(&self, channel_id: u64) -> Result<(), ReputationError>;
