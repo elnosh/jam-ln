@@ -231,11 +231,9 @@ impl<C: InstantClock + Clock, R: Interceptor + ReputationMonitor> SinkIntercepto
             return;
         }
 
-        // Get maximum hold time assuming 10 minute blocks.
-        // TODO: this is actually the current height less the expiry, but we don't have the concept of height here.
-        let max_hold_secs = Duration::from_secs(
-            ((req.incoming_expiry_height - req.outgoing_expiry_height) * 10 * 60).into(),
-        );
+        // Get maximum hold time assuming 10 minute blocks, assuming a zero block height (simulator doesn't track
+        // height).
+        let max_hold_secs = Duration::from_secs((req.incoming_expiry_height * 10 * 60).into());
 
         log::info!(
             "HTLC from target -> attacker endorsed, holding for {:?}: {}",
