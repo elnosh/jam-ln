@@ -2,6 +2,7 @@ mod decaying_average;
 pub mod forward_manager;
 pub use htlc_manager::ReputationParams;
 mod htlc_manager;
+mod incoming_channel;
 mod outgoing_channel;
 
 use serde::Serialize;
@@ -12,6 +13,10 @@ use std::time::Instant;
 
 /// The total supply of bitcoin expressed in millisatoshis.
 const SUPPLY_CAP_MSAT: u64 = 21000000 * 100000000 * 1000;
+
+/// The minimum size of the liquidity limit placed on htlcs that use congestion resources. This is
+/// in place to prevent smaller channels from having unusably small liquidity limits.
+const MINIMUM_CONGESTION_SLOT_LIQUDITY: u64 = 15_000_000;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ReputationError {
@@ -140,6 +145,8 @@ pub struct AllocationCheck {
     /// The reputation values used to compare the incoming channel's revenue to the outgoing channel's reputation for
     /// the htlc proposed.
     pub reputation_check: ReputationCheck,
+    /// Indicates whether the incoming channel is eligible to consume congestion resources.
+    pub congestion_eligible: bool,
     /// The resources available on the outgoing channel.
     pub resource_check: ResourceCheck,
 }
@@ -148,6 +155,7 @@ pub struct AllocationCheck {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ResourceBucketType {
     Protected,
+    Congestion,
     General,
 }
 
@@ -161,6 +169,9 @@ impl AllocationCheck {
         match self.inner_forwarding_outcome(htlc_amt_msat, incoming_endorsed) {
             Ok(bucket) => match bucket {
                 ResourceBucketType::General => {
+                    ForwardingOutcome::Forward(EndorsementSignal::Unendorsed)
+                }
+                ResourceBucketType::Congestion => {
                     ForwardingOutcome::Forward(EndorsementSignal::Unendorsed)
                 }
                 ResourceBucketType::Protected => {
@@ -182,6 +193,12 @@ impl AllocationCheck {
                 if self.reputation_check.sufficient_reputation() {
                     Ok(ResourceBucketType::Protected)
                 } else {
+                    // If the htlc was endorsed but the peer doesn't have reputation, we consider giving them a shot
+                    // at our reserved congestion resources.
+                    if self.congestion_resources_available(htlc_amt_msat) {
+                        return Ok(ResourceBucketType::Congestion);
+                    }
+
                     Err(FailureReason::NoReputation)
                 }
             }
@@ -197,6 +214,49 @@ impl AllocationCheck {
                 }
             }
         }
+    }
+
+    /// If our general bucket is full, we'll consider a spot in our "congestion" bucket for the forward, because it's
+    /// likely that we're under attack of some kind. This bucket is very strictly controlled -- liquidity is equally
+    /// shared between slots (and no htlc can use more than this allocation) and the sending channel may only utilize
+    /// one slot at a time.
+    fn congestion_resources_available(&self, htlc_amt_msat: u64) -> bool {
+        // If the congestion bucket is completely disabled by setting liquidity or slots to zero,
+        // resources are not available.
+        if self.resource_check.congestion_bucket.slots_available == 0
+            || self
+                .resource_check
+                .congestion_bucket
+                .liquidity_available_msat
+                == 0
+        {
+            return false;
+        }
+
+        if self
+            .resource_check
+            .general_bucket
+            .resources_available(htlc_amt_msat)
+            || !self.congestion_eligible
+            || !self
+                .resource_check
+                .congestion_bucket
+                .resources_available(htlc_amt_msat)
+        {
+            return false;
+        }
+
+        // Divide liquidity in congestion bucket evenly between slots, unless the amount would be less than a
+        // reasonable minimum amount.
+        let liquidity_limit = u64::max(
+            self.resource_check
+                .congestion_bucket
+                .liquidity_available_msat
+                / self.resource_check.congestion_bucket.slots_available as u64,
+            MINIMUM_CONGESTION_SLOT_LIQUDITY,
+        );
+
+        htlc_amt_msat <= liquidity_limit
     }
 }
 
@@ -224,6 +284,7 @@ impl ReputationCheck {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 pub struct ResourceCheck {
     pub general_bucket: BucketResources,
+    pub congestion_bucket: BucketResources,
 }
 
 /// Describes the resources currently used in a bucket.
@@ -418,4 +479,150 @@ pub trait ReputationManager {
         &self,
         access_ins: Instant,
     ) -> Result<HashMap<u64, ReputationSnapshot>, ReputationError>;
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::{
+        AllocationCheck, BucketResources, EndorsementSignal, FailureReason, ReputationCheck,
+        ResourceBucketType, ResourceCheck, MINIMUM_CONGESTION_SLOT_LIQUDITY,
+    };
+
+    /// Returns an AllocationCheck which is eligible for congestion resources.
+    fn test_congestion_check() -> AllocationCheck {
+        let check = AllocationCheck {
+            reputation_check: ReputationCheck {
+                outgoing_reputation: 0,
+                incoming_revenue: 0,
+                in_flight_total_risk: 0,
+                htlc_risk: 0,
+            },
+            congestion_eligible: true,
+            resource_check: ResourceCheck {
+                general_bucket: BucketResources {
+                    slots_used: 10,
+                    slots_available: 10,
+                    liquidity_used_msat: 0,
+                    liquidity_available_msat: 200_000,
+                },
+                congestion_bucket: BucketResources {
+                    slots_used: 0,
+                    slots_available: 10,
+                    liquidity_used_msat: 0,
+                    liquidity_available_msat: MINIMUM_CONGESTION_SLOT_LIQUDITY * 20,
+                },
+            },
+        };
+        assert!(check.congestion_resources_available(10));
+        check
+    }
+
+    #[test]
+    fn test_congestion_not_eligible() {
+        let mut check = test_congestion_check();
+        check.congestion_eligible = false;
+        assert!(!check.congestion_resources_available(100));
+    }
+
+    #[test]
+    fn test_congestion_general_available() {
+        let mut check = test_congestion_check();
+        check.resource_check.general_bucket.slots_used = 0;
+        assert!(!check.congestion_resources_available(100));
+    }
+
+    #[test]
+    fn test_congestion_bucket_full() {
+        let mut check = test_congestion_check();
+        check.resource_check.congestion_bucket.slots_used =
+            check.resource_check.congestion_bucket.slots_available;
+        assert!(!check.congestion_resources_available(100));
+    }
+
+    #[test]
+    fn test_congestion_htlc_amount() {
+        let check = test_congestion_check();
+        let htlc_limit = check
+            .resource_check
+            .congestion_bucket
+            .liquidity_available_msat
+            / check.resource_check.congestion_bucket.slots_available as u64;
+
+        assert!(check.congestion_resources_available(htlc_limit));
+        assert!(!check.congestion_resources_available(htlc_limit + 1));
+    }
+
+    #[test]
+    fn test_congestion_liquidity() {
+		// Set liquidity such that we'll hit our minimum liquidity allowance.
+        let mut check = test_congestion_check();
+        check
+            .resource_check
+            .congestion_bucket
+            .liquidity_available_msat = MINIMUM_CONGESTION_SLOT_LIQUDITY
+            * check.resource_check.congestion_bucket.slots_available as u64
+            / 2;
+
+		assert!(check.congestion_resources_available(MINIMUM_CONGESTION_SLOT_LIQUDITY));
+		assert!(!check.congestion_resources_available(MINIMUM_CONGESTION_SLOT_LIQUDITY+1));
+    }
+
+    #[test]
+    fn test_inner_forwarding_outcome_congestion() {
+        // Endorsed htlc will be granted access to congestion resources.
+        let check = test_congestion_check();
+        assert!(
+            check
+                .inner_forwarding_outcome(10, EndorsementSignal::Endorsed)
+                .unwrap()
+                == ResourceBucketType::Congestion
+        );
+
+        // Unendorsed htlc will not be granted access to congestion resources.
+        assert!(
+            check
+                .inner_forwarding_outcome(10, EndorsementSignal::Unendorsed)
+                .err()
+                .unwrap()
+                == FailureReason::NoResources,
+        );
+    }
+
+    #[test]
+    fn test_inner_forwarding_outcome_reputation() {
+        let mut check = test_congestion_check();
+        check.reputation_check.outgoing_reputation = 1000;
+        check.resource_check.general_bucket.slots_used = 0;
+
+        // Sufficient reputation and endorsed will go in the protected bucket.
+        assert!(
+            check
+                .inner_forwarding_outcome(10, EndorsementSignal::Endorsed)
+                .unwrap()
+                == ResourceBucketType::Protected,
+        );
+
+        // Sufficient reputation and unendorsed will go in the general bucket.
+        assert!(
+            check
+                .inner_forwarding_outcome(10, EndorsementSignal::Unendorsed)
+                .unwrap()
+                == ResourceBucketType::General,
+        );
+    }
+
+    #[test]
+    fn test_inner_forwarding_outcome_no_reputation() {
+        let mut check = test_congestion_check();
+        check.resource_check.general_bucket.slots_used = 0;
+
+        // Insufficient reputation and endorsed will go in the protected bucket.
+        assert!(
+            check
+                .inner_forwarding_outcome(10, EndorsementSignal::Endorsed)
+                .err()
+                .unwrap()
+                == FailureReason::NoReputation
+        );
+    }
 }
