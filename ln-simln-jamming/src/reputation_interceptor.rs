@@ -199,7 +199,7 @@ where
         interceptor.bootstrap_network_history(bootstrap).await?;
 
         // After the network has been bootstrapped, we can go ahead and general jam required channels.
-        for (channel, pubkey) in general_jammed.into_iter() {
+        for (channel, pubkey) in general_jammed.iter() {
             interceptor
                 .network_nodes
                 .lock()

@@ -93,12 +93,15 @@ async fn main() -> Result<(), BoxError> {
 
     let jammed_peers: Vec<(u64, PublicKey)> = target_channels
         .iter()
-        .filter_map(|(scid, channel)| {
+        .flat_map(|(scid, channel)| {
             if channel.channel_type == TargetChannelType::Peer {
                 let scid = *scid;
-                Some((scid.into(), channel.peer_pubkey))
+                vec![
+                    (scid.into(), channel.peer_pubkey),
+                    (scid.into(), target_pubkey),
+                ]
             } else {
-                None
+                vec![]
             }
         })
         .collect();
