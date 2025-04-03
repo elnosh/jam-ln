@@ -91,12 +91,12 @@ async fn main() -> Result<(), BoxError> {
         })
         .collect();
 
-    let jammed_peers = target_channels
+    let jammed_peers: Vec<(u64, PublicKey)> = target_channels
         .iter()
         .filter_map(|(scid, channel)| {
             if channel.channel_type == TargetChannelType::Peer {
                 let scid = *scid;
-                Some((channel.peer_pubkey, scid.into()))
+                Some((scid.into(), channel.peer_pubkey))
             } else {
                 None
             }
@@ -188,7 +188,7 @@ async fn main() -> Result<(), BoxError> {
         ReputationInterceptor::new_with_bootstrap(
             forward_params,
             &sim_network,
-            jammed_peers,
+            &jammed_peers,
             &bootstrap,
             clock.clone(),
             Some(results_writer),
