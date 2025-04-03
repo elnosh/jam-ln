@@ -225,15 +225,10 @@ async fn main() -> Result<(), BoxError> {
         select! {
             _ = attack_listener.clone() => return,
             _ = attack_clock.sleep(interval) => {
-                match attack_interceptor_1
-                    .get_target_pairs(
-                        target_pubkey,
-                        TargetChannelType::Attacker,
-                        InstantClock::now(&*attack_clock),
-                    )
+                match attack_interceptor_1.get_reputation_status(InstantClock::now(&*attack_clock))
                 .await {
                     Ok(rep) => {
-                        if !rep.iter().any(|pair| pair.outgoing_reputation(reputation_threshold)) {
+                        if !rep.attacker_reputation.iter().any(|pair| pair.outgoing_reputation(reputation_threshold)) {
                             log::error!("Attacker has no more reputation with the target");
                             attack_shutdown.trigger();
                             return;
