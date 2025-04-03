@@ -554,7 +554,7 @@ mod tests {
 
     #[test]
     fn test_congestion_liquidity() {
-		// Set liquidity such that we'll hit our minimum liquidity allowance.
+        // Set liquidity such that we'll hit our minimum liquidity allowance.
         let mut check = test_congestion_check();
         check
             .resource_check
@@ -563,8 +563,8 @@ mod tests {
             * check.resource_check.congestion_bucket.slots_available as u64
             / 2;
 
-		assert!(check.congestion_resources_available(MINIMUM_CONGESTION_SLOT_LIQUDITY));
-		assert!(!check.congestion_resources_available(MINIMUM_CONGESTION_SLOT_LIQUDITY+1));
+        assert!(check.congestion_resources_available(MINIMUM_CONGESTION_SLOT_LIQUDITY));
+        assert!(!check.congestion_resources_available(MINIMUM_CONGESTION_SLOT_LIQUDITY + 1));
     }
 
     #[test]
