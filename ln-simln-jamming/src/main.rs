@@ -207,9 +207,18 @@ async fn main() -> Result<(), BoxError> {
 
     check_reputation_status(&cli, &forward_params, &start_reputation, true)?;
 
+    let (_, start_target_reputation_count) = get_reputation_count(
+        cli.reputation_margin_msat,
+        cli.reputation_margin_expiry_blocks,
+        &forward_params,
+        &start_reputation,
+    );
+
     let attack_interceptor = Arc::new(attack_interceptor);
 
-    // Spawn a task that will trigger shutdown of the simulation if the attacker loses reputation.
+    // Spawn a task that will trigger shutdown of the simulation if the attacker loses reputation provided that the
+    // target is at similar reputation to the start of the simulation. This is a somewhat crude check, because we're
+    // only looking at the count of peers with reputation not the actual pairs.
     let attack_interceptor_1 = attack_interceptor.clone();
     let attack_clock = clock.clone();
     let attack_listener = listener.clone();
@@ -230,9 +239,16 @@ async fn main() -> Result<(), BoxError> {
                     Ok(rep) => {
                         if !rep.attacker_reputation.iter().any(|pair| pair.outgoing_reputation(reputation_threshold)) {
                             log::error!("Attacker has no more reputation with the target");
-                            attack_shutdown.trigger();
-                            return;
-                        }
+
+							let target_reputation = rep.target_reputation.iter().filter(|pair| pair.outgoing_reputation(reputation_threshold)).count();
+							if target_reputation >= start_target_reputation_count {
+								log::error!("Attacker has no more reputation with target and the target's reputation is similar to simulation start");
+								attack_shutdown.trigger();
+								return;
+							}
+
+							log::info!("Attacker has no more reputation with target but target's reputation is worse than start count ({target_reputation} < {start_target_reputation_count}), continuing simulation to monitor recovery"); 
+						}
                     },
                     Err(e) => {
                         log::error!("Error checking attacker reputation: {e}");
