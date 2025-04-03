@@ -338,6 +338,7 @@ async fn main() -> Result<(), BoxError> {
         &snapshot,
         &start_reputation,
         &end_reputation,
+        jammed_peers.len(),
     )?;
 
     Ok(())
@@ -484,6 +485,7 @@ fn check_reputation_status(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn write_simulation_summary(
     data_dir: PathBuf,
     reputation_margin_msat: u64,
@@ -492,6 +494,7 @@ fn write_simulation_summary(
     revenue: &RevenueSnapshot,
     start_reputation: &NetworkReputation,
     end_reputation: &NetworkReputation,
+    general_jammed: usize,
 ) -> Result<(), BoxError> {
     let file = OpenOptions::new()
         .append(true)
@@ -562,6 +565,10 @@ fn write_simulation_summary(
         "Target end reputation (pairs): {}/{}",
         end_count.1,
         end_reputation.target_reputation.len()
+    )?;
+    writeln!(
+        writer,
+        "Attacker general jammed {general_jammed} edges (directional)",
     )?;
     writer.flush()?;
 
