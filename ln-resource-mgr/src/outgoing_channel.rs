@@ -242,7 +242,7 @@ mod tests {
         let htlc_2 = get_test_htlc(EndorsementSignal::Endorsed, 5000);
         tracker
             .remove_outgoing_htlc(
-                &htlc_2.clone().into(),
+                &htlc_2.clone(),
                 ForwardResolution::Failed,
                 htlc_2.added_instant,
             )

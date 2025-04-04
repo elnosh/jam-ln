@@ -157,6 +157,6 @@ mod tests {
 
         // One second in the future should decay our existing value.
         let ins_4 = ins_1.add(Duration::from_secs(1));
-        assert_eq!(avg.value_at_instant(ins_4).unwrap() < 250, true);
+        assert!(avg.value_at_instant(ins_4).unwrap() < 250);
     }
 }

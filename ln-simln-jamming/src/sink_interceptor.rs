@@ -460,7 +460,7 @@ mod tests {
 
         let (shutdown, listener) = triggered::trigger();
         let mock = MockReputationInterceptor::new();
-        let interceptor = SinkInterceptor::new(
+        SinkInterceptor::new(
             Arc::new(SimulationClock::new(1).unwrap()),
             target_pubkey,
             attacker_pubkey,
@@ -469,14 +469,12 @@ mod tests {
             mock,
             listener,
             shutdown,
-        );
-
-        interceptor
+        )
     }
 
     /// Primes the mock to expect intercept_htlc called with the request provided.
     fn mock_intercept_htlc(interceptor: &mut MockReputationInterceptor, req: &InterceptRequest) {
-        let expected_incoming = req.incoming_htlc.channel_id.clone();
+        let expected_incoming = req.incoming_htlc.channel_id;
         let expected_outgoing = req.outgoing_channel_id.unwrap();
 
         interceptor
@@ -726,7 +724,7 @@ mod tests {
         let target_to_attacker_expected = target_to_attacker_pairs.clone();
 
         // Paris from peer_1 -> target from the peer's perspective.
-        let peer_1_to_target_pairs = vec![
+        let peer_1_to_target_pairs = [
             ReputationPair {
                 incoming_scid: peer_1_incoming_1,
                 outgoing_scid: chan_1,

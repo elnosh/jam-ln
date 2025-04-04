@@ -28,7 +28,8 @@ for each node in the network.
 
 To run the simulator with the above files in the current directory:
 ```
-cargo run --package ln-simln-jamming -- --target-alias {alias string} --attacker-alias {alias string}
+make install
+ln-simln-jamming --target-alias {alias string} --attacker-alias {alias string}
 ```
 
 There are various ways that the simulator can be customized, see 
