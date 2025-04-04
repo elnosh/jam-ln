@@ -439,7 +439,12 @@ pub fn validate_msat(amount_msat: u64) -> Result<i64, ReputationError> {
 pub trait ReputationManager {
     /// Should be called to add a channel to the manager to track its reputation and revenue, must be called before
     /// any calls to [`get_forwarding_outcome`] or [`add_htlc`] reference the channel.
-    fn add_channel(&self, channel_id: u64, capacity_msat: u64) -> Result<(), ReputationError>;
+    fn add_channel(
+        &self,
+        channel_id: u64,
+        capacity_msat: u64,
+        add_ins: Instant,
+    ) -> Result<(), ReputationError>;
 
     /// Called to clean up a channel once it has been closed and is no longer usable for htlc forwards.
     fn remove_channel(&self, channel_id: u64) -> Result<(), ReputationError>;
