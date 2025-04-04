@@ -827,7 +827,7 @@ mod tests {
         node_2: PublicKey,
     ) -> NetworkParser {
         NetworkParser {
-            scid: scid,
+            scid,
             capacity_msat: 100_000,
             node_1: setup_test_policy(node_1),
             node_2: setup_test_policy(node_2),
