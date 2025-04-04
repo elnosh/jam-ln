@@ -338,13 +338,30 @@ impl<C: InstantClock + Clock, R: Interceptor + ReputationMonitor> Interceptor
 {
     /// Implemented by HTLC interceptors that provide input on the resolution of HTLCs forwarded in the simulation.
     async fn intercept_htlc(&self, req: InterceptRequest) {
-        // Intercept payments from target -> attacker.
-        if let Some(target_chan) = self.target_channels.get(&req.incoming_htlc.channel_id) {
-            if *target_chan == TargetChannelType::Attacker
-                && req.forwarding_node == self.attacker_pubkey
-            {
+        // Intercept payments on the attacking node. If they're incoming from the target, jam them. If they're outgoing
+        // to the target, just drop them to prevent them from earning revenue. Other payments are ok, they help the
+        // attacker be a link that other nodes want to forward through them.
+        if req.forwarding_node == self.attacker_pubkey {
+            if let Some(target_chan) = self.target_channels.get(&req.incoming_htlc.channel_id) {
+                assert!(*target_chan == TargetChannelType::Attacker);
+
                 self.intercept_attacker_incoming(req).await;
                 return;
+            }
+
+            if let Some(outgoing_scid) = req.outgoing_channel_id {
+                if let Some(target_chan) = self.target_channels.get(&outgoing_scid) {
+                    assert!(*target_chan == TargetChannelType::Attacker);
+
+                    send_intercept_result!(
+                        req,
+                        Ok(Err(ForwardingError::InterceptorError(
+                            "attacker failing".into()
+                        ))),
+                        self.shutdown
+                    );
+                    return;
+                }
             }
         }
 
