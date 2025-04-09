@@ -70,7 +70,7 @@ pub fn test_allocation_check(forward_succeeds: bool) -> AllocationCheck {
     let check = AllocationCheck {
         reputation_check: ReputationCheck {
             outgoing_reputation: 100_000,
-            incoming_revenue: if forward_succeeds { 0 } else { 200_000 },
+            revenue_threshold: if forward_succeeds { 0 } else { 200_000 },
             in_flight_total_risk: 0,
             htlc_risk: 0,
         },

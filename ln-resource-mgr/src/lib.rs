@@ -264,7 +264,7 @@ impl AllocationCheck {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 pub struct ReputationCheck {
     pub outgoing_reputation: i64,
-    pub incoming_revenue: i64,
+    pub revenue_threshold: i64,
     pub in_flight_total_risk: u64,
     pub htlc_risk: u64,
 }
@@ -276,7 +276,7 @@ impl ReputationCheck {
         self.outgoing_reputation
             .saturating_sub(i64::try_from(self.in_flight_total_risk).unwrap_or(i64::MAX))
             .saturating_sub(i64::try_from(self.htlc_risk).unwrap_or(i64::MAX))
-            > self.incoming_revenue
+            > self.revenue_threshold
     }
 }
 
@@ -498,7 +498,7 @@ mod tests {
         let check = AllocationCheck {
             reputation_check: ReputationCheck {
                 outgoing_reputation: 0,
-                incoming_revenue: 0,
+                revenue_threshold: 0,
                 in_flight_total_risk: 0,
                 htlc_risk: 0,
             },

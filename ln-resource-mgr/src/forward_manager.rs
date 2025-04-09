@@ -158,7 +158,7 @@ impl ForwardManagerImpl {
                 forward.incoming_ref.channel_id,
             ))?;
 
-        let incoming_threshold = incoming_channel
+        let revenue_threshold = incoming_channel
             .bidirectional_revenue
             .value_at_instant(forward.added_at)?;
 
@@ -178,7 +178,7 @@ impl ForwardManagerImpl {
         Ok(AllocationCheck {
             reputation_check: ReputationCheck {
                 outgoing_reputation: outgoing_channel.outgoing_reputation(forward.added_at)?,
-                incoming_revenue: incoming_threshold,
+                revenue_threshold,
                 in_flight_total_risk: self.htlcs.channel_in_flight_risk(
                     ChannelFilter::OutgoingChannel(forward.outgoing_channel_id),
                 ),
