@@ -430,7 +430,9 @@ impl ReputationManager for ForwardManager {
                     outgoing_reputation: channel
                         .outgoing_direction
                         .outgoing_reputation(access_ins)?,
-                    incoming_revenue: channel.bidirectional_revenue.value_at_instant(access_ins)?,
+                    bidirectional_revenue: channel
+                        .bidirectional_revenue
+                        .value_at_instant(access_ins)?,
                 },
             );
         }

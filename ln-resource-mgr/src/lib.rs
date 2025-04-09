@@ -417,7 +417,7 @@ impl ProposedForward {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ChannelSnapshot {
     pub outgoing_reputation: i64,
-    pub incoming_revenue: i64,
+    pub bidirectional_revenue: i64,
 }
 
 /// Validates that an msat amount doesn't exceed the total supply cap of bitcoin and casts to i64 to be used in

@@ -438,7 +438,7 @@ where
                 pairs.push(ReputationPair {
                     incoming_scid: *incoming_scid,
                     outgoing_scid: *outgoing_scid,
-                    incoming_revenue: snapshot_incoming.incoming_revenue,
+                    incoming_revenue: snapshot_incoming.bidirectional_revenue,
                     outgoing_reputation: snapshot_outgoing.outgoing_reputation,
                 })
             }
@@ -976,7 +976,13 @@ mod tests {
             .list_reputation(Instant::now())
             .unwrap();
 
-        assert!(bob_reputation.get(&alice_to_bob).unwrap().incoming_revenue != 0);
+        assert!(
+            bob_reputation
+                .get(&alice_to_bob)
+                .unwrap()
+                .bidirectional_revenue
+                != 0
+        );
         assert!(
             bob_reputation
                 .get(&bob_to_carol)
