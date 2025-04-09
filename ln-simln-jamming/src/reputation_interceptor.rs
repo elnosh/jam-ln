@@ -426,7 +426,7 @@ where
             .get(&node)
             .ok_or(format!("node: {node} not found"))?
             .forward_manager
-            .list_reputation(access_ins)?;
+            .list_channels(access_ins)?;
 
         let mut pairs = Vec::with_capacity(reputations.len() * (reputations.len() - 1));
         for (incoming_scid, snapshot_incoming) in reputations.iter() {
@@ -612,7 +612,7 @@ mod tests {
                 resolved_instant: Instant
             ) -> Result<(), ReputationError>;
 
-            fn list_reputation(
+            fn list_channels(
                 &self,
                 access_ins: Instant
             ) -> Result<HashMap<u64, ChannelSnapshot>, ReputationError>;
@@ -973,7 +973,7 @@ mod tests {
             .get(&bob_pk)
             .unwrap()
             .forward_manager
-            .list_reputation(Instant::now())
+            .list_channels(Instant::now())
             .unwrap();
 
         assert!(

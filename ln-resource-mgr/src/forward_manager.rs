@@ -412,7 +412,7 @@ impl ReputationManager for ForwardManager {
 
     /// Lists the reputation scores of each channel at the access instant provided. This function will mutate the
     /// underlying decaying averages to be tracked at the instant provided.
-    fn list_reputation(
+    fn list_channels(
         &self,
         access_ins: Instant,
     ) -> Result<HashMap<u64, ChannelSnapshot>, ReputationError> {

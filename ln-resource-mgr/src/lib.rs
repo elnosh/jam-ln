@@ -479,8 +479,8 @@ pub trait ReputationManager {
         resolved_instant: Instant,
     ) -> Result<(), ReputationError>;
 
-    /// Provides reputation snapshots of per channel at the instant provided.
-    fn list_reputation(
+    /// Provides snapshots of per channel at the instant provided.
+    fn list_channels(
         &self,
         access_ins: Instant,
     ) -> Result<HashMap<u64, ChannelSnapshot>, ReputationError>;
