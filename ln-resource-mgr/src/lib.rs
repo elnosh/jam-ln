@@ -413,9 +413,9 @@ impl ProposedForward {
     }
 }
 
-/// Provides a reputation check snapshot for an incoming/outgoing channel pair.
+/// Provides a snapshot of the reputation and revenue values tracked for a channel.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct ReputationSnapshot {
+pub struct ChannelSnapshot {
     pub outgoing_reputation: i64,
     pub incoming_revenue: i64,
 }
@@ -483,7 +483,7 @@ pub trait ReputationManager {
     fn list_reputation(
         &self,
         access_ins: Instant,
-    ) -> Result<HashMap<u64, ReputationSnapshot>, ReputationError>;
+    ) -> Result<HashMap<u64, ChannelSnapshot>, ReputationError>;
 }
 
 #[cfg(test)]

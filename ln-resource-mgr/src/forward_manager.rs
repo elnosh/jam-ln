@@ -3,8 +3,8 @@ use crate::htlc_manager::{ChannelFilter, InFlightHtlc, InFlightManager};
 use crate::incoming_channel::IncomingChannel;
 use crate::outgoing_channel::{BucketParameters, OutgoingChannel};
 use crate::{
-    AllocationCheck, BucketResources, ForwardResolution, HtlcRef, ProposedForward, ReputationCheck,
-    ReputationError, ReputationManager, ReputationParams, ReputationSnapshot, ResourceBucketType,
+    AllocationCheck, BucketResources, ChannelSnapshot, ForwardResolution, HtlcRef, ProposedForward,
+    ReputationCheck, ReputationError, ReputationManager, ReputationParams, ResourceBucketType,
     ResourceCheck,
 };
 use std::collections::hash_map::Entry;
@@ -415,7 +415,7 @@ impl ReputationManager for ForwardManager {
     fn list_reputation(
         &self,
         access_ins: Instant,
-    ) -> Result<HashMap<u64, ReputationSnapshot>, ReputationError> {
+    ) -> Result<HashMap<u64, ChannelSnapshot>, ReputationError> {
         let inner_lock = &mut self
             .inner
             .lock()
@@ -426,7 +426,7 @@ impl ReputationManager for ForwardManager {
         for (scid, channel) in inner_lock.iter_mut() {
             reputations.insert(
                 *scid,
-                ReputationSnapshot {
+                ChannelSnapshot {
                     outgoing_reputation: channel
                         .outgoing_direction
                         .outgoing_reputation(access_ins)?,

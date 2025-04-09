@@ -562,8 +562,8 @@ mod tests {
     use bitcoin::secp256k1::PublicKey;
     use ln_resource_mgr::forward_manager::{ForwardManager, ForwardManagerParams};
     use ln_resource_mgr::{
-        AllocationCheck, EndorsementSignal, ForwardResolution, HtlcRef, ProposedForward,
-        ReputationError, ReputationManager, ReputationParams, ReputationSnapshot,
+        AllocationCheck, ChannelSnapshot, EndorsementSignal, ForwardResolution, HtlcRef,
+        ProposedForward, ReputationError, ReputationManager, ReputationParams,
     };
     use mockall::mock;
     use simln_lib::clock::SimulationClock;
@@ -615,7 +615,7 @@ mod tests {
             fn list_reputation(
                 &self,
                 access_ins: Instant
-            ) -> Result<HashMap<u64, ReputationSnapshot>, ReputationError>;
+            ) -> Result<HashMap<u64, ChannelSnapshot>, ReputationError>;
         }
     }
 
