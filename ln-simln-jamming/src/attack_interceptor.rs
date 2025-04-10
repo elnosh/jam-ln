@@ -6,8 +6,7 @@ use bitcoin::secp256k1::PublicKey;
 use ln_resource_mgr::{EndorsementSignal, ForwardingOutcome, HtlcRef, ProposedForward};
 use simln_lib::clock::Clock;
 use simln_lib::sim_node::{ForwardingError, InterceptRequest, InterceptResolution, Interceptor};
-use simln_lib::ShortChannelID;
-use std::collections::HashMap;
+use std::collections::HashSet;
 use std::error::Error;
 use std::sync::Arc;
 use std::time::Duration;
@@ -32,8 +31,8 @@ where
     clock: Arc<C>,
     attacker_pubkey: PublicKey,
     target_pubkey: PublicKey,
-    /// Keeps track of the target's channels for custom behavior.
-    target_channels: HashMap<ShortChannelID, TargetChannelType>,
+    /// Keeps track of the target's channels for custom behavior, including any channels with the attacking node.
+    target_channels: HashSet<u64>,
     /// Inner reputation monitor that implements jamming mitigation.
     reputation_interceptor: Arc<Mutex<R>>,
     /// Used to control shutdown.
@@ -76,7 +75,7 @@ impl<C: InstantClock + Clock, R: Interceptor + ReputationMonitor> AttackIntercep
         clock: Arc<C>,
         attacker_pubkey: PublicKey,
         target_pubkey: PublicKey,
-        target_channels: HashMap<ShortChannelID, TargetChannelType>,
+        target_channels: HashSet<u64>,
         reputation_interceptor: Arc<Mutex<R>>,
         listener: Listener,
         shutdown: Trigger,
@@ -97,7 +96,7 @@ impl<C: InstantClock + Clock, R: Interceptor + ReputationMonitor> AttackIntercep
         clock: Arc<C>,
         attacker_pubkey: PublicKey,
         target_pubkey: PublicKey,
-        target_channels: HashMap<ShortChannelID, TargetChannelType>,
+        target_channels: HashSet<u64>,
         reputation_interceptor: Arc<Mutex<R>>,
         listener: Listener,
         shutdown: Trigger,
@@ -250,47 +249,39 @@ impl<C: InstantClock + Clock, R: Interceptor + ReputationMonitor> Interceptor
 {
     /// Implemented by HTLC interceptors that provide input on the resolution of HTLCs forwarded in the simulation.
     async fn intercept_htlc(&self, req: InterceptRequest) {
-        // Intercept payments on the attacking node. If they're incoming from the target, jam them. If they're outgoing
-        // to the target, just drop them to prevent them from earning revenue. Other payments are ok, they help the
-        // attacker be a link that other nodes want to forward through them.
+        // Intercept payments on the attacking node. If they're incoming from the target, jam them. Otherwise just
+        // fail other htlcs, they're not that interesting to us.
         if req.forwarding_node == self.attacker_pubkey {
-            if let Some(target_chan) = self.target_channels.get(&req.incoming_htlc.channel_id) {
-                assert!(*target_chan == TargetChannelType::Attacker);
-
+            if self
+                .target_channels
+                .contains(&req.incoming_htlc.channel_id.into())
+            {
                 self.intercept_attacker_incoming(req).await;
                 return;
             }
 
-            if let Some(outgoing_scid) = req.outgoing_channel_id {
-                if let Some(target_chan) = self.target_channels.get(&outgoing_scid) {
-                    assert!(*target_chan == TargetChannelType::Attacker);
-
-                    send_intercept_result!(
-                        req,
-                        Ok(Err(ForwardingError::InterceptorError(
-                            "attacker failing".into()
-                        ))),
-                        self.shutdown
-                    );
-                    return;
-                }
-            }
+            send_intercept_result!(
+                req,
+                Ok(Err(ForwardingError::InterceptorError(
+                    "attacker failing".into()
+                ))),
+                self.shutdown
+            );
+            return;
         }
 
         // Intercept payments from peers -> target. If there's no outgoing_channel_id, the intercepting node is
         // the recipient so we take no action.
         if let Some(outgoing_channel_id) = req.outgoing_channel_id {
-            if let Some(target_chan) = self.target_channels.get(&outgoing_channel_id) {
-                if *target_chan == TargetChannelType::Peer
-                    && req.forwarding_node != self.target_pubkey
-                {
-                    if let Err(e) = self.intercept_peer_outgoing(req.clone()).await {
-                        log::error!("Could not intercept peer outgoing: {e}");
-                        self.shutdown.trigger();
-                    }
-
-                    return;
+            if self.target_channels.contains(&outgoing_channel_id.into())
+                && req.forwarding_node != self.target_pubkey
+            {
+                if let Err(e) = self.intercept_peer_outgoing(req.clone()).await {
+                    log::error!("Could not intercept peer outgoing: {e}");
+                    self.shutdown.trigger();
                 }
+
+                return;
             }
         }
 
@@ -319,12 +310,10 @@ impl<C: InstantClock + Clock, R: Interceptor + ReputationMonitor> Interceptor
         &self,
         res: InterceptResolution,
     ) -> Result<(), Box<dyn Error + Send + Sync + 'static>> {
-        // If this was a payment forwarded through the attacker from the target (target -> attacker -> *), we don't
-        // want to report it to the reputation interceptor (because we didn't use it for the original intercepted htlc).
-        if let Some(target_chan) = self.target_channels.get(&res.incoming_htlc.channel_id) {
-            if *target_chan == TargetChannelType::Attacker {
-                return Ok(());
-            }
+        // If this was a payment forwarded through the attacker, it was not handled by the reputation interceptor
+        // so we don't need to handle it (it hasn't seen the htlc add to begin with).
+        if res.forwarding_node == self.attacker_pubkey {
+            return Ok(());
         }
 
         self.reputation_interceptor
@@ -341,7 +330,7 @@ impl<C: InstantClock + Clock, R: Interceptor + ReputationMonitor> Interceptor
 
 #[cfg(test)]
 mod tests {
-    use std::collections::HashMap;
+    use std::collections::{HashMap, HashSet};
     use std::convert::From;
     use std::error::Error;
     use std::sync::Arc;
@@ -357,10 +346,9 @@ mod tests {
     use mockall::predicate::function;
     use simln_lib::clock::SimulationClock;
     use simln_lib::sim_node::{InterceptRequest, InterceptResolution, Interceptor};
-    use simln_lib::ShortChannelID;
     use tokio::sync::Mutex;
 
-    use super::{AttackInterceptor, TargetChannelType};
+    use super::AttackInterceptor;
 
     mock! {
         ReputationInterceptor{}
@@ -383,12 +371,7 @@ mod tests {
         let target_pubkey = get_random_keypair().1;
         let attacker_pubkey = get_random_keypair().1;
 
-        let target_channels = HashMap::from([
-            (ShortChannelID::from(0), TargetChannelType::Attacker),
-            (ShortChannelID::from(1), TargetChannelType::Peer),
-            (ShortChannelID::from(2), TargetChannelType::Peer),
-            (ShortChannelID::from(3), TargetChannelType::Peer),
-        ]);
+        let target_channels = HashSet::from([0, 1, 2, 3]);
 
         let (shutdown, listener) = triggered::trigger();
         let mock = MockReputationInterceptor::new();
@@ -462,29 +445,25 @@ mod tests {
     /// Tests attacker interception of htlcs that need no interception action - either from a random node or those
     /// that are being sent to the target (rather than received from it).
     #[tokio::test]
-    async fn test_attacker_no_action() {
+    async fn test_attacker_drops_regular() {
         let interceptor = setup_interceptor_test();
-        let attacker_pk = get_random_keypair().1;
 
-        // Intercepted on the attacker: node -(5)-> attacker -(0)-> target, should just be forwarded.
-        let (attacker_to_target, _) =
-            setup_test_request(attacker_pk, 5, 0, EndorsementSignal::Unendorsed);
-        mock_intercept_htlc(
-            interceptor.reputation_interceptor.clone(),
-            &attacker_to_target,
-        )
-        .await;
+        // Intercepted on the attacker: node -(5)-> attacker -(0)-> target, should just be dropped.
+        let (attacker_to_target, _) = setup_test_request(
+            interceptor.attacker_pubkey,
+            5,
+            0,
+            EndorsementSignal::Unendorsed,
+        );
         interceptor.intercept_htlc(attacker_to_target).await;
 
-        // Intercepted on the attacker: node -(5)-> attacker -(6)-> node, should just be forwarded.
-        let (attacker_to_target, _) =
-            setup_test_request(attacker_pk, 5, 6, EndorsementSignal::Unendorsed);
-
-        mock_intercept_htlc(
-            interceptor.reputation_interceptor.clone(),
-            &attacker_to_target,
-        )
-        .await;
+        // Intercepted on the attacker: node -(5)-> attacker -(6)-> node, should just be dropped.
+        let (attacker_to_target, _) = setup_test_request(
+            interceptor.attacker_pubkey,
+            5,
+            6,
+            EndorsementSignal::Unendorsed,
+        );
         interceptor.intercept_htlc(attacker_to_target).await;
     }
 

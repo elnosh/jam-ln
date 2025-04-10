@@ -3,7 +3,7 @@ use clap::Parser;
 use ln_resource_mgr::forward_manager::ForwardManagerParams;
 use ln_resource_mgr::ReputationParams;
 use ln_simln_jamming::analysis::BatchForwardWriter;
-use ln_simln_jamming::attack_interceptor::{AttackInterceptor, TargetChannelType};
+use ln_simln_jamming::attack_interceptor::AttackInterceptor;
 use ln_simln_jamming::clock::InstantClock;
 use ln_simln_jamming::parsing::{get_history_for_bootstrap, history_from_file, Cli};
 use ln_simln_jamming::reputation_interceptor::ReputationInterceptor;
@@ -15,7 +15,7 @@ use simln_lib::clock::Clock;
 use simln_lib::clock::SimulationClock;
 use simln_lib::interceptors::LatencyIntercepor;
 use simln_lib::sim_node::{Interceptor, SimulatedChannel};
-use simln_lib::{NetworkParser, ShortChannelID, Simulation, SimulationCfg};
+use simln_lib::{NetworkParser, Simulation, SimulationCfg};
 use simple_logger::SimpleLogger;
 use std::collections::HashMap;
 use std::fs::{self, OpenOptions};
@@ -92,19 +92,7 @@ async fn main() -> Result<(), BoxError> {
     monitor_nodes.push((target_pubkey, cli.target_alias.to_string()));
 
     // Create a map of all the target's channels, and a vec of its non-attacking peers.
-    let target_channel_map: HashMap<ShortChannelID, TargetChannelType> = target_channels
-        .iter()
-        .map(|(scid, (pk, _))| {
-            (
-                ShortChannelID::from(*scid),
-                if *pk == attacker_pubkey {
-                    TargetChannelType::Attacker
-                } else {
-                    TargetChannelType::Peer
-                },
-            )
-        })
-        .collect();
+    let target_channel_map = target_channels.keys().cloned().collect();
 
     let jammed_peers: Vec<(u64, PublicKey)> = target_channels
         .iter()
