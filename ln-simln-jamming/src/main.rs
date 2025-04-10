@@ -17,7 +17,7 @@ use simln_lib::interceptors::LatencyIntercepor;
 use simln_lib::sim_node::{Interceptor, SimulatedChannel};
 use simln_lib::{NetworkParser, Simulation, SimulationCfg};
 use simple_logger::SimpleLogger;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs::{self, OpenOptions};
 use std::io::{BufWriter, Write};
 use std::path::PathBuf;
@@ -123,7 +123,6 @@ async fn main() -> Result<(), BoxError> {
         )
         .into());
     }
-    let target_attacker_scid = *target_to_attacker.first().unwrap();
 
     // Pull history that bootstraps the simulation in a network with the attacker's channels present, filter to only
     // have attacker forwards present when the and calculate revenue for the target node during this bootstrap period.
@@ -131,7 +130,7 @@ async fn main() -> Result<(), BoxError> {
     let bootstrap = get_history_for_bootstrap(
         cli.attacker_bootstrap,
         unfiltered_history,
-        target_attacker_scid,
+        HashSet::from_iter(target_to_attacker.into_iter()),
     )?;
     let bootstrap_revenue = bootstrap.forwards.iter().fold(0, |acc, item| {
         if item.forwarding_node == target_pubkey {
