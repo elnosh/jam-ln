@@ -68,9 +68,15 @@ pub fn setup_test_request(
 #[allow(dead_code)]
 pub fn test_allocation_check(forward_succeeds: bool) -> AllocationCheck {
     let check = AllocationCheck {
-        reputation_check: ReputationCheck {
-            outgoing_reputation: 100_000,
-            incoming_revenue: if forward_succeeds { 0 } else { 200_000 },
+        incoming_reputation_check: ReputationCheck {
+            reputation: 100_000,
+            revenue_treshold: if forward_succeeds { 0 } else { 200_000 },
+            in_flight_total_risk: 0,
+            htlc_risk: 0,
+        },
+        outgoing_reputation_check: ReputationCheck {
+            reputation: 100_000,
+            revenue_treshold: if forward_succeeds { 0 } else { 200_000 },
             in_flight_total_risk: 0,
             htlc_risk: 0,
         },

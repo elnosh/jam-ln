@@ -142,9 +142,12 @@ pub enum FailureReason {
 /// A snapshot of the reputation and resources available for a forward.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 pub struct AllocationCheck {
+    /// The reputation values used to compare the incoming channel's reputation to the outgoing channel's revenue for
+    /// the htlc proposed.
+    pub incoming_reputation_check: ReputationCheck,
     /// The reputation values used to compare the incoming channel's revenue to the outgoing channel's reputation for
     /// the htlc proposed.
-    pub reputation_check: ReputationCheck,
+    pub outgoing_reputation_check: ReputationCheck,
     /// Indicates whether the incoming channel is eligible to consume congestion resources.
     pub congestion_eligible: bool,
     /// The resources available on the outgoing channel.
@@ -190,7 +193,7 @@ impl AllocationCheck {
     ) -> Result<ResourceBucketType, FailureReason> {
         match incoming_endorsed {
             EndorsementSignal::Endorsed => {
-                if self.reputation_check.sufficient_reputation() {
+                if self.outgoing_reputation_check.sufficient_reputation() {
                     Ok(ResourceBucketType::Protected)
                 } else {
                     // If the htlc was endorsed but the peer doesn't have reputation, we consider giving them a shot
@@ -263,8 +266,8 @@ impl AllocationCheck {
 /// A snapshot of a reputation check for a htlc forward.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 pub struct ReputationCheck {
-    pub outgoing_reputation: i64,
-    pub incoming_revenue: i64,
+    pub reputation: i64,
+    pub revenue_treshold: i64,
     pub in_flight_total_risk: u64,
     pub htlc_risk: u64,
 }
@@ -273,10 +276,10 @@ impl ReputationCheck {
     /// Returns a boolean indicating whether the outgoing channel has sufficient reputation for this htlc to be
     /// forwarded to it.
     pub fn sufficient_reputation(&self) -> bool {
-        self.outgoing_reputation
+        self.reputation
             .saturating_sub(i64::try_from(self.in_flight_total_risk).unwrap_or(i64::MAX))
             .saturating_sub(i64::try_from(self.htlc_risk).unwrap_or(i64::MAX))
-            > self.incoming_revenue
+            > self.revenue_treshold
     }
 }
 
@@ -496,9 +499,15 @@ mod tests {
     /// Returns an AllocationCheck which is eligible for congestion resources.
     fn test_congestion_check() -> AllocationCheck {
         let check = AllocationCheck {
-            reputation_check: ReputationCheck {
-                outgoing_reputation: 0,
-                incoming_revenue: 0,
+            incoming_reputation_check: ReputationCheck {
+                reputation: 0,
+                revenue_treshold: 0,
+                in_flight_total_risk: 0,
+                htlc_risk: 0,
+            },
+            outgoing_reputation_check: ReputationCheck {
+                reputation: 0,
+                revenue_treshold: 0,
                 in_flight_total_risk: 0,
                 htlc_risk: 0,
             },
@@ -596,7 +605,7 @@ mod tests {
     #[test]
     fn test_inner_forwarding_outcome_reputation() {
         let mut check = test_congestion_check();
-        check.reputation_check.outgoing_reputation = 1000;
+        check.outgoing_reputation_check.reputation = 1000;
         check.resource_check.general_bucket.slots_used = 0;
 
         // Sufficient reputation and endorsed will go in the protected bucket.

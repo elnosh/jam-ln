@@ -1,7 +1,7 @@
 use crate::decaying_average::DecayingAverage;
 use crate::htlc_manager::{ChannelFilter, InFlightHtlc, InFlightManager};
 use crate::incoming_channel::IncomingChannel;
-use crate::outgoing_channel::{BucketParameters, OutgoingChannel};
+use crate::outgoing_channel::OutgoingChannel;
 use crate::{
     AllocationCheck, BucketResources, ForwardResolution, HtlcRef, ProposedForward, ReputationCheck,
     ReputationError, ReputationManager, ReputationParams, ReputationSnapshot, ResourceBucketType,
@@ -108,6 +108,15 @@ impl RevenueAverage {
     }
 }
 
+/// Describes the size of a resource bucket.
+#[derive(Clone, Debug)]
+pub struct BucketParameters {
+    /// The number of HTLC slots available in the bucket.
+    pub slot_count: u16,
+    /// The amount of liquidity available in the bucket.
+    pub liquidity_msat: u64,
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ForwardManagerParams {
     pub reputation_params: ReputationParams,
@@ -162,23 +171,41 @@ impl ForwardManagerImpl {
             .bidirectional_revenue
             .value_at_instant(forward.added_at)?;
 
+        let incoming_reputation = incoming_channel
+            .incoming_direction
+            .reputation(forward.added_at)?;
+
         let no_congestion_misuse = incoming_channel
             .incoming_direction
             .no_congestion_misuse(forward.added_at);
 
         // Check reputation and resources available for the forward.
-        let outgoing_channel = &mut self
-            .channels
-            .get_mut(&forward.outgoing_channel_id)
-            .ok_or(ReputationError::ErrOutgoingNotFound(
-                forward.outgoing_channel_id,
-            ))?
-            .outgoing_direction;
+        let outgoing_channel = self.channels.get_mut(&forward.outgoing_channel_id).ok_or(
+            ReputationError::ErrOutgoingNotFound(forward.outgoing_channel_id),
+        )?;
+
+        let outgoing_treshold = outgoing_channel
+            .bidirectional_revenue
+            .value_at_instant(forward.added_at)?;
+
+        let outgoing_reputation = outgoing_channel
+            .outgoing_direction
+            .outgoing_reputation(forward.added_at)?;
 
         Ok(AllocationCheck {
-            reputation_check: ReputationCheck {
-                outgoing_reputation: outgoing_channel.outgoing_reputation(forward.added_at)?,
-                incoming_revenue: incoming_threshold,
+            incoming_reputation_check: ReputationCheck {
+                reputation: incoming_reputation,
+                revenue_treshold: outgoing_treshold,
+                in_flight_total_risk: self.htlcs.channel_in_flight_risk(
+                    ChannelFilter::IncomingChannel(forward.incoming_ref.channel_id),
+                ),
+                htlc_risk: self
+                    .htlcs
+                    .htlc_risk(forward.fee_msat(), forward.expiry_out_height),
+            },
+            outgoing_reputation_check: ReputationCheck {
+                reputation: outgoing_reputation,
+                revenue_treshold: incoming_threshold,
                 in_flight_total_risk: self.htlcs.channel_in_flight_risk(
                     ChannelFilter::OutgoingChannel(forward.outgoing_channel_id),
                 ),
@@ -201,24 +228,36 @@ impl ForwardManagerImpl {
                         forward.outgoing_channel_id,
                         ResourceBucketType::General,
                     ),
-                    slots_available: outgoing_channel.general_bucket.slot_count,
+                    slots_available: outgoing_channel
+                        .outgoing_direction
+                        .general_bucket
+                        .slot_count,
                     liquidity_used_msat: self.htlcs.bucket_in_flight_msat(
                         forward.outgoing_channel_id,
                         ResourceBucketType::General,
                     ),
-                    liquidity_available_msat: outgoing_channel.general_bucket.liquidity_msat,
+                    liquidity_available_msat: outgoing_channel
+                        .outgoing_direction
+                        .general_bucket
+                        .liquidity_msat,
                 },
                 congestion_bucket: BucketResources {
                     slots_used: self.htlcs.bucket_in_flight_count(
                         forward.outgoing_channel_id,
                         ResourceBucketType::Congestion,
                     ),
-                    slots_available: outgoing_channel.congestion_bucket.slot_count,
+                    slots_available: outgoing_channel
+                        .outgoing_direction
+                        .congestion_bucket
+                        .slot_count,
                     liquidity_used_msat: self.htlcs.bucket_in_flight_msat(
                         forward.outgoing_channel_id,
                         ResourceBucketType::Congestion,
                     ),
-                    liquidity_available_msat: outgoing_channel.congestion_bucket.liquidity_msat,
+                    liquidity_available_msat: outgoing_channel
+                        .outgoing_direction
+                        .congestion_bucket
+                        .liquidity_msat,
                 },
             },
         })
@@ -277,7 +316,17 @@ impl ReputationManager for ForwardManager {
                     capacity_msat * self.params.congestion_liquidity_portion as u64 / 100;
 
                 v.insert(TrackedChannel {
-                    incoming_direction: IncomingChannel::new(self.params.reputation_params),
+                    incoming_direction: IncomingChannel::new(
+                        self.params.reputation_params,
+                        BucketParameters {
+                            slot_count: general_slot_count,
+                            liquidity_msat: general_liquidity_amount,
+                        },
+                        BucketParameters {
+                            slot_count: congestion_slot_count,
+                            liquidity_msat: congestion_liquidity_amount,
+                        },
+                    ),
                     outgoing_direction: OutgoingChannel::new(
                         self.params.reputation_params,
                         BucketParameters {
@@ -375,7 +424,7 @@ impl ReputationManager for ForwardManager {
                 incoming_ref.channel_id,
             ))?
             .incoming_direction
-            .remove_incoming_htlc(&in_flight, resolved_instant);
+            .remove_incoming_htlc(&in_flight, resolution, resolved_instant)?;
 
         inner_lock
             .channels

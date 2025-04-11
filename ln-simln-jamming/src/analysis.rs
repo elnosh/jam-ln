@@ -58,16 +58,19 @@ impl Serialize for Record {
         )?;
         state.serialize_field(
             "incoming_revenue",
-            &self.decision.reputation_check.incoming_revenue,
+            &self.decision.outgoing_reputation_check.revenue_treshold,
         )?;
         state.serialize_field(
             "outgoing_reputation",
-            &self.decision.reputation_check.outgoing_reputation,
+            &self.decision.outgoing_reputation_check.reputation,
         )?;
-        state.serialize_field("htlc_risk", &self.decision.reputation_check.htlc_risk)?;
+        state.serialize_field(
+            "htlc_risk",
+            &self.decision.outgoing_reputation_check.htlc_risk,
+        )?;
         state.serialize_field(
             "in_flight_risk",
-            &self.decision.reputation_check.in_flight_total_risk,
+            &self.decision.outgoing_reputation_check.in_flight_total_risk,
         )?;
         state.serialize_field(
             "slots_available",
