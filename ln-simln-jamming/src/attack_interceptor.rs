@@ -14,6 +14,7 @@ use std::error::Error;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::select;
+use tokio::sync::Mutex;
 use triggered::{Listener, Trigger};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -69,7 +70,7 @@ where
     /// List of public keys of the target's honest (non-attacker) peers.
     honest_peers: Vec<PublicKey>,
     /// Inner reputation monitor that implements jamming mitigation.
-    reputation_interceptor: R,
+    reputation_interceptor: Arc<Mutex<R>>,
     /// Used to control shutdown.
     listener: Listener,
     shutdown: Trigger,
@@ -112,7 +113,7 @@ impl<C: InstantClock + Clock, R: Interceptor + ReputationMonitor> AttackIntercep
         target_pubkey: PublicKey,
         target_channels: HashMap<ShortChannelID, TargetChannelType>,
         honest_peers: Vec<PublicKey>,
-        reputation_interceptor: R,
+        reputation_interceptor: Arc<Mutex<R>>,
         listener: Listener,
         shutdown: Trigger,
     ) -> Self {
@@ -135,7 +136,7 @@ impl<C: InstantClock + Clock, R: Interceptor + ReputationMonitor> AttackIntercep
         target_pubkey: PublicKey,
         target_channels: HashMap<ShortChannelID, TargetChannelType>,
         honest_peers: Vec<PublicKey>,
-        reputation_interceptor: R,
+        reputation_interceptor: Arc<Mutex<R>>,
         listener: Listener,
         shutdown: Trigger,
     ) -> Self {
@@ -199,6 +200,8 @@ impl<C: InstantClock + Clock, R: Interceptor + ReputationMonitor> AttackIntercep
 
         let reputations: Vec<ReputationPair> = self
             .reputation_interceptor
+            .lock()
+            .await
             .list_reputation_pairs(node, access_ins)
             .await?
             .iter()
@@ -269,10 +272,18 @@ impl<C: InstantClock + Clock, R: Interceptor + ReputationMonitor> AttackIntercep
         // be forwarded by the target as endorsed if the next hop has sufficient reputation. So, while this behavior
         // is odd, it represents what we want in the attacker's neighborhood.
         match endorsement_from_records(&req.incoming_custom_records) {
-            EndorsementSignal::Endorsed => self.reputation_interceptor.intercept_htlc(req).await,
+            EndorsementSignal::Endorsed => {
+                self.reputation_interceptor
+                    .lock()
+                    .await
+                    .intercept_htlc(req)
+                    .await
+            }
             EndorsementSignal::Unendorsed => {
                 let allocation_check = match self
                     .reputation_interceptor
+                    .lock()
+                    .await
                     .check_htlc_outcome(HtlcAdd {
                         forwarding_node: req.forwarding_node,
                         htlc: ProposedForward {
@@ -320,7 +331,11 @@ impl<C: InstantClock + Clock, R: Interceptor + ReputationMonitor> AttackIntercep
                     }
                 };
 
-                self.reputation_interceptor.intercept_htlc(req).await;
+                self.reputation_interceptor
+                    .lock()
+                    .await
+                    .intercept_htlc(req)
+                    .await;
             }
         };
 
@@ -390,7 +405,11 @@ impl<C: InstantClock + Clock, R: Interceptor + ReputationMonitor> Interceptor
 
         // The target is not involved in the forward at all, just use jamming interceptor to implement reputation
         // and bucketing.
-        self.reputation_interceptor.intercept_htlc(req_clone).await
+        self.reputation_interceptor
+            .lock()
+            .await
+            .intercept_htlc(req_clone)
+            .await
     }
 
     /// Notifies the underlying jamming interceptor of htlc resolution, as our attacking interceptor doesn't need
@@ -407,7 +426,11 @@ impl<C: InstantClock + Clock, R: Interceptor + ReputationMonitor> Interceptor
             }
         }
 
-        self.reputation_interceptor.notify_resolution(res).await
+        self.reputation_interceptor
+            .lock()
+            .await
+            .notify_resolution(res)
+            .await
     }
 
     fn name(&self) -> String {
@@ -434,6 +457,7 @@ mod tests {
     use simln_lib::clock::SimulationClock;
     use simln_lib::sim_node::{InterceptRequest, InterceptResolution, Interceptor};
     use simln_lib::ShortChannelID;
+    use tokio::sync::Mutex;
 
     use super::{AttackInterceptor, TargetChannelType};
 
@@ -477,18 +501,23 @@ mod tests {
             attacker_pubkey,
             target_channels,
             honest_peers,
-            mock,
+            Arc::new(Mutex::new(mock)),
             listener,
             shutdown,
         )
     }
 
     /// Primes the mock to expect intercept_htlc called with the request provided.
-    fn mock_intercept_htlc(interceptor: &mut MockReputationInterceptor, req: &InterceptRequest) {
+    async fn mock_intercept_htlc(
+        interceptor: Arc<Mutex<MockReputationInterceptor>>,
+        req: &InterceptRequest,
+    ) {
         let expected_incoming = req.incoming_htlc.channel_id;
         let expected_outgoing = req.outgoing_channel_id.unwrap();
 
         interceptor
+            .lock()
+            .await
             .expect_intercept_htlc()
             .with(function(move |args: &InterceptRequest| {
                 args.incoming_htlc.channel_id == expected_incoming
@@ -538,26 +567,34 @@ mod tests {
     /// that are being sent to the target (rather than received from it).
     #[tokio::test]
     async fn test_attacker_no_action() {
-        let mut interceptor = setup_interceptor_test();
+        let interceptor = setup_interceptor_test();
         let attacker_pk = get_random_keypair().1;
 
         // Intercepted on the attacker: node -(5)-> attacker -(0)-> target, should just be forwarded.
         let (attacker_to_target, _) =
             setup_test_request(attacker_pk, 5, 0, EndorsementSignal::Unendorsed);
-        mock_intercept_htlc(&mut interceptor.reputation_interceptor, &attacker_to_target);
+        mock_intercept_htlc(
+            interceptor.reputation_interceptor.clone(),
+            &attacker_to_target,
+        )
+        .await;
         interceptor.intercept_htlc(attacker_to_target).await;
 
         // Intercepted on the attacker: node -(5)-> attacker -(6)-> node, should just be forwarded.
         let (attacker_to_target, _) =
             setup_test_request(attacker_pk, 5, 6, EndorsementSignal::Unendorsed);
 
-        mock_intercept_htlc(&mut interceptor.reputation_interceptor, &attacker_to_target);
+        mock_intercept_htlc(
+            interceptor.reputation_interceptor.clone(),
+            &attacker_to_target,
+        )
+        .await;
         interceptor.intercept_htlc(attacker_to_target).await;
     }
 
     #[tokio::test]
     async fn test_peer_to_target_endorsed() {
-        let mut interceptor = setup_interceptor_test();
+        let interceptor = setup_interceptor_test();
 
         // Intercepted on target's peer: node -(5) -> peer -(1)-> target, endorsed payments just passed through.
         let (peer_to_target, _) = setup_test_request(
@@ -567,7 +604,7 @@ mod tests {
             EndorsementSignal::Endorsed,
         );
 
-        mock_intercept_htlc(&mut interceptor.reputation_interceptor, &peer_to_target);
+        mock_intercept_htlc(interceptor.reputation_interceptor.clone(), &peer_to_target).await;
         interceptor.intercept_htlc(peer_to_target).await;
     }
 
@@ -575,7 +612,7 @@ mod tests {
     /// sufficient reputation.
     #[tokio::test]
     async fn test_peer_to_target_upgraded() {
-        let mut interceptor = setup_interceptor_test();
+        let interceptor = setup_interceptor_test();
 
         let (peer_to_target, _) = setup_test_request(
             interceptor.honest_peers[0],
@@ -587,6 +624,8 @@ mod tests {
         // Expect a reputation check that passes, then pass the htlc on to the reputation interceptor endorsed.
         interceptor
             .reputation_interceptor
+            .lock()
+            .await
             .expect_check_htlc_outcome()
             .with(function(move |req: &HtlcAdd| {
                 req.htlc.incoming_ref.channel_id == peer_to_target.incoming_htlc.channel_id.into()
@@ -595,7 +634,7 @@ mod tests {
                     && req.htlc.incoming_endorsed == EndorsementSignal::Endorsed
             }))
             .return_once(|_| Ok(test_allocation_check(true)));
-        mock_intercept_htlc(&mut interceptor.reputation_interceptor, &peer_to_target);
+        mock_intercept_htlc(interceptor.reputation_interceptor.clone(), &peer_to_target).await;
 
         interceptor.intercept_htlc(peer_to_target).await;
     }
@@ -604,7 +643,7 @@ mod tests {
     /// be upgraded to endorsed.
     #[tokio::test]
     async fn test_peer_to_target_general_jammed() {
-        let mut interceptor = setup_interceptor_test();
+        let interceptor = setup_interceptor_test();
 
         let (peer_to_target, _) = setup_test_request(
             interceptor.honest_peers[0],
@@ -616,6 +655,8 @@ mod tests {
         // Expect a reputation check that fails, then an interceptor response.
         interceptor
             .reputation_interceptor
+            .lock()
+            .await
             .expect_check_htlc_outcome()
             .with(function(move |req: &HtlcAdd| {
                 req.htlc.incoming_ref.channel_id == peer_to_target.incoming_htlc.channel_id.into()
@@ -625,14 +666,14 @@ mod tests {
             }))
             .return_once(|_| Ok(test_allocation_check(false)));
 
-        mock_intercept_htlc(&mut interceptor.reputation_interceptor, &peer_to_target);
+        mock_intercept_htlc(interceptor.reputation_interceptor.clone(), &peer_to_target).await;
         interceptor.intercept_htlc(peer_to_target).await;
     }
 
     /// Tests that forwards through the target node to its peers will be upgraded to endorsed.
     #[tokio::test]
     async fn test_target_to_peer() {
-        let mut interceptor = setup_interceptor_test();
+        let interceptor = setup_interceptor_test();
 
         let (target_forward, _) = setup_test_request(
             interceptor.target_pubkey,
@@ -644,14 +685,14 @@ mod tests {
         let mut expected_req = target_forward.clone();
         expected_req.incoming_custom_records =
             records_from_endorsement(EndorsementSignal::Endorsed);
-        mock_intercept_htlc(&mut interceptor.reputation_interceptor, &expected_req);
+        mock_intercept_htlc(interceptor.reputation_interceptor.clone(), &expected_req).await;
         interceptor.intercept_htlc(target_forward).await;
     }
 
     /// Tests that forwards through the target node to the attacker will be upgraded to endorsed.
     #[tokio::test]
     async fn test_target_to_attacker() {
-        let mut interceptor = setup_interceptor_test();
+        let interceptor = setup_interceptor_test();
 
         let (target_forward, _) = setup_test_request(
             interceptor.target_pubkey,
@@ -663,23 +704,24 @@ mod tests {
         let mut expected_req = target_forward.clone();
         expected_req.incoming_custom_records =
             records_from_endorsement(EndorsementSignal::Endorsed);
-        mock_intercept_htlc(&mut interceptor.reputation_interceptor, &expected_req);
+        mock_intercept_htlc(interceptor.reputation_interceptor.clone(), &expected_req).await;
         interceptor.intercept_htlc(target_forward).await;
     }
 
     /// Tests that forwards by the target sent from attacker -> target are handled like any other target payment.
     #[tokio::test]
     async fn test_target_from_attacker() {
-        let mut interceptor = setup_interceptor_test();
+        let interceptor = setup_interceptor_test();
 
         let (not_actually_attacker, _) =
             setup_test_request(interceptor.target_pubkey, 0, 3, EndorsementSignal::Endorsed);
 
         // This tests hangs; the target is actually jamming the attacker lol because we don't check the direction
         mock_intercept_htlc(
-            &mut interceptor.reputation_interceptor,
+            interceptor.reputation_interceptor.clone(),
             &not_actually_attacker,
-        );
+        )
+        .await;
         interceptor.intercept_htlc(not_actually_attacker).await;
     }
 
@@ -694,7 +736,7 @@ mod tests {
     ///         P3 --(3) ---+
     #[tokio::test]
     async fn test_reputation_status() {
-        let mut interceptor = setup_interceptor_test();
+        let interceptor = setup_interceptor_test();
 
         let target_pubkey = interceptor.target_pubkey;
         let peer_1 = interceptor.honest_peers[0];
@@ -769,6 +811,8 @@ mod tests {
         // down to the appropriate pairs.
         interceptor
             .reputation_interceptor
+            .lock()
+            .await
             .expect_list_reputation_pairs()
             .returning(move |node: PublicKey, _: Instant| {
                 if node == target_pubkey {

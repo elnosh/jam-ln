@@ -185,12 +185,7 @@ async fn main() -> Result<(), BoxError> {
         }
     });
 
-    let attack_interceptor = AttackInterceptor::new_for_network(
-        clock.clone(),
-        attacker_pubkey,
-        target_pubkey,
-        target_channel_map,
-        honest_peers,
+    let reputation_interceptor = Arc::new(Mutex::new(
         ReputationInterceptor::new_with_bootstrap(
             forward_params,
             &sim_network,
@@ -201,6 +196,14 @@ async fn main() -> Result<(), BoxError> {
             shutdown.clone(),
         )
         .await?,
+    ));
+    let attack_interceptor = AttackInterceptor::new_for_network(
+        clock.clone(),
+        attacker_pubkey,
+        target_pubkey,
+        target_channel_map,
+        honest_peers,
+        reputation_interceptor,
         listener.clone(),
         shutdown.clone(),
     );
