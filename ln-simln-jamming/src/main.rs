@@ -1,6 +1,6 @@
 use bitcoin::secp256k1::PublicKey;
 use clap::Parser;
-use ln_resource_mgr::forward_manager::ForwardManagerParams;
+use ln_resource_mgr::forward_manager::{ForwardManagerParams, Reputation};
 use ln_resource_mgr::ReputationParams;
 use ln_simln_jamming::analysis::BatchForwardWriter;
 use ln_simln_jamming::clock::InstantClock;
@@ -136,6 +136,14 @@ async fn main() -> Result<(), BoxError> {
         }
     });
 
+    let reputation_check = if cli.incoming_reputation {
+        Reputation::Incoming
+    } else if cli.outgoing_reputation {
+        Reputation::Outgoing
+    } else {
+        Reputation::Both
+    };
+
     // Use the channel jamming interceptor and latency for simulated payments.
     let latency_interceptor: Arc<dyn Interceptor> =
         Arc::new(LatencyIntercepor::new_poisson(150.0)?);
@@ -148,6 +156,7 @@ async fn main() -> Result<(), BoxError> {
             resolution_period: Duration::from_secs(90),
             expected_block_speed: Some(Duration::from_secs(10 * 60)),
         },
+        reputation_check,
         general_slot_portion: 30,
         general_liquidity_portion: 30,
         congestion_slot_portion: 20,
@@ -194,6 +203,7 @@ async fn main() -> Result<(), BoxError> {
             &jammed_peers,
             &bootstrap,
             clock.clone(),
+            reputation_check,
             Some(results_writer),
             shutdown.clone(),
         )
@@ -237,6 +247,7 @@ async fn main() -> Result<(), BoxError> {
         select! {
             _ = attack_listener.clone() => return,
             _ = attack_clock.sleep(interval) => {
+                // TODO: add check here to stop simulation incoming simulation is lost
                 match attack_interceptor_1.get_reputation_status(InstantClock::now(&*attack_clock))
                 .await {
                     Ok(rep) => {

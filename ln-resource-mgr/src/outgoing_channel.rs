@@ -2,17 +2,9 @@ use std::ops::Sub;
 use std::time::Instant;
 
 use crate::decaying_average::DecayingAverage;
+use crate::forward_manager::BucketParameters;
 use crate::htlc_manager::{InFlightHtlc, ReputationParams};
 use crate::{ForwardResolution, ReputationError};
-
-/// Describes the size of a resource bucket.
-#[derive(Clone, Debug)]
-pub struct BucketParameters {
-    /// The number of HTLC slots available in the bucket.
-    pub slot_count: u16,
-    /// The amount of liquidity available in the bucket.
-    pub liquidity_msat: u64,
-}
 
 /// Tracks information about the usage of a channel when it utilized as the outgoing direction in
 /// a htlc forward.
@@ -131,6 +123,7 @@ mod tests {
         InFlightHtlc {
             outgoing_channel_id: 1,
             hold_blocks: 1000,
+            incoming_amt_msat: 2000 + fee_msat,
             outgoing_amt_msat: 2000,
             fee_msat,
             added_instant: Instant::now(),

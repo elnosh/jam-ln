@@ -275,7 +275,7 @@ impl<C: InstantClock + Clock, R: Interceptor + ReputationMonitor> SinkIntercepto
         match endorsement_from_records(&req.incoming_custom_records) {
             EndorsementSignal::Endorsed => self.reputation_interceptor.intercept_htlc(req).await,
             EndorsementSignal::Unendorsed => {
-                let allocation_check = match self
+                let fwd_outcome = match self
                     .reputation_interceptor
                     .check_htlc_outcome(HtlcAdd {
                         forwarding_node: req.forwarding_node,
@@ -305,10 +305,7 @@ impl<C: InstantClock + Clock, R: Interceptor + ReputationMonitor> SinkIntercepto
                     }
                 };
 
-                // Query forwarding outcome as if the htlc was endorsed to see whether we'd make the cut.
-                match allocation_check
-                    .forwarding_outcome(req.outgoing_amount_msat, EndorsementSignal::Endorsed)
-                {
+                match fwd_outcome {
                     ForwardingOutcome::Forward(_) => {
                         log::info!("HTLC from peer -> target has sufficient reputation, forwarding endorsed");
 
@@ -322,7 +319,29 @@ impl<C: InstantClock + Clock, R: Interceptor + ReputationMonitor> SinkIntercepto
                             "HTLC from peer -> target has insufficient reputation, general jamming"
                         );
                     }
-                };
+                }
+
+                // Query forwarding outcome as if the htlc was endorsed to see whether we'd make the cut.
+                // match allocation_check.forwarding_outcome(
+                //     req.outgoing_amount_msat,
+                //     EndorsementSignal::Endorsed,
+                //     // TODO: use value from interceptor
+                //     Reputation::Outgoing,
+                // ) {
+                //     ForwardingOutcome::Forward(_) => {
+                //         log::info!("HTLC from peer -> target has sufficient reputation, forwarding endorsed");
+                //
+                //         // If the htlc can be upgraded, go ahead and add it to the reputation interceptor as if its
+                //         // incoming htlc was endorsed.
+                //         req.incoming_custom_records =
+                //             records_from_endorsement(EndorsementSignal::Endorsed);
+                //     }
+                //     ForwardingOutcome::Fail(_) => {
+                //         log::info!(
+                //             "HTLC from peer -> target has insufficient reputation, general jamming"
+                //         );
+                //     }
+                // };
 
                 self.reputation_interceptor.intercept_htlc(req).await;
             }
@@ -428,11 +447,11 @@ mod tests {
     use std::time::Instant;
 
     use crate::reputation_interceptor::{HtlcAdd, ReputationMonitor, ReputationPair};
-    use crate::test_utils::{get_random_keypair, setup_test_request, test_allocation_check};
+    use crate::test_utils::{get_random_keypair, setup_test_request};
     use crate::{endorsement_from_records, records_from_endorsement, test_utils, BoxError};
     use async_trait::async_trait;
     use bitcoin::secp256k1::PublicKey;
-    use ln_resource_mgr::{AllocationCheck, EndorsementSignal, ReputationError};
+    use ln_resource_mgr::{EndorsementSignal, FailureReason, ForwardingOutcome, ReputationError};
     use mockall::mock;
     use mockall::predicate::function;
     use simln_lib::clock::SimulationClock;
@@ -454,7 +473,7 @@ mod tests {
         #[async_trait]
         impl ReputationMonitor for ReputationInterceptor{
             async fn list_reputation_pairs(&self,node: PublicKey,access_ins: std::time::Instant) -> Result<Vec<ReputationPair>, BoxError>;
-            async fn check_htlc_outcome(&self,htlc_add: HtlcAdd) -> Result<AllocationCheck, ReputationError>;
+            async fn check_htlc_outcome(&self,htlc_add: HtlcAdd) -> Result<ForwardingOutcome, ReputationError>;
         }
     }
 
@@ -598,7 +617,8 @@ mod tests {
                         == peer_to_target.outgoing_channel_id.unwrap().into()
                     && req.htlc.incoming_endorsed == EndorsementSignal::Endorsed
             }))
-            .return_once(|_| Ok(test_allocation_check(true)));
+            //.return_once(|_| Ok(test_allocation_check(true)));
+            .return_once(|_| Ok(ForwardingOutcome::Forward(EndorsementSignal::Endorsed)));
         mock_intercept_htlc(&mut interceptor.reputation_interceptor, &peer_to_target);
 
         interceptor.intercept_htlc(peer_to_target).await;
@@ -627,7 +647,7 @@ mod tests {
                         == peer_to_target.outgoing_channel_id.unwrap().into()
                     && req.htlc.incoming_endorsed == EndorsementSignal::Endorsed
             }))
-            .return_once(|_| Ok(test_allocation_check(false)));
+            .return_once(|_| Ok(ForwardingOutcome::Fail(FailureReason::NoReputation)));
 
         mock_intercept_htlc(&mut interceptor.reputation_interceptor, &peer_to_target);
         interceptor.intercept_htlc(peer_to_target).await;

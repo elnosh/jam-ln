@@ -1,6 +1,7 @@
 use crate::BoxError;
 use bitcoin::secp256k1::PublicKey;
 use csv::WriterBuilder;
+use ln_resource_mgr::forward_manager::Reputation;
 use ln_resource_mgr::{AllocationCheck, ProposedForward};
 use serde::ser::SerializeStruct;
 use serde::{Serialize, Serializer};
@@ -52,32 +53,55 @@ impl Serialize for Record {
         state.serialize_field("incoming_endorsed", &self.forward.incoming_endorsed)?;
         state.serialize_field(
             "forwarding_outcome",
-            &self
-                .decision
-                .forwarding_outcome(self.forward.amount_in_msat, self.forward.incoming_endorsed),
+            &self.decision.forwarding_outcome(
+                self.forward.amount_in_msat,
+                self.forward.incoming_endorsed,
+                Reputation::Outgoing,
+            ),
         )?;
         state.serialize_field(
             "incoming_revenue",
-            &self.decision.reputation_check.incoming_revenue,
+            &self
+                .decision
+                .reputation_check
+                .outgoing_reputation
+                .revenue_treshold,
         )?;
         state.serialize_field(
             "outgoing_reputation",
-            &self.decision.reputation_check.outgoing_reputation,
+            &self
+                .decision
+                .reputation_check
+                .outgoing_reputation
+                .reputation,
         )?;
-        state.serialize_field("htlc_risk", &self.decision.reputation_check.htlc_risk)?;
+        state.serialize_field(
+            "htlc_risk",
+            &self.decision.reputation_check.outgoing_reputation.htlc_risk,
+        )?;
         state.serialize_field(
             "in_flight_risk",
-            &self.decision.reputation_check.in_flight_total_risk,
+            &self
+                .decision
+                .reputation_check
+                .outgoing_reputation
+                .in_flight_total_risk,
         )?;
         state.serialize_field(
             "slots_available",
-            &self.decision.resource_check.general_bucket.slots_available,
+            &self
+                .decision
+                .resource_check
+                .outgoing_resources
+                .general_bucket
+                .slots_available,
         )?;
         state.serialize_field(
             "liquidity_available",
             &self
                 .decision
                 .resource_check
+                .outgoing_resources
                 .general_bucket
                 .liquidity_available_msat,
         )?;

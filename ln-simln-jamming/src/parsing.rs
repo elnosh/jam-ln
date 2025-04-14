@@ -128,6 +128,14 @@ pub struct Cli {
     /// The alias of the attacking node.
     #[arg(long)]
     pub attacker_alias: String,
+
+    /// Use incoming reputation for the simulation.
+    #[arg(long)]
+    pub incoming_reputation: bool,
+
+    /// Use outgoing reputation for the simulation.
+    #[arg(long)]
+    pub outgoing_reputation: bool,
 }
 
 impl Cli {
