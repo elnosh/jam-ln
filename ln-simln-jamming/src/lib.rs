@@ -3,11 +3,11 @@ use simln_lib::sim_node::CustomRecords;
 use std::error::Error;
 
 pub mod analysis;
+pub mod attack_interceptor;
 pub mod clock;
 pub mod parsing;
 pub mod reputation_interceptor;
 pub mod revenue_interceptor;
-pub mod sink_interceptor;
 pub(crate) mod test_utils;
 
 /// Error type for errors that can be erased, includes 'static so that down-casting is possible.

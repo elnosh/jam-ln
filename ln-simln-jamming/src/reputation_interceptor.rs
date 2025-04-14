@@ -426,7 +426,7 @@ where
             .get(&node)
             .ok_or(format!("node: {node} not found"))?
             .forward_manager
-            .list_reputation(access_ins)?;
+            .list_channels(access_ins)?;
 
         let mut pairs = Vec::with_capacity(reputations.len() * (reputations.len() - 1));
         for (incoming_scid, snapshot_incoming) in reputations.iter() {
@@ -438,7 +438,7 @@ where
                 pairs.push(ReputationPair {
                     incoming_scid: *incoming_scid,
                     outgoing_scid: *outgoing_scid,
-                    incoming_revenue: snapshot_incoming.incoming_revenue,
+                    incoming_revenue: snapshot_incoming.bidirectional_revenue,
                     outgoing_reputation: snapshot_outgoing.outgoing_reputation,
                 })
             }
@@ -562,8 +562,8 @@ mod tests {
     use bitcoin::secp256k1::PublicKey;
     use ln_resource_mgr::forward_manager::{ForwardManager, ForwardManagerParams};
     use ln_resource_mgr::{
-        AllocationCheck, EndorsementSignal, ForwardResolution, HtlcRef, ProposedForward,
-        ReputationError, ReputationManager, ReputationParams, ReputationSnapshot,
+        AllocationCheck, ChannelSnapshot, EndorsementSignal, ForwardResolution, HtlcRef,
+        ProposedForward, ReputationError, ReputationManager, ReputationParams,
     };
     use mockall::mock;
     use simln_lib::clock::SimulationClock;
@@ -612,10 +612,10 @@ mod tests {
                 resolved_instant: Instant
             ) -> Result<(), ReputationError>;
 
-            fn list_reputation(
+            fn list_channels(
                 &self,
                 access_ins: Instant
-            ) -> Result<HashMap<u64, ReputationSnapshot>, ReputationError>;
+            ) -> Result<HashMap<u64, ChannelSnapshot>, ReputationError>;
         }
     }
 
@@ -973,10 +973,16 @@ mod tests {
             .get(&bob_pk)
             .unwrap()
             .forward_manager
-            .list_reputation(Instant::now())
+            .list_channels(Instant::now())
             .unwrap();
 
-        assert!(bob_reputation.get(&alice_to_bob).unwrap().incoming_revenue != 0);
+        assert!(
+            bob_reputation
+                .get(&alice_to_bob)
+                .unwrap()
+                .bidirectional_revenue
+                != 0
+        );
         assert!(
             bob_reputation
                 .get(&bob_to_carol)

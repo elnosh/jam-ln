@@ -264,7 +264,7 @@ impl AllocationCheck {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 pub struct ReputationCheck {
     pub outgoing_reputation: i64,
-    pub incoming_revenue: i64,
+    pub revenue_threshold: i64,
     pub in_flight_total_risk: u64,
     pub htlc_risk: u64,
 }
@@ -276,7 +276,7 @@ impl ReputationCheck {
         self.outgoing_reputation
             .saturating_sub(i64::try_from(self.in_flight_total_risk).unwrap_or(i64::MAX))
             .saturating_sub(i64::try_from(self.htlc_risk).unwrap_or(i64::MAX))
-            > self.incoming_revenue
+            > self.revenue_threshold
     }
 }
 
@@ -413,11 +413,11 @@ impl ProposedForward {
     }
 }
 
-/// Provides a reputation check snapshot for an incoming/outgoing channel pair.
+/// Provides a snapshot of the reputation and revenue values tracked for a channel.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct ReputationSnapshot {
+pub struct ChannelSnapshot {
     pub outgoing_reputation: i64,
-    pub incoming_revenue: i64,
+    pub bidirectional_revenue: i64,
 }
 
 /// Validates that an msat amount doesn't exceed the total supply cap of bitcoin and casts to i64 to be used in
@@ -479,11 +479,11 @@ pub trait ReputationManager {
         resolved_instant: Instant,
     ) -> Result<(), ReputationError>;
 
-    /// Provides reputation snapshots of per channel at the instant provided.
-    fn list_reputation(
+    /// Provides snapshots of per channel at the instant provided.
+    fn list_channels(
         &self,
         access_ins: Instant,
-    ) -> Result<HashMap<u64, ReputationSnapshot>, ReputationError>;
+    ) -> Result<HashMap<u64, ChannelSnapshot>, ReputationError>;
 }
 
 #[cfg(test)]
@@ -498,7 +498,7 @@ mod tests {
         let check = AllocationCheck {
             reputation_check: ReputationCheck {
                 outgoing_reputation: 0,
-                incoming_revenue: 0,
+                revenue_threshold: 0,
                 in_flight_total_risk: 0,
                 htlc_risk: 0,
             },

@@ -3,8 +3,8 @@ use crate::htlc_manager::{ChannelFilter, InFlightHtlc, InFlightManager};
 use crate::incoming_channel::IncomingChannel;
 use crate::outgoing_channel::{BucketParameters, OutgoingChannel};
 use crate::{
-    AllocationCheck, BucketResources, ForwardResolution, HtlcRef, ProposedForward, ReputationCheck,
-    ReputationError, ReputationManager, ReputationParams, ReputationSnapshot, ResourceBucketType,
+    AllocationCheck, BucketResources, ChannelSnapshot, ForwardResolution, HtlcRef, ProposedForward,
+    ReputationCheck, ReputationError, ReputationManager, ReputationParams, ResourceBucketType,
     ResourceCheck,
 };
 use std::collections::hash_map::Entry;
@@ -158,7 +158,7 @@ impl ForwardManagerImpl {
                 forward.incoming_ref.channel_id,
             ))?;
 
-        let incoming_threshold = incoming_channel
+        let revenue_threshold = incoming_channel
             .bidirectional_revenue
             .value_at_instant(forward.added_at)?;
 
@@ -178,7 +178,7 @@ impl ForwardManagerImpl {
         Ok(AllocationCheck {
             reputation_check: ReputationCheck {
                 outgoing_reputation: outgoing_channel.outgoing_reputation(forward.added_at)?,
-                incoming_revenue: incoming_threshold,
+                revenue_threshold,
                 in_flight_total_risk: self.htlcs.channel_in_flight_risk(
                     ChannelFilter::OutgoingChannel(forward.outgoing_channel_id),
                 ),
@@ -412,10 +412,10 @@ impl ReputationManager for ForwardManager {
 
     /// Lists the reputation scores of each channel at the access instant provided. This function will mutate the
     /// underlying decaying averages to be tracked at the instant provided.
-    fn list_reputation(
+    fn list_channels(
         &self,
         access_ins: Instant,
-    ) -> Result<HashMap<u64, ReputationSnapshot>, ReputationError> {
+    ) -> Result<HashMap<u64, ChannelSnapshot>, ReputationError> {
         let inner_lock = &mut self
             .inner
             .lock()
@@ -426,11 +426,13 @@ impl ReputationManager for ForwardManager {
         for (scid, channel) in inner_lock.iter_mut() {
             reputations.insert(
                 *scid,
-                ReputationSnapshot {
+                ChannelSnapshot {
                     outgoing_reputation: channel
                         .outgoing_direction
                         .outgoing_reputation(access_ins)?,
-                    incoming_revenue: channel.bidirectional_revenue.value_at_instant(access_ins)?,
+                    bidirectional_revenue: channel
+                        .bidirectional_revenue
+                        .value_at_instant(access_ins)?,
                 },
             );
         }

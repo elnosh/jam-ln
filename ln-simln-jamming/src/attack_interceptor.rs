@@ -53,14 +53,10 @@ impl NetworkReputation {
     }
 }
 
-// Implements a "sink" attack where an attacking node:
-// - General jams its peers so that htlcs will be endorsed
-// - Holds the endorsed htlcs to trash the target node's reputation with its peers
-//
-// This interceptor wraps an inner reputation interceptor so that we can still operate with regular reputation
-// on the non-attacking nodes. Doing so also allows us access to reputation values for monitoring.
+/// Wraps an innner reputation interceptor (which is responsible for implementing a mitigation to
+/// channel jamming) in an outer interceptor which can be used to take custom actions for attacks.
 #[derive(Clone)]
-pub struct SinkInterceptor<C, R>
+pub struct AttackInterceptor<C, R>
 where
     C: InstantClock + Clock,
     R: Interceptor + ReputationMonitor,
@@ -108,7 +104,7 @@ fn print_request(req: &InterceptRequest) -> String {
     )
 }
 
-impl<C: InstantClock + Clock, R: Interceptor + ReputationMonitor> SinkInterceptor<C, R> {
+impl<C: InstantClock + Clock, R: Interceptor + ReputationMonitor> AttackInterceptor<C, R> {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         clock: Arc<C>,
@@ -334,7 +330,7 @@ impl<C: InstantClock + Clock, R: Interceptor + ReputationMonitor> SinkIntercepto
 
 #[async_trait]
 impl<C: InstantClock + Clock, R: Interceptor + ReputationMonitor> Interceptor
-    for SinkInterceptor<C, R>
+    for AttackInterceptor<C, R>
 {
     /// Implemented by HTLC interceptors that provide input on the resolution of HTLCs forwarded in the simulation.
     async fn intercept_htlc(&self, req: InterceptRequest) {
@@ -439,7 +435,7 @@ mod tests {
     use simln_lib::sim_node::{InterceptRequest, InterceptResolution, Interceptor};
     use simln_lib::ShortChannelID;
 
-    use super::{SinkInterceptor, TargetChannelType};
+    use super::{AttackInterceptor, TargetChannelType};
 
     mock! {
         ReputationInterceptor{}
@@ -458,7 +454,7 @@ mod tests {
         }
     }
 
-    fn setup_interceptor_test() -> SinkInterceptor<SimulationClock, MockReputationInterceptor> {
+    fn setup_interceptor_test() -> AttackInterceptor<SimulationClock, MockReputationInterceptor> {
         let target_pubkey = get_random_keypair().1;
         let attacker_pubkey = get_random_keypair().1;
         let honest_peers = vec![
@@ -475,7 +471,7 @@ mod tests {
 
         let (shutdown, listener) = triggered::trigger();
         let mock = MockReputationInterceptor::new();
-        SinkInterceptor::new(
+        AttackInterceptor::new(
             Arc::new(SimulationClock::new(1).unwrap()),
             target_pubkey,
             attacker_pubkey,

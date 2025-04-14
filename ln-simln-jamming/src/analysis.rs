@@ -57,8 +57,8 @@ impl Serialize for Record {
                 .forwarding_outcome(self.forward.amount_in_msat, self.forward.incoming_endorsed),
         )?;
         state.serialize_field(
-            "incoming_revenue",
-            &self.decision.reputation_check.incoming_revenue,
+            "revenue_threshold",
+            &self.decision.reputation_check.revenue_threshold,
         )?;
         state.serialize_field(
             "outgoing_reputation",

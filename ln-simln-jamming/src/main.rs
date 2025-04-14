@@ -3,11 +3,13 @@ use clap::Parser;
 use ln_resource_mgr::forward_manager::ForwardManagerParams;
 use ln_resource_mgr::ReputationParams;
 use ln_simln_jamming::analysis::BatchForwardWriter;
+use ln_simln_jamming::attack_interceptor::{
+    AttackInterceptor, NetworkReputation, TargetChannelType,
+};
 use ln_simln_jamming::clock::InstantClock;
 use ln_simln_jamming::parsing::{get_history_for_bootstrap, history_from_file, Cli};
 use ln_simln_jamming::reputation_interceptor::ReputationInterceptor;
 use ln_simln_jamming::revenue_interceptor::{RevenueInterceptor, RevenueSnapshot};
-use ln_simln_jamming::sink_interceptor::{NetworkReputation, SinkInterceptor, TargetChannelType};
 use ln_simln_jamming::BoxError;
 use log::LevelFilter;
 use serde::{Deserialize, Serialize};
@@ -182,7 +184,7 @@ async fn main() -> Result<(), BoxError> {
         }
     });
 
-    let attack_interceptor = SinkInterceptor::new_for_network(
+    let attack_interceptor = AttackInterceptor::new_for_network(
         clock.clone(),
         attacker_pubkey,
         target_pubkey,
