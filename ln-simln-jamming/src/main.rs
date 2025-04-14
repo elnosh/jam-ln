@@ -23,9 +23,10 @@ use std::collections::HashMap;
 use std::fs::{self, OpenOptions};
 use std::io::{BufWriter, Write};
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::Duration;
 use tokio::select;
+use tokio::sync::Mutex;
 use tokio::task::JoinSet;
 
 #[derive(Serialize, Deserialize)]
@@ -174,7 +175,7 @@ async fn main() -> Result<(), BoxError> {
             select! {
                 _ = results_listener.clone() => return,
                 _ = results_clock.sleep(interval) => {
-                      if let Err(e) = results_writer_1.lock().unwrap().write(){
+                      if let Err(e) = results_writer_1.lock().await.write(){
                         log::error!("Error writing results: {e}");
                         results_shutdown.trigger();
                         return

@@ -16,8 +16,9 @@ use std::collections::hash_map::Entry;
 use std::collections::{HashMap, HashSet};
 use std::error::Error;
 use std::ops::Sub;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
+use tokio::sync::Mutex;
 use triggered::Trigger;
 
 #[derive(Clone)]
@@ -203,7 +204,7 @@ where
             interceptor
                 .network_nodes
                 .lock()
-                .map_err(|e| format!("mutex err: {e}"))?
+                .await
                 .get_mut(pubkey)
                 .ok_or(format!("jammed node: {} not found", pubkey))?
                 .forward_manager
@@ -320,7 +321,7 @@ where
         let (allocation_check, alias) = match self
             .network_nodes
             .lock()
-            .unwrap()
+            .await
             .entry(htlc_add.forwarding_node)
         {
             Entry::Occupied(mut e) => {
@@ -347,7 +348,7 @@ where
         if let Some(r) = &self.results {
             if report {
                 r.lock()
-                    .map_err(|e| ReputationError::ErrUnrecoverable(e.to_string()))?
+                    .await
                     .report_forward(
                         htlc_add.forwarding_node,
                         allocation_check,
@@ -390,7 +391,7 @@ where
         match self
             .network_nodes
             .lock()
-            .map_err(|e| ReputationError::ErrUnrecoverable(e.to_string()))?
+            .await
             .entry(resolved_htlc.forwarding_node)
         {
             Entry::Occupied(mut e) => Ok(e.get_mut().forward_manager.resolve_htlc(
@@ -422,7 +423,7 @@ where
         let reputations = self
             .network_nodes
             .lock()
-            .map_err(|e| ReputationError::ErrUnrecoverable(e.to_string()))?
+            .await
             .get(&node)
             .ok_or(format!("node: {node} not found"))?
             .forward_manager
@@ -455,7 +456,7 @@ where
         match self
             .network_nodes
             .lock()
-            .unwrap()
+            .await
             .entry(htlc_add.forwarding_node)
         {
             Entry::Occupied(e) => e
@@ -570,9 +571,10 @@ mod tests {
     use simln_lib::sim_node::{ChannelPolicy, ForwardingError, InterceptResolution, Interceptor};
     use simln_lib::{NetworkParser, ShortChannelID};
     use std::collections::HashMap;
-    use std::sync::{Arc, Mutex};
+    use std::sync::Arc;
     use std::time::Duration;
     use std::time::Instant;
+    use tokio::sync::Mutex;
 
     use crate::analysis::BatchForwardWriter;
     use crate::endorsement_from_records;
@@ -714,7 +716,7 @@ mod tests {
         interceptor
             .network_nodes
             .lock()
-            .unwrap()
+            .await
             .get_mut(&pubkeys[0])
             .unwrap()
             .forward_manager
@@ -740,7 +742,7 @@ mod tests {
         interceptor
             .network_nodes
             .lock()
-            .unwrap()
+            .await
             .get_mut(&pubkeys[0])
             .unwrap()
             .forward_manager
@@ -804,7 +806,7 @@ mod tests {
         interceptor
             .network_nodes
             .lock()
-            .unwrap()
+            .await
             .get_mut(&pubkeys[0])
             .unwrap()
             .forward_manager
@@ -969,7 +971,7 @@ mod tests {
         let bob_reputation = interceptor
             .network_nodes
             .lock()
-            .unwrap()
+            .await
             .get(&bob_pk)
             .unwrap()
             .forward_manager
