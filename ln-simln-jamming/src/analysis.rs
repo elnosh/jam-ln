@@ -1,6 +1,7 @@
 use crate::BoxError;
 use bitcoin::secp256k1::PublicKey;
 use csv::WriterBuilder;
+use ln_resource_mgr::forward_manager::Reputation;
 use ln_resource_mgr::{AllocationCheck, ProposedForward};
 use serde::ser::SerializeStruct;
 use serde::{Serialize, Serializer};
@@ -16,12 +17,14 @@ pub trait ForwardReporter: Send + Sync {
         forwarding_node: PublicKey,
         decision: AllocationCheck,
         forward: ProposedForward,
+        reputation: Reputation,
     ) -> Result<(), BoxError>;
 }
 
 struct Record {
     forward: ProposedForward,
     decision: AllocationCheck,
+    reputation: Reputation,
     // Tracked with the record so that serialization can express a relative timestamp since the simulation started.
     start_ins: Instant,
 }
@@ -52,9 +55,11 @@ impl Serialize for Record {
         state.serialize_field("incoming_endorsed", &self.forward.incoming_endorsed)?;
         state.serialize_field(
             "forwarding_outcome",
-            &self
-                .decision
-                .forwarding_outcome(self.forward.amount_in_msat, self.forward.incoming_endorsed),
+            &self.decision.forwarding_outcome(
+                self.forward.amount_in_msat,
+                self.forward.incoming_endorsed,
+                self.reputation,
+            ),
         )?;
         state.serialize_field(
             "rep_incoming_revenue_threshold",
@@ -205,11 +210,13 @@ impl ForwardReporter for BatchForwardWriter {
         forwarding_node: PublicKey,
         decision: AllocationCheck,
         forward: ProposedForward,
+        reputation: Reputation,
     ) -> Result<(), BoxError> {
         if let Some((records, _)) = self.nodes.get_mut(&forwarding_node) {
             records.push(Record {
                 decision,
                 forward,
+                reputation,
                 start_ins: self.start_ins,
             });
             self.record_count += 1;
@@ -225,6 +232,8 @@ mod tests {
     use std::path::{Path, PathBuf};
     use std::str::FromStr;
     use std::time::{Instant, SystemTime};
+
+    use ln_resource_mgr::forward_manager::Reputation;
 
     use crate::analysis::get_file;
     use crate::test_utils::{get_random_keypair, test_allocation_check, test_proposed_forward};
@@ -247,7 +256,12 @@ mod tests {
         // Tracked node reported.
         let tracked_forward = test_proposed_forward(0);
         writer
-            .report_forward(node_0, test_allocation_check(true), tracked_forward.clone())
+            .report_forward(
+                node_0,
+                test_allocation_check(true),
+                tracked_forward.clone(),
+                Reputation::Bidirectional,
+            )
             .unwrap();
         assert_eq!(writer.record_count, 1);
 
@@ -257,6 +271,7 @@ mod tests {
                 node_1,
                 test_allocation_check(true),
                 test_proposed_forward(1),
+                Reputation::Bidirectional,
             )
             .unwrap();
         assert_eq!(writer.record_count, 1);
@@ -291,6 +306,7 @@ mod tests {
                 node_0,
                 test_allocation_check(true),
                 test_proposed_forward(0),
+                Reputation::Bidirectional,
             )
             .unwrap();
         assert_eq!(writer.record_count, 1);
@@ -305,6 +321,7 @@ mod tests {
                 node_1,
                 test_allocation_check(true),
                 test_proposed_forward(1),
+                Reputation::Bidirectional,
             )
             .unwrap();
         writer.write().unwrap();
@@ -316,6 +333,7 @@ mod tests {
                 node_0,
                 test_allocation_check(true),
                 test_proposed_forward(2),
+                Reputation::Bidirectional,
             )
             .unwrap();
         assert_eq!(writer.record_count, 2);
@@ -329,6 +347,7 @@ mod tests {
                 node_0,
                 test_allocation_check(true),
                 test_proposed_forward(3),
+                Reputation::Bidirectional,
             )
             .unwrap();
         writer
@@ -336,6 +355,7 @@ mod tests {
                 node_0,
                 test_allocation_check(true),
                 test_proposed_forward(4),
+                Reputation::Bidirectional,
             )
             .unwrap();
         writer
@@ -343,6 +363,7 @@ mod tests {
                 node_0,
                 test_allocation_check(true),
                 test_proposed_forward(5),
+                Reputation::Bidirectional,
             )
             .unwrap();
 

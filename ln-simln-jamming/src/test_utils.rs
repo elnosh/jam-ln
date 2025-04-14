@@ -3,6 +3,7 @@ use std::time::Instant;
 
 use bitcoin::secp256k1::{PublicKey, Secp256k1, SecretKey};
 use lightning::ln::PaymentHash;
+use ln_resource_mgr::forward_manager::Reputation;
 use ln_resource_mgr::{
     AllocationCheck, BucketResources, EndorsementSignal, ForwardingOutcome, ProposedForward,
     ReputationCheck, ReputationValues, ResourceCheck,
@@ -98,7 +99,7 @@ pub fn test_allocation_check(forward_succeeds: bool) -> AllocationCheck {
 
     assert!(
         matches!(
-            check.forwarding_outcome(0, EndorsementSignal::Endorsed),
+            check.forwarding_outcome(0, EndorsementSignal::Endorsed, Reputation::Outgoing),
             ForwardingOutcome::Forward(_)
         ) == forward_succeeds
     );

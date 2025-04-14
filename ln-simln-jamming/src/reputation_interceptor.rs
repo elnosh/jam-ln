@@ -4,11 +4,11 @@ use crate::{endorsement_from_records, records_from_endorsement, BoxError};
 use async_trait::async_trait;
 use bitcoin::secp256k1::PublicKey;
 use ln_resource_mgr::forward_manager::{
-    ForwardManager, ForwardManagerParams, SimualtionDebugManager,
+    ForwardManager, ForwardManagerParams, Reputation, SimualtionDebugManager,
 };
 use ln_resource_mgr::{
-    AllocationCheck, ChannelSnapshot, EndorsementSignal, ForwardResolution, ForwardingOutcome,
-    HtlcRef, ProposedForward, ReputationError, ReputationManager,
+    ChannelSnapshot, EndorsementSignal, ForwardResolution, ForwardingOutcome, HtlcRef,
+    ProposedForward, ReputationError, ReputationManager,
 };
 use simln_lib::sim_node::{ForwardingError, InterceptRequest, InterceptResolution, Interceptor};
 use simln_lib::NetworkParser;
@@ -75,7 +75,7 @@ pub trait ReputationMonitor {
     async fn check_htlc_outcome(
         &self,
         htlc_add: HtlcAdd,
-    ) -> Result<AllocationCheck, ReputationError>;
+    ) -> Result<ForwardingOutcome, ReputationError>;
 }
 
 struct Node<M>
@@ -107,6 +107,7 @@ where
     M: ReputationManager,
 {
     network_nodes: Arc<Mutex<HashMap<PublicKey, Node<M>>>>,
+    reputation_check: Reputation,
     clock: Arc<dyn InstantClock + Send + Sync>,
     results: Option<Arc<Mutex<R>>>,
     shutdown: Trigger,
@@ -119,6 +120,7 @@ where
     pub fn new_for_network(
         params: ForwardManagerParams,
         edges: &[NetworkParser],
+        reputation_check: Reputation,
         clock: Arc<dyn InstantClock + Send + Sync>,
         results: Option<Arc<Mutex<R>>>,
         shutdown: Trigger,
@@ -167,6 +169,7 @@ where
 
         Ok(Self {
             network_nodes: Arc::new(Mutex::new(network_nodes)),
+            reputation_check,
             clock,
             results,
             shutdown,
@@ -180,12 +183,14 @@ where
         edges: &[NetworkParser],
         general_jammed: &[(u64, PublicKey)],
         bootstrap: &BoostrapRecords,
+        reputation_check: Reputation,
         clock: Arc<dyn InstantClock + Send + Sync>,
         results: Option<Arc<Mutex<R>>>,
         shutdown: Trigger,
     ) -> Result<Self, BoxError> {
-        let mut interceptor = Self::new_for_network(params, edges, clock, results, shutdown)
-            .map_err(|_| "could not create network")?;
+        let mut interceptor =
+            Self::new_for_network(params, edges, reputation_check, clock, results, shutdown)
+                .map_err(|_| "could not create network")?;
         interceptor.bootstrap_network_history(bootstrap).await?;
 
         // After the network has been bootstrapped, we can go ahead and general jam required channels.
@@ -332,6 +337,7 @@ where
         let fwd_decision = allocation_check.forwarding_outcome(
             htlc_add.htlc.amount_out_msat,
             htlc_add.htlc.incoming_endorsed,
+            self.reputation_check,
         );
 
         if let Some(r) = &self.results {
@@ -342,6 +348,7 @@ where
                         htlc_add.forwarding_node,
                         allocation_check,
                         htlc_add.htlc.clone(),
+                        self.reputation_check,
                     )
                     .map_err(|e| ReputationError::ErrUnrecoverable(e.to_string()))?;
             }
@@ -421,17 +428,25 @@ where
     async fn check_htlc_outcome(
         &self,
         htlc_add: HtlcAdd,
-    ) -> Result<AllocationCheck, ReputationError> {
+    ) -> Result<ForwardingOutcome, ReputationError> {
         match self
             .network_nodes
             .lock()
             .await
             .entry(htlc_add.forwarding_node)
         {
-            Entry::Occupied(e) => e
-                .get()
-                .forward_manager
-                .get_forwarding_outcome(&htlc_add.htlc),
+            Entry::Occupied(e) => {
+                let allocation_check = e
+                    .get()
+                    .forward_manager
+                    .get_forwarding_outcome(&htlc_add.htlc)?;
+
+                Ok(allocation_check.forwarding_outcome(
+                    htlc_add.htlc.amount_out_msat,
+                    htlc_add.htlc.incoming_endorsed,
+                    self.reputation_check,
+                ))
+            }
             Entry::Vacant(_) => Err(ReputationError::ErrUnrecoverable(format!(
                 "node not found: {}",
                 htlc_add.forwarding_node,
@@ -530,7 +545,7 @@ where
 mod tests {
     use async_trait::async_trait;
     use bitcoin::secp256k1::PublicKey;
-    use ln_resource_mgr::forward_manager::{ForwardManager, ForwardManagerParams};
+    use ln_resource_mgr::forward_manager::{ForwardManager, ForwardManagerParams, Reputation};
     use ln_resource_mgr::{
         AllocationCheck, ChannelSnapshot, EndorsementSignal, ForwardResolution, HtlcRef,
         ProposedForward, ReputationError, ReputationManager, ReputationParams,
@@ -629,6 +644,7 @@ mod tests {
         (
             ReputationInterceptor {
                 network_nodes: Arc::new(Mutex::new(nodes)),
+                reputation_check: Reputation::Outgoing,
                 clock: Arc::new(SimulationClock::new(1).unwrap()),
                 results: None,
                 shutdown,
@@ -828,6 +844,7 @@ mod tests {
                 resolution_period: Duration::from_secs(90),
                 expected_block_speed: None,
             },
+            reputation_check: Reputation::Outgoing,
             general_slot_portion: 30,
             general_liquidity_portion: 30,
             congestion_slot_portion: 20,
@@ -852,6 +869,7 @@ mod tests {
             ReputationInterceptor::new_for_network(
                 params,
                 &edges,
+                Reputation::Outgoing,
                 Arc::new(SimulationClock::new(1).unwrap()),
                 None,
                 shutdown,
@@ -921,6 +939,7 @@ mod tests {
                     forwards: boostrap,
                     last_timestamp_nanos: 1_000_000,
                 },
+                Reputation::Outgoing,
                 Arc::new(SimulationClock::new(1).unwrap()),
                 None,
                 shutdown,

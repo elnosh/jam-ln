@@ -109,8 +109,41 @@ impl RevenueAverage {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Reputation {
+    Incoming,
+    Outgoing,
+    Bidirectional,
+}
+
+impl Reputation {
+    pub fn sufficient_reputation(&self, check: &AllocationCheck) -> bool {
+        match self {
+            Reputation::Incoming => check
+                .reputation_check
+                .incoming_reputation
+                .sufficient_reputation(),
+            Reputation::Outgoing => check
+                .reputation_check
+                .outgoing_reputation
+                .sufficient_reputation(),
+            Reputation::Bidirectional => {
+                check
+                    .reputation_check
+                    .incoming_reputation
+                    .sufficient_reputation()
+                    && check
+                        .reputation_check
+                        .outgoing_reputation
+                        .sufficient_reputation()
+            }
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ForwardManagerParams {
     pub reputation_params: ReputationParams,
+    pub reputation_check: Reputation,
     pub general_slot_portion: u8,
     pub general_liquidity_portion: u8,
     pub congestion_slot_portion: u8,
@@ -365,9 +398,11 @@ impl ReputationManager for ForwardManager {
 
         let allocation_check = inner_lock.get_forwarding_outcome(forward)?;
 
-        if let Ok(bucket) = allocation_check
-            .inner_forwarding_outcome(forward.amount_out_msat, forward.incoming_endorsed)
-        {
+        if let Ok(bucket) = allocation_check.inner_forwarding_outcome(
+            forward.amount_out_msat,
+            forward.incoming_endorsed,
+            self.params.reputation_check,
+        ) {
             inner_lock.htlcs.add_htlc(
                 forward.incoming_ref,
                 InFlightHtlc {
