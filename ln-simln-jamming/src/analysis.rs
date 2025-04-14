@@ -1,6 +1,7 @@
 use crate::BoxError;
 use bitcoin::secp256k1::PublicKey;
 use csv::WriterBuilder;
+use ln_resource_mgr::forward_manager::Reputation;
 use ln_resource_mgr::{AllocationCheck, ProposedForward};
 use serde::ser::SerializeStruct;
 use serde::{Serialize, Serializer};
@@ -52,9 +53,11 @@ impl Serialize for Record {
         state.serialize_field("incoming_endorsed", &self.forward.incoming_endorsed)?;
         state.serialize_field(
             "forwarding_outcome",
-            &self
-                .decision
-                .forwarding_outcome(self.forward.amount_in_msat, self.forward.incoming_endorsed),
+            &self.decision.forwarding_outcome(
+                self.forward.amount_in_msat,
+                self.forward.incoming_endorsed,
+                Reputation::Outgoing,
+            ),
         )?;
         state.serialize_field(
             "incoming_revenue",
