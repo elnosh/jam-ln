@@ -363,7 +363,7 @@ impl ReputationManager for ForwardManager {
             .lock()
             .map_err(|e| ReputationError::ErrUnrecoverable(e.to_string()))?;
 
-        // Remove the hltc from our tracker, as well as the incoming and outgoing direction's current state.
+        // Remove the htlc from our tracker, as well as the incoming and outgoing direction's current state.
         let in_flight = inner_lock
             .htlcs
             .remove_htlc(outgoing_channel, incoming_ref)?;
@@ -375,7 +375,7 @@ impl ReputationManager for ForwardManager {
                 incoming_ref.channel_id,
             ))?
             .incoming_direction
-            .remove_incoming_htlc(&in_flight, resolved_instant);
+            .remove_incoming_htlc(&in_flight, resolution, resolved_instant)?;
 
         inner_lock
             .channels
