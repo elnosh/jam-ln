@@ -198,24 +198,24 @@ impl ForwardManagerImpl {
             resource_check: ResourceCheck {
                 general_bucket: BucketResources {
                     slots_used: self.htlcs.bucket_in_flight_count(
-                        forward.outgoing_channel_id,
+                        ChannelFilter::OutgoingChannel(forward.outgoing_channel_id),
                         ResourceBucketType::General,
                     ),
                     slots_available: outgoing_channel.general_bucket.slot_count,
                     liquidity_used_msat: self.htlcs.bucket_in_flight_msat(
-                        forward.outgoing_channel_id,
+                        ChannelFilter::OutgoingChannel(forward.outgoing_channel_id),
                         ResourceBucketType::General,
                     ),
                     liquidity_available_msat: outgoing_channel.general_bucket.liquidity_msat,
                 },
                 congestion_bucket: BucketResources {
                     slots_used: self.htlcs.bucket_in_flight_count(
-                        forward.outgoing_channel_id,
+                        ChannelFilter::OutgoingChannel(forward.outgoing_channel_id),
                         ResourceBucketType::Congestion,
                     ),
                     slots_available: outgoing_channel.congestion_bucket.slot_count,
                     liquidity_used_msat: self.htlcs.bucket_in_flight_msat(
-                        forward.outgoing_channel_id,
+                        ChannelFilter::OutgoingChannel(forward.outgoing_channel_id),
                         ResourceBucketType::Congestion,
                     ),
                     liquidity_available_msat: outgoing_channel.congestion_bucket.liquidity_msat,
@@ -339,6 +339,7 @@ impl ReputationManager for ForwardManager {
                 InFlightHtlc {
                     outgoing_channel_id: forward.outgoing_channel_id,
                     hold_blocks: forward.expiry_in_height,
+                    incoming_amt_msat: forward.amount_in_msat,
                     outgoing_amt_msat: forward.amount_out_msat,
                     fee_msat: forward.fee_msat(),
                     added_instant: forward.added_at,

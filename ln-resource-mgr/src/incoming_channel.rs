@@ -98,6 +98,7 @@ mod tests {
         InFlightHtlc {
             outgoing_channel_id: 1,
             hold_blocks: 1000,
+            incoming_amt_msat: 2000 + fee_msat,
             outgoing_amt_msat: 2000,
             fee_msat,
             added_instant: Instant::now(),
@@ -126,6 +127,7 @@ mod tests {
                     outgoing_channel_id: 1,
                     fee_msat: 100,
                     hold_blocks: 40,
+                    incoming_amt_msat: 5000 + 100,
                     outgoing_amt_msat: 5000,
                     added_instant: now,
                     incoming_endorsed: EndorsementSignal::Endorsed,
@@ -145,6 +147,7 @@ mod tests {
                     outgoing_channel_id: 1,
                     fee_msat: 100,
                     hold_blocks: 40,
+                    incoming_amt_msat: 5000 + 100,
                     outgoing_amt_msat: 5000,
                     added_instant: now,
                     incoming_endorsed: EndorsementSignal::Endorsed,
