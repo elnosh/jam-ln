@@ -7,8 +7,8 @@ use ln_resource_mgr::forward_manager::{
     ForwardManager, ForwardManagerParams, SimualtionDebugManager,
 };
 use ln_resource_mgr::{
-    AllocationCheck, EndorsementSignal, ForwardResolution, ForwardingOutcome, HtlcRef,
-    ProposedForward, ReputationError, ReputationManager,
+    AllocationCheck, ChannelSnapshot, EndorsementSignal, ForwardResolution, ForwardingOutcome,
+    HtlcRef, ProposedForward, ReputationError, ReputationManager,
 };
 use simln_lib::sim_node::{ForwardingError, InterceptRequest, InterceptResolution, Interceptor};
 use simln_lib::NetworkParser;
@@ -59,29 +59,18 @@ pub struct BootstrapForward {
     pub channel_out_id: u64,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct ReputationPair {
-    pub incoming_scid: u64,
-    pub outgoing_scid: u64,
-    pub incoming_revenue: i64,
-    pub outgoing_reputation: i64,
-}
-
-impl ReputationPair {
-    /// Determines whether a pair has sufficient reputation for the htlc risk provided.
-    pub fn outgoing_reputation(&self, risk: u64) -> bool {
-        self.outgoing_reputation > self.incoming_revenue + risk as i64
-    }
-}
-
 /// Functionality to monitor reputation values in a network.
 #[async_trait]
 pub trait ReputationMonitor {
-    async fn list_reputation_pairs(
+    /// Returns a snapshot of the state tracked for each of a node's channels at the instant provided.
+    ///
+    /// Note that this data tracks all reputation-related values for an individual channel. To create the pair that is
+    /// used to assess reputation, two different channels must be cross-referenced.
+    async fn list_channels(
         &self,
         node: PublicKey,
         access_ins: Instant,
-    ) -> Result<Vec<ReputationPair>, BoxError>;
+    ) -> Result<HashMap<u64, ChannelSnapshot>, BoxError>;
 
     async fn check_htlc_outcome(
         &self,
@@ -413,39 +402,19 @@ where
     R: ForwardReporter,
     M: ReputationManager + Send,
 {
-    /// Returns all reputation pairs for the node provided. For example, if a node has channels 1, 2 and 3 it will
-    /// return the following reputation pairs: [1 -> 2], [1 -> 3], [2 -> 1], [2 -> 3], [3 -> 1], [3 -> 2].
-    async fn list_reputation_pairs(
+    async fn list_channels(
         &self,
         node: PublicKey,
         access_ins: Instant,
-    ) -> Result<Vec<ReputationPair>, BoxError> {
-        let reputations = self
-            .network_nodes
+    ) -> Result<HashMap<u64, ChannelSnapshot>, BoxError> {
+        self.network_nodes
             .lock()
             .await
             .get(&node)
             .ok_or(format!("node: {node} not found"))?
             .forward_manager
-            .list_channels(access_ins)?;
-
-        let mut pairs = Vec::with_capacity(reputations.len() * (reputations.len() - 1));
-        for (incoming_scid, snapshot_incoming) in reputations.iter() {
-            for (outgoing_scid, snapshot_outgoing) in reputations.iter() {
-                if incoming_scid == outgoing_scid {
-                    continue;
-                }
-
-                pairs.push(ReputationPair {
-                    incoming_scid: *incoming_scid,
-                    outgoing_scid: *outgoing_scid,
-                    incoming_revenue: snapshot_incoming.bidirectional_revenue,
-                    outgoing_reputation: snapshot_outgoing.outgoing_reputation,
-                })
-            }
-        }
-
-        Ok(pairs)
+            .list_channels(access_ins)
+            .map_err(|e| e.into())
     }
 
     /// Checks the forwarding decision for a htlc without adding it to internal state.
@@ -889,41 +858,32 @@ mod tests {
             )
             .unwrap();
 
-        // Alice has one channel, so will not have any reputation pairs.
-        assert_eq!(
-            interceptor
-                .list_reputation_pairs(edges[0].node_1.pubkey, Instant::now())
-                .await
-                .unwrap()
-                .len(),
-            0
-        );
-
-        // Bob has two channels, so will have two pairs (one for each direction).
-        assert_eq!(edges[0].node_2.pubkey, edges[1].node_1.pubkey);
-        let bob_edges = interceptor
-            .list_reputation_pairs(edges[1].node_1.pubkey, Instant::now())
+        // Alice only has one channel tracked.
+        let alice_channels = interceptor
+            .list_channels(edges[0].node_1.pubkey, Instant::now())
             .await
             .unwrap();
-        assert_eq!(bob_edges.len(), 2);
+        assert_eq!(alice_channels.len(), 1);
+        assert!(alice_channels.contains_key(&edges[0].scid.into()));
 
-        // Assert that the pairs are for the two channels we expect.
-        assert!(bob_edges.iter().all(|pair| {
-            (pair.incoming_scid == edges[0].scid.into()
-                || pair.incoming_scid == edges[1].scid.into())
-                && (pair.outgoing_scid == edges[0].scid.into()
-                    || pair.outgoing_scid == edges[1].scid.into())
-        }));
+        // Bob has two channels tracked.
+        let bob_channels = interceptor
+            .list_channels(edges[1].node_1.pubkey, Instant::now())
+            .await
+            .unwrap();
 
-        // Carol has one channel, so will not have any reputation pairs.
-        assert_eq!(
-            interceptor
-                .list_reputation_pairs(edges[1].node_2.pubkey, Instant::now())
-                .await
-                .unwrap()
-                .len(),
-            0
-        );
+        assert_eq!(edges[0].node_2.pubkey, edges[1].node_1.pubkey);
+        assert_eq!(bob_channels.len(), 2);
+        assert!(bob_channels.contains_key(&edges[0].scid.into()));
+        assert!(bob_channels.contains_key(&edges[1].scid.into()));
+
+        // Carol has one channel tracked.
+        let carol_channels = interceptor
+            .list_channels(edges[1].node_2.pubkey, Instant::now())
+            .await
+            .unwrap();
+        assert_eq!(carol_channels.len(), 1);
+        assert!(carol_channels.contains_key(&edges[1].scid.into()));
     }
 
     /// Tests that nodes marked to be general jammed appropriately have their general resources slashed, but are still
