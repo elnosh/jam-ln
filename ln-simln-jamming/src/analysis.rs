@@ -57,17 +57,32 @@ impl Serialize for Record {
                 .forwarding_outcome(self.forward.amount_in_msat, self.forward.incoming_endorsed),
         )?;
         state.serialize_field(
-            "revenue_threshold",
-            &self.decision.reputation_check.revenue_threshold,
+            "incoming_revenue",
+            &self
+                .decision
+                .reputation_check
+                .outgoing_reputation
+                .revenue_threshold,
         )?;
         state.serialize_field(
             "outgoing_reputation",
-            &self.decision.reputation_check.outgoing_reputation,
+            &self
+                .decision
+                .reputation_check
+                .outgoing_reputation
+                .reputation,
         )?;
-        state.serialize_field("htlc_risk", &self.decision.reputation_check.htlc_risk)?;
+        state.serialize_field(
+            "htlc_risk",
+            &self.decision.reputation_check.outgoing_reputation.htlc_risk,
+        )?;
         state.serialize_field(
             "in_flight_risk",
-            &self.decision.reputation_check.in_flight_total_risk,
+            &self
+                .decision
+                .reputation_check
+                .outgoing_reputation
+                .in_flight_total_risk,
         )?;
         state.serialize_field(
             "slots_available",
