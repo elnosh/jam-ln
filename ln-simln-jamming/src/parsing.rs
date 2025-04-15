@@ -5,6 +5,8 @@ use bitcoin::secp256k1::PublicKey;
 use clap::Parser;
 use csv::{ReaderBuilder, StringRecord};
 use humantime::Duration as HumanDuration;
+use serde::{Deserialize, Serialize};
+use simln_lib::NetworkParser;
 use std::collections::{BinaryHeap, HashSet};
 use std::fs::File;
 use std::io::{BufReader, Read, Seek};
@@ -176,6 +178,28 @@ impl Cli {
     pub fn reputation_window(&self) -> Duration {
         Duration::from_secs(self.revenue_window_seconds * self.reputation_multiplier as u64)
     }
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct SimNetwork {
+    #[serde(default)]
+    pub sim_network: Vec<NetworkParser>,
+}
+
+pub fn find_pubkey_by_alias(
+    alias: &str,
+    sim_network: &[NetworkParser],
+) -> Result<PublicKey, BoxError> {
+    let target_channel = sim_network
+        .iter()
+        .find(|hist| hist.node_1.alias == alias || hist.node_2.alias == alias)
+        .ok_or(format!("alias: {alias} not found in sim file"))?;
+
+    Ok(if target_channel.node_1.alias == alias {
+        target_channel.node_1.pubkey
+    } else {
+        target_channel.node_2.pubkey
+    })
 }
 
 fn parse_duration(s: &str) -> Result<Duration, String> {

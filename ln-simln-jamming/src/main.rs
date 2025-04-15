@@ -5,17 +5,18 @@ use ln_resource_mgr::ReputationParams;
 use ln_simln_jamming::analysis::BatchForwardWriter;
 use ln_simln_jamming::attack_interceptor::AttackInterceptor;
 use ln_simln_jamming::clock::InstantClock;
-use ln_simln_jamming::parsing::{get_history_for_bootstrap, history_from_file, Cli};
+use ln_simln_jamming::parsing::{
+    find_pubkey_by_alias, get_history_for_bootstrap, history_from_file, Cli, SimNetwork,
+};
 use ln_simln_jamming::reputation_interceptor::ReputationInterceptor;
 use ln_simln_jamming::revenue_interceptor::{RevenueInterceptor, RevenueSnapshot};
 use ln_simln_jamming::{get_network_reputation, BoxError, NetworkReputation};
 use log::LevelFilter;
-use serde::{Deserialize, Serialize};
 use simln_lib::clock::Clock;
 use simln_lib::clock::SimulationClock;
 use simln_lib::interceptors::LatencyIntercepor;
 use simln_lib::sim_node::{Interceptor, SimulatedChannel};
-use simln_lib::{NetworkParser, Simulation, SimulationCfg};
+use simln_lib::{Simulation, SimulationCfg};
 use simple_logger::SimpleLogger;
 use std::collections::{HashMap, HashSet};
 use std::fs::{self, OpenOptions};
@@ -26,12 +27,6 @@ use std::time::Duration;
 use tokio::select;
 use tokio::sync::Mutex;
 use tokio::task::JoinSet;
-
-#[derive(Serialize, Deserialize)]
-pub struct SimNetwork {
-    #[serde(default)]
-    pub sim_network: Vec<NetworkParser>,
-}
 
 #[tokio::main]
 async fn main() -> Result<(), BoxError> {
@@ -387,19 +382,6 @@ async fn main() -> Result<(), BoxError> {
     )?;
 
     Ok(())
-}
-
-fn find_pubkey_by_alias(alias: &str, sim_network: &[NetworkParser]) -> Result<PublicKey, BoxError> {
-    let target_channel = sim_network
-        .iter()
-        .find(|hist| hist.node_1.alias == alias || hist.node_2.alias == alias)
-        .ok_or(format!("alias: {alias} not found in sim file"))?;
-
-    Ok(if target_channel.node_1.alias == alias {
-        target_channel.node_1.pubkey
-    } else {
-        target_channel.node_2.pubkey
-    })
 }
 
 /// Checks whether the attacker and target meet the required portion of high reputation pairs to required.

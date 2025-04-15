@@ -445,6 +445,7 @@ impl ProposedForward {
 /// Provides a snapshot of the reputation and revenue values tracked for a channel.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ChannelSnapshot {
+    pub capacity_msat: u64,
     pub incoming_reputation: i64,
     pub outgoing_reputation: i64,
     pub bidirectional_revenue: i64,
