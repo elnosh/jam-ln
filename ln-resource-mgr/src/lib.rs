@@ -483,7 +483,7 @@ pub trait ReputationManager {
     /// the incoming and outgoing channel. This call can optionally be used to co-locate reputation checks with
     /// other forwarding checks (such as fee policies and expiry delta) so that the htlc can be failed early, saving
     /// the need to propagate it to the outgoing link. Using this method *does not* replace the need to call
-    /// [`add_outgoing_hltc`] before sending `update_add_htlc` on the outgoing link.
+    /// [`add_hltc`] before sending `update_add_htlc` on the outgoing link.
     fn get_forwarding_outcome(
         &self,
         forward: &ProposedForward,
@@ -491,7 +491,7 @@ pub trait ReputationManager {
 
     /// Checks the endorsement signal and reputation of a proposed forward to determine whether a htlc should be
     /// forwarded on the outgoing link. If the htlc can be forwarded, it will be added to the internal state of
-    /// the [`ReputationManager`], and it *must* be cleared out using [`resolve_outgoing_htlc`]. If the htlc cannot
+    /// the [`ReputationManager`], and it *must* be cleared out using [`resolve_htlc`]. If the htlc cannot
     /// be forwarded, no further action is expected. The [`outgoing_ref`] provided for the outgoing htlc *must*
     /// match `update_add_htlc` (so validation and non-strict forwarding logic must be applied before).
     ///
