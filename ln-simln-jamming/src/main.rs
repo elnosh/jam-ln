@@ -126,7 +126,8 @@ async fn main() -> Result<(), BoxError> {
 
     // Pull history that bootstraps the simulation in a network with the attacker's channels present, filter to only
     // have attacker forwards present when the and calculate revenue for the target node during this bootstrap period.
-    let unfiltered_history = history_from_file(&cli.bootstrap_file, Some(cli.reputation_window()))?;
+    let unfiltered_history =
+        history_from_file(&cli.bootstrap_file, Some(cli.reputation_window())).await?;
     let bootstrap = get_history_for_bootstrap(
         cli.attacker_bootstrap,
         unfiltered_history,
@@ -298,15 +299,18 @@ async fn main() -> Result<(), BoxError> {
         }
     }});
 
-    let revenue_interceptor = Arc::new(RevenueInterceptor::new_with_bootstrap(
-        clock.clone(),
-        target_pubkey,
-        bootstrap_revenue,
-        cli.attacker_bootstrap,
-        cli.peacetime_file,
-        listener.clone(),
-        shutdown.clone(),
-    )?);
+    let revenue_interceptor = Arc::new(
+        RevenueInterceptor::new_with_bootstrap(
+            clock.clone(),
+            target_pubkey,
+            bootstrap_revenue,
+            cli.attacker_bootstrap,
+            cli.peacetime_file,
+            listener.clone(),
+            shutdown.clone(),
+        )
+        .await?,
+    );
 
     let revenue_interceptor_1 = revenue_interceptor.clone();
     let revenue_shutdown = shutdown.clone();
