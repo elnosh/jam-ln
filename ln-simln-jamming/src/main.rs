@@ -6,7 +6,7 @@ use ln_simln_jamming::analysis::BatchForwardWriter;
 use ln_simln_jamming::attack_interceptor::AttackInterceptor;
 use ln_simln_jamming::clock::InstantClock;
 use ln_simln_jamming::parsing::{
-    find_pubkey_by_alias, get_history_for_bootstrap, history_from_file, Cli, SimNetwork,
+    find_pubkey_by_alias, reputation_snapshot_from_file, Cli, SimNetwork,
 };
 use ln_simln_jamming::reputation_interceptor::ReputationInterceptor;
 use ln_simln_jamming::revenue_interceptor::{RevenueInterceptor, RevenueSnapshot};
@@ -18,7 +18,7 @@ use simln_lib::interceptors::LatencyIntercepor;
 use simln_lib::sim_node::{Interceptor, SimulatedChannel};
 use simln_lib::{Simulation, SimulationCfg};
 use simple_logger::SimpleLogger;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::fs::{self, OpenOptions};
 use std::io::{BufWriter, Write};
 use std::path::PathBuf;
@@ -119,23 +119,6 @@ async fn main() -> Result<(), BoxError> {
         .into());
     }
 
-    // Pull history that bootstraps the simulation in a network with the attacker's channels present, filter to only
-    // have attacker forwards present when the and calculate revenue for the target node during this bootstrap period.
-    let unfiltered_history =
-        history_from_file(&cli.bootstrap_file, Some(cli.reputation_window())).await?;
-    let bootstrap = get_history_for_bootstrap(
-        cli.attacker_bootstrap,
-        unfiltered_history,
-        HashSet::from_iter(target_to_attacker.into_iter()),
-    )?;
-    let bootstrap_revenue = bootstrap.forwards.iter().fold(0, |acc, item| {
-        if item.forwarding_node == target_pubkey {
-            acc + item.incoming_amt - item.outgoing_amt
-        } else {
-            acc
-        }
-    });
-
     // Use the channel jamming interceptor and latency for simulated payments.
     let latency_interceptor: Arc<dyn Interceptor> =
         Arc::new(LatencyIntercepor::new_poisson(150.0)?);
@@ -183,18 +166,29 @@ async fn main() -> Result<(), BoxError> {
         }
     });
 
+    let reputation_snapshot = reputation_snapshot_from_file(&cli.reputation_file)?;
+    let target_channels_snapshot = reputation_snapshot
+        .get(&target_pubkey)
+        .ok_or::<BoxError>("target pubkey not found".to_string().into())?;
+
+    let bootstrap_revenue = target_channels_snapshot
+        .iter()
+        .map(|(_, snapshot)| snapshot.bidirectional_revenue)
+        .sum::<i64>() as u64;
+
     let reputation_interceptor = Arc::new(Mutex::new(
-        ReputationInterceptor::new_with_bootstrap(
+        ReputationInterceptor::new_from_snapshot(
             forward_params,
             &sim_network,
             &jammed_peers,
-            &bootstrap,
+            reputation_snapshot,
             clock.clone(),
             Some(results_writer),
             shutdown.clone(),
         )
         .await?,
     ));
+
     let attack_interceptor = AttackInterceptor::new_for_network(
         clock.clone(),
         attacker_pubkey,
