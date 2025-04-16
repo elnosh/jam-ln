@@ -15,11 +15,11 @@ use ln_simln_jamming::{
     BoxError,
     analysis::BatchForwardWriter,
     clock::InstantClock,
-    parsing::{SimNetwork, find_pubkey_by_alias, get_history_for_bootstrap, history_from_file},
+    parsing::{SimNetwork, find_pubkey_by_alias, get_history_for_bootstrap},
     reputation_interceptor::{BoostrapRecords, ReputationInterceptor, ReputationMonitor},
 };
 use log::LevelFilter;
-use parsing::Cli;
+use parsing::{Cli, history_from_file};
 use simln_lib::clock::SimulationClock;
 use simple_logger::SimpleLogger;
 
