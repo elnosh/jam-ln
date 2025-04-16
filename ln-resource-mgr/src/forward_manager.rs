@@ -259,6 +259,7 @@ impl ReputationManager for ForwardManager {
         channel_id: u64,
         capacity_msat: u64,
         add_ins: Instant,
+        channel_reputation: Option<ChannelSnapshot>,
     ) -> Result<(), ReputationError> {
         match self
             .inner
@@ -277,6 +278,21 @@ impl ReputationManager for ForwardManager {
                 let congestion_liquidity_amount =
                     capacity_msat * self.params.congestion_liquidity_portion as u64 / 100;
 
+                let reputation = channel_reputation
+                    .as_ref()
+                    .map(|channel| channel.outgoing_reputation);
+
+                let revenue = match &channel_reputation {
+                    Some(channel) => {
+                        let mut revenue =
+                            RevenueAverage::new(&self.params.reputation_params, add_ins);
+                        // NOTE: not sure if Instant::now() here is ok?
+                        revenue.add_value(channel.bidirectional_revenue, Instant::now())?;
+                        revenue
+                    }
+                    None => RevenueAverage::new(&self.params.reputation_params, add_ins),
+                };
+
                 v.insert(TrackedChannel {
                     capacity_msat,
                     incoming_direction: IncomingChannel::new(self.params.reputation_params),
@@ -290,11 +306,9 @@ impl ReputationManager for ForwardManager {
                             slot_count: congestion_slot_count,
                             liquidity_msat: congestion_liquidity_amount,
                         },
+                        reputation,
                     )?,
-                    bidirectional_revenue: RevenueAverage::new(
-                        &self.params.reputation_params,
-                        add_ins,
-                    ),
+                    bidirectional_revenue: revenue,
                 });
 
                 Ok(())
