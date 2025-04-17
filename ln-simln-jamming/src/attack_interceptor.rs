@@ -1,56 +1,23 @@
 use crate::clock::InstantClock;
-use crate::reputation_interceptor::{HtlcAdd, ReputationMonitor, ReputationPair};
+use crate::reputation_interceptor::{HtlcAdd, ReputationMonitor};
 use crate::{endorsement_from_records, records_from_endorsement, BoxError};
 use async_trait::async_trait;
 use bitcoin::secp256k1::PublicKey;
-use futures::future::join_all;
-use ln_resource_mgr::forward_manager::ForwardManagerParams;
 use ln_resource_mgr::{EndorsementSignal, ForwardingOutcome, HtlcRef, ProposedForward};
 use simln_lib::clock::Clock;
 use simln_lib::sim_node::{ForwardingError, InterceptRequest, InterceptResolution, Interceptor};
-use simln_lib::ShortChannelID;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::error::Error;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 use tokio::select;
+use tokio::sync::Mutex;
 use triggered::{Listener, Trigger};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum TargetChannelType {
     Attacker,
     Peer,
-}
-
-/// Provides the reputation pairs for Peers -> Target and Target -> Attacker to gauge the reputation state of attack
-/// relevant nodes.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct NetworkReputation {
-    /// The attacker's pairwise outgoing reputation with the target.
-    pub attacker_reputation: Vec<ReputationPair>,
-
-    /// The target's pairwise outgoing reputation with its peers.
-    pub target_reputation: Vec<ReputationPair>,
-}
-
-impl NetworkReputation {
-    /// Gets the number of pairs that the target or attacker has outgoing reputation for.
-    pub fn reputation_count(
-        &self,
-        target: bool,
-        params: &ForwardManagerParams,
-        htlc_fee: u64,
-        expiry: u32,
-    ) -> usize {
-        if target {
-            &self.target_reputation
-        } else {
-            &self.attacker_reputation
-        }
-        .iter()
-        .filter(|pair| pair.outgoing_reputation(params.htlc_opportunity_cost(htlc_fee, expiry)))
-        .count()
-    }
 }
 
 /// Wraps an innner reputation interceptor (which is responsible for implementing a mitigation to
@@ -64,12 +31,10 @@ where
     clock: Arc<C>,
     attacker_pubkey: PublicKey,
     target_pubkey: PublicKey,
-    /// Keeps track of the target's channels for custom behavior.
-    target_channels: HashMap<ShortChannelID, TargetChannelType>,
-    /// List of public keys of the target's honest (non-attacker) peers.
-    honest_peers: Vec<PublicKey>,
+    /// Keeps track of the target's channels for custom behavior, including any channels with the attacking node.
+    target_channels: HashSet<u64>,
     /// Inner reputation monitor that implements jamming mitigation.
-    reputation_interceptor: R,
+    reputation_interceptor: Arc<Mutex<R>>,
     /// Used to control shutdown.
     listener: Listener,
     shutdown: Trigger,
@@ -110,9 +75,8 @@ impl<C: InstantClock + Clock, R: Interceptor + ReputationMonitor> AttackIntercep
         clock: Arc<C>,
         attacker_pubkey: PublicKey,
         target_pubkey: PublicKey,
-        target_channels: HashMap<ShortChannelID, TargetChannelType>,
-        honest_peers: Vec<PublicKey>,
-        reputation_interceptor: R,
+        target_channels: HashSet<u64>,
+        reputation_interceptor: Arc<Mutex<R>>,
         listener: Listener,
         shutdown: Trigger,
     ) -> Self {
@@ -121,7 +85,6 @@ impl<C: InstantClock + Clock, R: Interceptor + ReputationMonitor> AttackIntercep
             attacker_pubkey,
             target_pubkey,
             target_channels,
-            honest_peers,
             reputation_interceptor,
             listener,
             shutdown,
@@ -133,9 +96,8 @@ impl<C: InstantClock + Clock, R: Interceptor + ReputationMonitor> AttackIntercep
         clock: Arc<C>,
         attacker_pubkey: PublicKey,
         target_pubkey: PublicKey,
-        target_channels: HashMap<ShortChannelID, TargetChannelType>,
-        honest_peers: Vec<PublicKey>,
-        reputation_interceptor: R,
+        target_channels: HashSet<u64>,
+        reputation_interceptor: Arc<Mutex<R>>,
         listener: Listener,
         shutdown: Trigger,
     ) -> Self {
@@ -144,69 +106,10 @@ impl<C: InstantClock + Clock, R: Interceptor + ReputationMonitor> AttackIntercep
             attacker_pubkey,
             target_pubkey,
             target_channels,
-            honest_peers,
             reputation_interceptor,
             listener,
             shutdown,
         )
-    }
-
-    /// Reports on the current reputation state of the target node with its peers, and the attacker's standing with
-    /// the target.
-    pub async fn get_reputation_status(
-        &self,
-        access_ins: Instant,
-    ) -> Result<NetworkReputation, BoxError> {
-        // Can use regular mapping closures because get_target_pairs is async.
-        let target_reputation_results: Vec<Result<Vec<ReputationPair>, BoxError>> =
-            join_all(self.honest_peers.iter().map(|pubkey| async {
-                self.get_target_pairs(*pubkey, TargetChannelType::Peer, access_ins)
-                    .await
-            }))
-            .await;
-
-        Ok(NetworkReputation {
-            attacker_reputation: self
-                .get_target_pairs(self.target_pubkey, TargetChannelType::Attacker, access_ins)
-                .await?,
-            target_reputation: target_reputation_results
-                .into_iter()
-                .collect::<Result<Vec<Vec<ReputationPair>>, BoxError>>()?
-                .into_iter()
-                .flatten()
-                .collect(),
-        })
-    }
-
-    /// Gets reputation pairs for the node provided, filtering them for channels that the target node is a part of.
-    /// - TargetChannelType::Peer / Node=Peer: reports the target's reputation in the eyes of its peers.
-    /// - TargetChannelType::Attacker / Node=Target: reports the attacker's reputation in the eyes of the target.
-    ///
-    /// Note that if the node provided is not the target or one of its peers, nothing will be returned.
-    pub async fn get_target_pairs(
-        &self,
-        node: PublicKey,
-        filter_chan_type: TargetChannelType,
-        access_ins: Instant,
-    ) -> Result<Vec<ReputationPair>, BoxError> {
-        let channels: HashSet<u64> = self
-            .target_channels
-            .iter()
-            .filter(|(_, chan_type)| **chan_type == filter_chan_type)
-            .map(|(scid, _)| *scid)
-            .map(|scid| scid.into()) // TODO: don't double map
-            .collect();
-
-        let reputations: Vec<ReputationPair> = self
-            .reputation_interceptor
-            .list_reputation_pairs(node, access_ins)
-            .await?
-            .iter()
-            .filter(|scid| channels.contains(&scid.outgoing_scid))
-            .copied()
-            .collect();
-
-        Ok(reputations)
     }
 
     /// Intercepts payments flowing from target -> attacker, holding the htlc for the maximum allowable time to
@@ -269,10 +172,18 @@ impl<C: InstantClock + Clock, R: Interceptor + ReputationMonitor> AttackIntercep
         // be forwarded by the target as endorsed if the next hop has sufficient reputation. So, while this behavior
         // is odd, it represents what we want in the attacker's neighborhood.
         match endorsement_from_records(&req.incoming_custom_records) {
-            EndorsementSignal::Endorsed => self.reputation_interceptor.intercept_htlc(req).await,
+            EndorsementSignal::Endorsed => {
+                self.reputation_interceptor
+                    .lock()
+                    .await
+                    .intercept_htlc(req)
+                    .await
+            }
             EndorsementSignal::Unendorsed => {
                 let allocation_check = match self
                     .reputation_interceptor
+                    .lock()
+                    .await
                     .check_htlc_outcome(HtlcAdd {
                         forwarding_node: req.forwarding_node,
                         htlc: ProposedForward {
@@ -320,7 +231,11 @@ impl<C: InstantClock + Clock, R: Interceptor + ReputationMonitor> AttackIntercep
                     }
                 };
 
-                self.reputation_interceptor.intercept_htlc(req).await;
+                self.reputation_interceptor
+                    .lock()
+                    .await
+                    .intercept_htlc(req)
+                    .await;
             }
         };
 
@@ -334,47 +249,39 @@ impl<C: InstantClock + Clock, R: Interceptor + ReputationMonitor> Interceptor
 {
     /// Implemented by HTLC interceptors that provide input on the resolution of HTLCs forwarded in the simulation.
     async fn intercept_htlc(&self, req: InterceptRequest) {
-        // Intercept payments on the attacking node. If they're incoming from the target, jam them. If they're outgoing
-        // to the target, just drop them to prevent them from earning revenue. Other payments are ok, they help the
-        // attacker be a link that other nodes want to forward through them.
+        // Intercept payments on the attacking node. If they're incoming from the target, jam them. Otherwise just
+        // fail other htlcs, they're not that interesting to us.
         if req.forwarding_node == self.attacker_pubkey {
-            if let Some(target_chan) = self.target_channels.get(&req.incoming_htlc.channel_id) {
-                assert!(*target_chan == TargetChannelType::Attacker);
-
+            if self
+                .target_channels
+                .contains(&req.incoming_htlc.channel_id.into())
+            {
                 self.intercept_attacker_incoming(req).await;
                 return;
             }
 
-            if let Some(outgoing_scid) = req.outgoing_channel_id {
-                if let Some(target_chan) = self.target_channels.get(&outgoing_scid) {
-                    assert!(*target_chan == TargetChannelType::Attacker);
-
-                    send_intercept_result!(
-                        req,
-                        Ok(Err(ForwardingError::InterceptorError(
-                            "attacker failing".into()
-                        ))),
-                        self.shutdown
-                    );
-                    return;
-                }
-            }
+            send_intercept_result!(
+                req,
+                Ok(Err(ForwardingError::InterceptorError(
+                    "attacker failing".into()
+                ))),
+                self.shutdown
+            );
+            return;
         }
 
         // Intercept payments from peers -> target. If there's no outgoing_channel_id, the intercepting node is
         // the recipient so we take no action.
         if let Some(outgoing_channel_id) = req.outgoing_channel_id {
-            if let Some(target_chan) = self.target_channels.get(&outgoing_channel_id) {
-                if *target_chan == TargetChannelType::Peer
-                    && req.forwarding_node != self.target_pubkey
-                {
-                    if let Err(e) = self.intercept_peer_outgoing(req.clone()).await {
-                        log::error!("Could not intercept peer outgoing: {e}");
-                        self.shutdown.trigger();
-                    }
-
-                    return;
+            if self.target_channels.contains(&outgoing_channel_id.into())
+                && req.forwarding_node != self.target_pubkey
+            {
+                if let Err(e) = self.intercept_peer_outgoing(req.clone()).await {
+                    log::error!("Could not intercept peer outgoing: {e}");
+                    self.shutdown.trigger();
                 }
+
+                return;
             }
         }
 
@@ -390,7 +297,11 @@ impl<C: InstantClock + Clock, R: Interceptor + ReputationMonitor> Interceptor
 
         // The target is not involved in the forward at all, just use jamming interceptor to implement reputation
         // and bucketing.
-        self.reputation_interceptor.intercept_htlc(req_clone).await
+        self.reputation_interceptor
+            .lock()
+            .await
+            .intercept_htlc(req_clone)
+            .await
     }
 
     /// Notifies the underlying jamming interceptor of htlc resolution, as our attacking interceptor doesn't need
@@ -399,15 +310,17 @@ impl<C: InstantClock + Clock, R: Interceptor + ReputationMonitor> Interceptor
         &self,
         res: InterceptResolution,
     ) -> Result<(), Box<dyn Error + Send + Sync + 'static>> {
-        // If this was a payment forwarded through the attacker from the target (target -> attacker -> *), we don't
-        // want to report it to the reputation interceptor (because we didn't use it for the original intercepted htlc).
-        if let Some(target_chan) = self.target_channels.get(&res.incoming_htlc.channel_id) {
-            if *target_chan == TargetChannelType::Attacker {
-                return Ok(());
-            }
+        // If this was a payment forwarded through the attacker, it was not handled by the reputation interceptor
+        // so we don't need to handle it (it hasn't seen the htlc add to begin with).
+        if res.forwarding_node == self.attacker_pubkey {
+            return Ok(());
         }
 
-        self.reputation_interceptor.notify_resolution(res).await
+        self.reputation_interceptor
+            .lock()
+            .await
+            .notify_resolution(res)
+            .await
     }
 
     fn name(&self) -> String {
@@ -417,25 +330,25 @@ impl<C: InstantClock + Clock, R: Interceptor + ReputationMonitor> Interceptor
 
 #[cfg(test)]
 mod tests {
-    use std::collections::HashMap;
+    use std::collections::{HashMap, HashSet};
     use std::convert::From;
     use std::error::Error;
     use std::sync::Arc;
     use std::time::Instant;
 
-    use crate::reputation_interceptor::{HtlcAdd, ReputationMonitor, ReputationPair};
+    use crate::reputation_interceptor::{HtlcAdd, ReputationMonitor};
     use crate::test_utils::{get_random_keypair, setup_test_request, test_allocation_check};
-    use crate::{endorsement_from_records, records_from_endorsement, test_utils, BoxError};
+    use crate::{endorsement_from_records, records_from_endorsement, BoxError};
     use async_trait::async_trait;
     use bitcoin::secp256k1::PublicKey;
-    use ln_resource_mgr::{AllocationCheck, EndorsementSignal, ReputationError};
+    use ln_resource_mgr::{AllocationCheck, ChannelSnapshot, EndorsementSignal, ReputationError};
     use mockall::mock;
     use mockall::predicate::function;
     use simln_lib::clock::SimulationClock;
     use simln_lib::sim_node::{InterceptRequest, InterceptResolution, Interceptor};
-    use simln_lib::ShortChannelID;
+    use tokio::sync::Mutex;
 
-    use super::{AttackInterceptor, TargetChannelType};
+    use super::AttackInterceptor;
 
     mock! {
         ReputationInterceptor{}
@@ -449,7 +362,7 @@ mod tests {
 
         #[async_trait]
         impl ReputationMonitor for ReputationInterceptor{
-            async fn list_reputation_pairs(&self,node: PublicKey,access_ins: std::time::Instant) -> Result<Vec<ReputationPair>, BoxError>;
+            async fn list_channels(&self, node: PublicKey, access_ins: Instant) -> Result<HashMap<u64, ChannelSnapshot>, BoxError>;
             async fn check_htlc_outcome(&self,htlc_add: HtlcAdd) -> Result<AllocationCheck, ReputationError>;
         }
     }
@@ -457,17 +370,8 @@ mod tests {
     fn setup_interceptor_test() -> AttackInterceptor<SimulationClock, MockReputationInterceptor> {
         let target_pubkey = get_random_keypair().1;
         let attacker_pubkey = get_random_keypair().1;
-        let honest_peers = vec![
-            test_utils::get_random_keypair().1,
-            test_utils::get_random_keypair().1,
-            test_utils::get_random_keypair().1,
-        ];
-        let target_channels = HashMap::from([
-            (ShortChannelID::from(0), TargetChannelType::Attacker),
-            (ShortChannelID::from(1), TargetChannelType::Peer),
-            (ShortChannelID::from(2), TargetChannelType::Peer),
-            (ShortChannelID::from(3), TargetChannelType::Peer),
-        ]);
+
+        let target_channels = HashSet::from([0, 1, 2, 3]);
 
         let (shutdown, listener) = triggered::trigger();
         let mock = MockReputationInterceptor::new();
@@ -476,19 +380,23 @@ mod tests {
             target_pubkey,
             attacker_pubkey,
             target_channels,
-            honest_peers,
-            mock,
+            Arc::new(Mutex::new(mock)),
             listener,
             shutdown,
         )
     }
 
     /// Primes the mock to expect intercept_htlc called with the request provided.
-    fn mock_intercept_htlc(interceptor: &mut MockReputationInterceptor, req: &InterceptRequest) {
+    async fn mock_intercept_htlc(
+        interceptor: Arc<Mutex<MockReputationInterceptor>>,
+        req: &InterceptRequest,
+    ) {
         let expected_incoming = req.incoming_htlc.channel_id;
         let expected_outgoing = req.outgoing_channel_id.unwrap();
 
         interceptor
+            .lock()
+            .await
             .expect_intercept_htlc()
             .with(function(move |args: &InterceptRequest| {
                 args.incoming_htlc.channel_id == expected_incoming
@@ -537,37 +445,38 @@ mod tests {
     /// Tests attacker interception of htlcs that need no interception action - either from a random node or those
     /// that are being sent to the target (rather than received from it).
     #[tokio::test]
-    async fn test_attacker_no_action() {
-        let mut interceptor = setup_interceptor_test();
-        let attacker_pk = get_random_keypair().1;
+    async fn test_attacker_drops_regular() {
+        let interceptor = setup_interceptor_test();
 
-        // Intercepted on the attacker: node -(5)-> attacker -(0)-> target, should just be forwarded.
-        let (attacker_to_target, _) =
-            setup_test_request(attacker_pk, 5, 0, EndorsementSignal::Unendorsed);
-        mock_intercept_htlc(&mut interceptor.reputation_interceptor, &attacker_to_target);
+        // Intercepted on the attacker: node -(5)-> attacker -(0)-> target, should just be dropped.
+        let (attacker_to_target, _) = setup_test_request(
+            interceptor.attacker_pubkey,
+            5,
+            0,
+            EndorsementSignal::Unendorsed,
+        );
         interceptor.intercept_htlc(attacker_to_target).await;
 
-        // Intercepted on the attacker: node -(5)-> attacker -(6)-> node, should just be forwarded.
-        let (attacker_to_target, _) =
-            setup_test_request(attacker_pk, 5, 6, EndorsementSignal::Unendorsed);
-
-        mock_intercept_htlc(&mut interceptor.reputation_interceptor, &attacker_to_target);
+        // Intercepted on the attacker: node -(5)-> attacker -(6)-> node, should just be dropped.
+        let (attacker_to_target, _) = setup_test_request(
+            interceptor.attacker_pubkey,
+            5,
+            6,
+            EndorsementSignal::Unendorsed,
+        );
         interceptor.intercept_htlc(attacker_to_target).await;
     }
 
     #[tokio::test]
     async fn test_peer_to_target_endorsed() {
-        let mut interceptor = setup_interceptor_test();
+        let interceptor = setup_interceptor_test();
 
         // Intercepted on target's peer: node -(5) -> peer -(1)-> target, endorsed payments just passed through.
-        let (peer_to_target, _) = setup_test_request(
-            interceptor.honest_peers[0],
-            5,
-            1,
-            EndorsementSignal::Endorsed,
-        );
+        let peer_pubkey = get_random_keypair().1;
+        let (peer_to_target, _) =
+            setup_test_request(peer_pubkey, 5, 1, EndorsementSignal::Endorsed);
 
-        mock_intercept_htlc(&mut interceptor.reputation_interceptor, &peer_to_target);
+        mock_intercept_htlc(interceptor.reputation_interceptor.clone(), &peer_to_target).await;
         interceptor.intercept_htlc(peer_to_target).await;
     }
 
@@ -575,18 +484,17 @@ mod tests {
     /// sufficient reputation.
     #[tokio::test]
     async fn test_peer_to_target_upgraded() {
-        let mut interceptor = setup_interceptor_test();
+        let interceptor = setup_interceptor_test();
 
-        let (peer_to_target, _) = setup_test_request(
-            interceptor.honest_peers[0],
-            5,
-            1,
-            EndorsementSignal::Unendorsed,
-        );
+        let peer_pubkey = get_random_keypair().1;
+        let (peer_to_target, _) =
+            setup_test_request(peer_pubkey, 5, 1, EndorsementSignal::Unendorsed);
 
         // Expect a reputation check that passes, then pass the htlc on to the reputation interceptor endorsed.
         interceptor
             .reputation_interceptor
+            .lock()
+            .await
             .expect_check_htlc_outcome()
             .with(function(move |req: &HtlcAdd| {
                 req.htlc.incoming_ref.channel_id == peer_to_target.incoming_htlc.channel_id.into()
@@ -595,7 +503,7 @@ mod tests {
                     && req.htlc.incoming_endorsed == EndorsementSignal::Endorsed
             }))
             .return_once(|_| Ok(test_allocation_check(true)));
-        mock_intercept_htlc(&mut interceptor.reputation_interceptor, &peer_to_target);
+        mock_intercept_htlc(interceptor.reputation_interceptor.clone(), &peer_to_target).await;
 
         interceptor.intercept_htlc(peer_to_target).await;
     }
@@ -604,18 +512,17 @@ mod tests {
     /// be upgraded to endorsed.
     #[tokio::test]
     async fn test_peer_to_target_general_jammed() {
-        let mut interceptor = setup_interceptor_test();
+        let interceptor = setup_interceptor_test();
 
-        let (peer_to_target, _) = setup_test_request(
-            interceptor.honest_peers[0],
-            5,
-            1,
-            EndorsementSignal::Unendorsed,
-        );
+        let peer_pubkey = get_random_keypair().1;
+        let (peer_to_target, _) =
+            setup_test_request(peer_pubkey, 5, 1, EndorsementSignal::Unendorsed);
 
         // Expect a reputation check that fails, then an interceptor response.
         interceptor
             .reputation_interceptor
+            .lock()
+            .await
             .expect_check_htlc_outcome()
             .with(function(move |req: &HtlcAdd| {
                 req.htlc.incoming_ref.channel_id == peer_to_target.incoming_htlc.channel_id.into()
@@ -625,14 +532,14 @@ mod tests {
             }))
             .return_once(|_| Ok(test_allocation_check(false)));
 
-        mock_intercept_htlc(&mut interceptor.reputation_interceptor, &peer_to_target);
+        mock_intercept_htlc(interceptor.reputation_interceptor.clone(), &peer_to_target).await;
         interceptor.intercept_htlc(peer_to_target).await;
     }
 
     /// Tests that forwards through the target node to its peers will be upgraded to endorsed.
     #[tokio::test]
     async fn test_target_to_peer() {
-        let mut interceptor = setup_interceptor_test();
+        let interceptor = setup_interceptor_test();
 
         let (target_forward, _) = setup_test_request(
             interceptor.target_pubkey,
@@ -644,14 +551,14 @@ mod tests {
         let mut expected_req = target_forward.clone();
         expected_req.incoming_custom_records =
             records_from_endorsement(EndorsementSignal::Endorsed);
-        mock_intercept_htlc(&mut interceptor.reputation_interceptor, &expected_req);
+        mock_intercept_htlc(interceptor.reputation_interceptor.clone(), &expected_req).await;
         interceptor.intercept_htlc(target_forward).await;
     }
 
     /// Tests that forwards through the target node to the attacker will be upgraded to endorsed.
     #[tokio::test]
     async fn test_target_to_attacker() {
-        let mut interceptor = setup_interceptor_test();
+        let interceptor = setup_interceptor_test();
 
         let (target_forward, _) = setup_test_request(
             interceptor.target_pubkey,
@@ -663,247 +570,24 @@ mod tests {
         let mut expected_req = target_forward.clone();
         expected_req.incoming_custom_records =
             records_from_endorsement(EndorsementSignal::Endorsed);
-        mock_intercept_htlc(&mut interceptor.reputation_interceptor, &expected_req);
+        mock_intercept_htlc(interceptor.reputation_interceptor.clone(), &expected_req).await;
         interceptor.intercept_htlc(target_forward).await;
     }
 
     /// Tests that forwards by the target sent from attacker -> target are handled like any other target payment.
     #[tokio::test]
     async fn test_target_from_attacker() {
-        let mut interceptor = setup_interceptor_test();
+        let interceptor = setup_interceptor_test();
 
         let (not_actually_attacker, _) =
             setup_test_request(interceptor.target_pubkey, 0, 3, EndorsementSignal::Endorsed);
 
         // This tests hangs; the target is actually jamming the attacker lol because we don't check the direction
         mock_intercept_htlc(
-            &mut interceptor.reputation_interceptor,
+            interceptor.reputation_interceptor.clone(),
             &not_actually_attacker,
-        );
+        )
+        .await;
         interceptor.intercept_htlc(not_actually_attacker).await;
-    }
-
-    // Gets reputation pair statistics for a network with the following topology:
-    //
-    /// --(4) --+
-    ///         |
-    /// --(5)-- P1 --(1) ---+
-    ///				        |
-    /// --(6)-- P2 --(2) -- Target --(0) -- Attacker
-    ///				        |
-    ///         P3 --(3) ---+
-    #[tokio::test]
-    async fn test_reputation_status() {
-        let mut interceptor = setup_interceptor_test();
-
-        let target_pubkey = interceptor.target_pubkey;
-        let peer_1 = interceptor.honest_peers[0];
-        let peer_2 = interceptor.honest_peers[1];
-        let peer_3 = interceptor.honest_peers[2];
-
-        let attacker_chan = ShortChannelID::from(0).into();
-        let chan_1 = ShortChannelID::from(1).into();
-        let chan_2 = ShortChannelID::from(2).into();
-        let chan_3 = ShortChannelID::from(3).into();
-
-        let peer_1_incoming_1 = ShortChannelID::from(4).into();
-        let peer_1_incoming_2 = ShortChannelID::from(5).into();
-
-        let peer_2_incoming_1 = ShortChannelID::from(6).into();
-
-        // Pairs from target -> attacker from the target's perspective.
-        let target_to_attacker_pairs = vec![
-            ReputationPair {
-                incoming_scid: chan_1,
-                outgoing_scid: attacker_chan,
-                outgoing_reputation: 0,
-                incoming_revenue: 100,
-            },
-            ReputationPair {
-                incoming_scid: chan_2,
-                outgoing_scid: attacker_chan,
-                outgoing_reputation: 0,
-                incoming_revenue: 200,
-            },
-            ReputationPair {
-                incoming_scid: chan_3,
-                outgoing_scid: attacker_chan,
-                outgoing_reputation: 0,
-                incoming_revenue: 300,
-            },
-        ];
-        let target_to_attacker_expected = target_to_attacker_pairs.clone();
-
-        // Paris from peer_1 -> target from the peer's perspective.
-        let peer_1_to_target_pairs = [
-            ReputationPair {
-                incoming_scid: peer_1_incoming_1,
-                outgoing_scid: chan_1,
-                outgoing_reputation: 0,
-                incoming_revenue: 400,
-            },
-            ReputationPair {
-                incoming_scid: peer_1_incoming_2,
-                outgoing_scid: chan_1,
-                outgoing_reputation: 0,
-                incoming_revenue: 500,
-            },
-        ];
-
-        // Pairs from peer_2 -> target from the peer's perspective.
-        let peer_2_to_target_pairs = vec![ReputationPair {
-            incoming_scid: peer_2_incoming_1,
-            outgoing_scid: chan_2,
-            outgoing_reputation: 0,
-            incoming_revenue: 600,
-        }];
-
-        let peers_to_target_expected = peer_1_to_target_pairs
-            .iter()
-            .cloned()
-            .chain(peer_2_to_target_pairs.clone())
-            .collect::<Vec<ReputationPair>>();
-
-        // Setup the mock to expect to be called to list peers for each of the target's honest peers and the target
-        // itself. We return each possible pair of channels reputation score, as we're expecting our function to filter
-        // down to the appropriate pairs.
-        interceptor
-            .reputation_interceptor
-            .expect_list_reputation_pairs()
-            .returning(move |node: PublicKey, _: Instant| {
-                if node == target_pubkey {
-                    let pairs = vec![
-                        // Chan 1 as outgoing channel in pair.
-                        ReputationPair {
-                            incoming_scid: attacker_chan,
-                            outgoing_scid: chan_1,
-                            outgoing_reputation: 0,
-                            incoming_revenue: 700,
-                        },
-                        ReputationPair {
-                            incoming_scid: chan_2,
-                            outgoing_scid: chan_1,
-                            outgoing_reputation: 0,
-                            incoming_revenue: 800,
-                        },
-                        ReputationPair {
-                            incoming_scid: chan_3,
-                            outgoing_scid: chan_1,
-                            outgoing_reputation: 0,
-                            incoming_revenue: 900,
-                        },
-                        // Chan 2 as outgoing channel in pair.
-                        ReputationPair {
-                            incoming_scid: attacker_chan,
-                            outgoing_scid: chan_2,
-                            outgoing_reputation: 0,
-                            incoming_revenue: 1000,
-                        },
-                        ReputationPair {
-                            incoming_scid: chan_1,
-                            outgoing_scid: chan_2,
-                            outgoing_reputation: 0,
-                            incoming_revenue: 1100,
-                        },
-                        ReputationPair {
-                            incoming_scid: chan_3,
-                            outgoing_scid: chan_2,
-                            outgoing_reputation: 0,
-                            incoming_revenue: 1200,
-                        },
-                        // Chan 3 as outgoing channel in pair.
-                        ReputationPair {
-                            incoming_scid: attacker_chan,
-                            outgoing_scid: chan_3,
-                            outgoing_reputation: 0,
-                            incoming_revenue: 1300,
-                        },
-                        ReputationPair {
-                            incoming_scid: chan_1,
-                            outgoing_scid: chan_3,
-                            outgoing_reputation: 0,
-                            incoming_revenue: 1400,
-                        },
-                        ReputationPair {
-                            incoming_scid: chan_2,
-                            outgoing_scid: chan_3,
-                            outgoing_reputation: 0,
-                            incoming_revenue: 1500,
-                        },
-                    ];
-
-                    return Ok(target_to_attacker_pairs
-                        .iter()
-                        .cloned()
-                        .chain(pairs)
-                        .collect());
-                }
-
-                if node == peer_1 {
-                    let pairs = vec![
-                        // Incoming 1 as outgoing channel.
-                        ReputationPair {
-                            incoming_scid: chan_1,
-                            outgoing_scid: peer_1_incoming_1,
-                            outgoing_reputation: 0,
-                            incoming_revenue: 1600,
-                        },
-                        ReputationPair {
-                            incoming_scid: peer_1_incoming_2,
-                            outgoing_scid: peer_1_incoming_1,
-                            outgoing_reputation: 0,
-                            incoming_revenue: 1700,
-                        },
-                        // Incoming 2 as outgoing channel.
-                        ReputationPair {
-                            incoming_scid: chan_1,
-                            outgoing_scid: peer_1_incoming_2,
-                            outgoing_reputation: 0,
-                            incoming_revenue: 1800,
-                        },
-                        ReputationPair {
-                            incoming_scid: peer_1_incoming_1,
-                            outgoing_scid: peer_1_incoming_2,
-                            outgoing_reputation: 0,
-                            incoming_revenue: 1900,
-                        },
-                    ];
-
-                    return Ok(peer_1_to_target_pairs
-                        .iter()
-                        .cloned()
-                        .chain(pairs)
-                        .collect());
-                }
-
-                if node == peer_2 {
-                    let pairs = vec![ReputationPair {
-                        incoming_scid: chan_2,
-                        outgoing_scid: peer_1_incoming_2,
-                        outgoing_reputation: 0,
-                        incoming_revenue: 2000,
-                    }];
-
-                    return Ok(peer_2_to_target_pairs
-                        .iter()
-                        .cloned()
-                        .chain(pairs)
-                        .collect());
-                }
-
-                if node == peer_3 {
-                    return Ok(vec![]);
-                }
-
-                Err(format!("unknown node: {node}").into())
-            });
-
-        let status = interceptor
-            .get_reputation_status(Instant::now())
-            .await
-            .unwrap();
-
-        assert_eq!(status.attacker_reputation, target_to_attacker_expected);
-        assert_eq!(status.target_reputation, peers_to_target_expected);
     }
 }
