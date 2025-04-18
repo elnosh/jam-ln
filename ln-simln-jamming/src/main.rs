@@ -196,19 +196,21 @@ async fn main() -> Result<(), BoxError> {
         }
     });
 
-    let reputation_interceptor = Arc::new(Mutex::new(
-        ReputationInterceptor::new_with_bootstrap(
-            forward_params,
-            &sim_network,
-            &jammed_peers,
-            &bootstrap,
-            reputation_check,
-            clock.clone(),
-            Some(results_writer),
-            shutdown.clone(),
-        )
-        .await?,
-    ));
+    let reputation_interceptor = Arc::new(Mutex::new(ReputationInterceptor::new_for_network(
+        forward_params,
+        &sim_network,
+        reputation_check,
+        clock.clone(),
+        Some(results_writer),
+        shutdown.clone(),
+    )?));
+
+    reputation_interceptor
+        .lock()
+        .await
+        .bootstrap_network(&bootstrap, &jammed_peers)
+        .await?;
+
     let attack_interceptor = AttackInterceptor::new_for_network(
         clock.clone(),
         attacker_pubkey,

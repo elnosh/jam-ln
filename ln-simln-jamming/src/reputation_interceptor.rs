@@ -176,27 +176,17 @@ where
         })
     }
 
-    /// Creates a network from the set of edges provided and bootstraps the reputation of nodes in the network using
-    /// the historical forwards provided. Forwards are expected to be sorted by added_ns in ascending order.
-    pub async fn new_with_bootstrap(
-        params: ForwardManagerParams,
-        edges: &[NetworkParser],
-        general_jammed: &[(u64, PublicKey)],
+    /// Bootstraps the reputation of nodes in the interceptor network using the historical forwards provided.
+    pub async fn bootstrap_network(
+        &mut self,
         bootstrap: &BoostrapRecords,
-        reputation_check: Reputation,
-        clock: Arc<dyn InstantClock + Send + Sync>,
-        results: Option<Arc<Mutex<R>>>,
-        shutdown: Trigger,
-    ) -> Result<Self, BoxError> {
-        let mut interceptor =
-            Self::new_for_network(params, edges, reputation_check, clock, results, shutdown)
-                .map_err(|_| "could not create network")?;
-        interceptor.bootstrap_network_history(bootstrap).await?;
+        general_jammed: &[(u64, PublicKey)],
+    ) -> Result<(), BoxError> {
+        self.bootstrap_network_history(bootstrap).await?;
 
         // After the network has been bootstrapped, we can go ahead and general jam required channels.
         for (channel, pubkey) in general_jammed.iter() {
-            interceptor
-                .network_nodes
+            self.network_nodes
                 .lock()
                 .await
                 .get_mut(pubkey)
@@ -205,7 +195,7 @@ where
                 .general_jam_channel(*channel)?;
         }
 
-        Ok(interceptor)
+        Ok(())
     }
 
     async fn bootstrap_network_history(
@@ -930,19 +920,24 @@ mod tests {
 
         // Create an interceptor that is intended to general jam payments on Bob -> Carol in the three hop network
         // Alice -> Bob -> Carol.
-        let interceptor: ReputationInterceptor<BatchForwardWriter, ForwardManager> =
-            ReputationInterceptor::new_with_bootstrap(
+        let mut interceptor: ReputationInterceptor<BatchForwardWriter, ForwardManager> =
+            ReputationInterceptor::new_for_network(
                 params,
                 &edges,
-                &[(bob_to_carol, edges[1].node_1.pubkey)],
-                &BoostrapRecords {
-                    forwards: boostrap,
-                    last_timestamp_nanos: 1_000_000,
-                },
                 Reputation::Outgoing,
                 Arc::new(SimulationClock::new(1).unwrap()),
                 None,
                 shutdown,
+            )
+            .unwrap();
+
+        interceptor
+            .bootstrap_network(
+                &BoostrapRecords {
+                    forwards: boostrap,
+                    last_timestamp_nanos: 1_000_000,
+                },
+                &[(bob_to_carol, edges[1].node_1.pubkey)],
             )
             .await
             .unwrap();
