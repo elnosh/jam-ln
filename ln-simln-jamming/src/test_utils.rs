@@ -1,3 +1,4 @@
+#![cfg(test)]
 use std::error::Error;
 use std::time::Instant;
 
@@ -36,7 +37,6 @@ mock! {
     }
 }
 
-#[allow(dead_code)]
 pub fn get_random_bytes(size: usize) -> Vec<u8> {
     rand::thread_rng()
         .sample_iter(Uniform::new(u8::MIN, u8::MAX))
@@ -44,7 +44,6 @@ pub fn get_random_bytes(size: usize) -> Vec<u8> {
         .collect()
 }
 
-#[allow(dead_code)]
 pub fn get_random_keypair() -> (SecretKey, PublicKey) {
     loop {
         if let Ok(sk) = SecretKey::from_slice(&get_random_bytes(32)) {
@@ -53,7 +52,7 @@ pub fn get_random_keypair() -> (SecretKey, PublicKey) {
     }
 }
 
-#[allow(dead_code, clippy::type_complexity)]
+#[allow(clippy::type_complexity)]
 pub fn setup_test_request(
     forwarding_node: PublicKey,
     channel_in: u64,
@@ -87,7 +86,6 @@ pub fn setup_test_request(
     )
 }
 
-#[allow(dead_code)]
 pub fn test_allocation_check(forward_succeeds: bool) -> AllocationCheck {
     let reputation_values = ReputationValues {
         reputation: 100_000,
@@ -128,7 +126,6 @@ pub fn test_allocation_check(forward_succeeds: bool) -> AllocationCheck {
     check
 }
 
-#[allow(dead_code)]
 pub fn test_proposed_forward(id: u64) -> ProposedForward {
     ProposedForward {
         incoming_ref: ln_resource_mgr::HtlcRef {
@@ -145,7 +142,6 @@ pub fn test_proposed_forward(id: u64) -> ProposedForward {
     }
 }
 
-#[allow(dead_code)]
 pub fn test_bootstrap_forward(
     added_ns: u64,
     settled_ns: u64,
