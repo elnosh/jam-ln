@@ -184,7 +184,7 @@ fn parse_duration(s: &str) -> Result<Duration, String> {
         .map_err(|e| format!("Invalid duration '{}': {}", s, e))
 }
 
-fn find_next_newline(file: &mut File, start: u64) -> Result<u64, BoxError> {
+fn find_next_newline(file: &mut BufReader<File>, start: u64) -> Result<u64, BoxError> {
     let mut position = start;
     file.seek(std::io::SeekFrom::Start(position))?;
     let mut buffer = [0; 1];
@@ -199,11 +199,12 @@ fn find_next_newline(file: &mut File, start: u64) -> Result<u64, BoxError> {
 }
 
 fn calc_file_chunks(file_path: &PathBuf, num_chunks: u8) -> Result<Vec<u64>, BoxError> {
-    let mut file = File::open(file_path)?;
+    let file = File::open(file_path)?;
     let file_size = file.metadata()?.len();
     let chunk_size = file_size / num_chunks as u64;
     let mut breakpoints = Vec::with_capacity((num_chunks - 1) as usize);
 
+    let mut reader = BufReader::new(file);
     // Set (num_chunks - 1)  breakpoints in the file for the tasks to start reading at.
     // Set breakpoints where the closest line ends.
     let mut current_breakpoint = 0;
@@ -214,7 +215,7 @@ fn calc_file_chunks(file_path: &PathBuf, num_chunks: u8) -> Result<Vec<u64>, Box
         }
 
         breakpoints.push(current_breakpoint);
-        let next_eol_point = find_next_newline(&mut file, end)?;
+        let next_eol_point = find_next_newline(&mut reader, end)?;
         current_breakpoint = next_eol_point + 1;
     }
 
