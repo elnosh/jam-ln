@@ -372,8 +372,10 @@ pub async fn peacetime_from_file(
         res??
     }
 
-    // TODO: is this bad?
-    let heap = heap.lock().unwrap().clone();
+    let heap = Arc::try_unwrap(heap)
+        .map_err(|_| "Heap Arc had more than one reference".to_string())?
+        .into_inner()?;
+
     Ok(heap)
 }
 
