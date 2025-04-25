@@ -19,42 +19,42 @@ use tokio::runtime::Handle;
 use tokio::task::{self, JoinSet};
 
 /// Default file used to describe the network being simulated.
-const DEFAULT_SIM_FILE: &str = "./simln.json";
+pub const DEFAULT_SIM_FILE: &str = "./simln.json";
 
 /// Default file used to bootstrap reputation.
-const DEFAULT_BOOTSTRAP_FILE: &str = "./bootstrap.csv";
+pub const DEFAULT_BOOTSTRAP_FILE: &str = "./bootstrap.csv";
 
 /// Default file used to imitate peacetime revenue
-const DEFAULT_PEACETIME_FILE: &str = "./peacetime.csv";
+pub const DEFAULT_PEACETIME_FILE: &str = "./peacetime.csv";
 
 /// Default percent of good reputation pairs the target requires.
-const DEFAULT_TARGET_REP_PERCENT: &str = "50";
+pub const DEFAULT_TARGET_REP_PERCENT: &str = "50";
 
 /// Default percent of good reputation pairs with the target that the attacker requires.
-const DEFAULT_ATTACKER_REP_PERCENT: &str = "50";
+pub const DEFAULT_ATTACKER_REP_PERCENT: &str = "50";
 
 /// Default clock speedup to run with regular wall time.
-const DEFAULT_CLOCK_SPEEDUP: &str = "1";
+pub const DEFAULT_CLOCK_SPEEDUP: &str = "1";
 
 /// Default htlc size that a peer must be able to get endorsed to be considered as having good reputation, $10 at the
 /// time of writing.
-const DEFAULT_REPUTATION_MARGIN_MSAT: &str = "10000000";
+pub const DEFAULT_REPUTATION_MARGIN_MSAT: &str = "10000000";
 
 /// Default htlc expiry used for calculating reputation margin htlc's risk.
-const DEFAULT_REPUTATION_MARGIN_EXIPRY: &str = "200";
+pub const DEFAULT_REPUTATION_MARGIN_EXIPRY: &str = "200";
 
 /// The default interval used to poll whether the attacker still has reputation with the target, 5 minutes expresssed
 /// in seconds.
-const DEFAULT_ATTACKER_POLL_SECONDS: &str = "300";
+pub const DEFAULT_ATTACKER_POLL_SECONDS: &str = "300";
 
 /// The default batch size for writing results to disk.
-const DEFAULT_RESULT_BATCH_SIZE: &str = "500";
+pub const DEFAULT_RESULT_BATCH_SIZE: &str = "500";
 
 /// The default window that we consider revenue over (2 weeks = 60 * 60 * 24 * 7).
-const DEFAULT_REVENUE_WINDOW_SECONDS: &str = "1210000";
+pub const DEFAULT_REVENUE_WINDOW_SECONDS: &str = "1210000";
 
 /// The default multiplier applied to the revenue window to get reputation window.
-const DEFAULT_REPUTATION_MULTIPLIER: &str = "12";
+pub const DEFAULT_REPUTATION_MULTIPLIER: &str = "12";
 
 /// The default location to output results files.
 const DEFAULT_RESULTS_DIR: &str = ".";
