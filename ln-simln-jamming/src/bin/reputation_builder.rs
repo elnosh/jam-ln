@@ -233,7 +233,7 @@ async fn main() -> Result<(), BoxError> {
     }
     csv_writer.flush()?;
 
-    log::info!("finished writing reputation snapshot");
+    log::info!("Finished writing reputation snapshot to {:?}", snapshot_dir);
 
     Ok(())
 }
