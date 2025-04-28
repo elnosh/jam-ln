@@ -1,6 +1,7 @@
 use std::{
     collections::HashSet,
-    fs::{self, OpenOptions},
+    fs::{self, File, OpenOptions},
+    io::Write,
     path::PathBuf,
     str::FromStr,
     sync::Arc,
@@ -11,7 +12,8 @@ use clap::Parser;
 use csv::Writer;
 use humantime::Duration as HumanDuration;
 use ln_resource_mgr::{
-    forward_manager::{ForwardManager, ForwardManagerParams, Reputation}, ReputationParams
+    forward_manager::{ForwardManager, ForwardManagerParams, Reputation},
+    ReputationParams,
 };
 use ln_simln_jamming::{
     analysis::BatchForwardWriter,
@@ -66,17 +68,17 @@ struct Cli {
 
     /// The alias of the target node.
     #[arg(long)]
-    target_alias: Option<String>,
+    target_alias: String,
 
     /// The alias of the attacking node.
     #[arg(long)]
     attacker_alias: Option<String>,
 
-    /// Only check incoming reputation for the simulation.
+    /// Bootstrap network with incoming reputation only.
     #[arg(long)]
     pub incoming_reputation_only: bool,
 
-    /// Only check outgoing reputation for the simulation.
+    /// Bootstrap network with outgoing reputation only.
     #[arg(long)]
     pub outgoing_reputation_only: bool,
 }
@@ -109,34 +111,28 @@ async fn main() -> Result<(), BoxError> {
     let unfiltered_history =
         history_from_file(&cli.bootstrap_file, Some(cli.reputation_window())).await?;
 
+    let target_pubkey = find_pubkey_by_alias(&cli.target_alias, &sim_network)?;
+
     // filter bootstrap records if attacker alias and bootstrap provided
     let bootstrap = if cli.attacker_alias.is_some() && cli.attacker_bootstrap.is_some() {
-        match cli.target_alias {
-            Some(target) => {
-                let target_pubkey = find_pubkey_by_alias(&target, &sim_network)?;
-                let attacker_pubkey =
-                    find_pubkey_by_alias(&cli.attacker_alias.unwrap(), &sim_network)?;
+        let attacker_pubkey = find_pubkey_by_alias(&cli.attacker_alias.unwrap(), &sim_network)?;
 
-                let target_to_attacker = match sim_network.iter().find(|&channel| {
-                    (channel.node_1.pubkey == target_pubkey
-                        && channel.node_2.pubkey == attacker_pubkey)
-                        || (channel.node_1.pubkey == attacker_pubkey
-                            && channel.node_2.pubkey == target_pubkey)
-                }) {
-                    Some(channel) => u64::from(channel.scid),
-                    None => {
-                        return Err("no channel between target and attacker".to_string().into());
-                    }
-                };
-
-                get_history_for_bootstrap(
-                    cli.attacker_bootstrap.clone().unwrap().1,
-                    unfiltered_history,
-                    HashSet::from_iter(vec![target_to_attacker]),
-                )?
+        let target_to_attacker = match sim_network.iter().find(|&channel| {
+            (channel.node_1.pubkey == target_pubkey && channel.node_2.pubkey == attacker_pubkey)
+                || (channel.node_1.pubkey == attacker_pubkey
+                    && channel.node_2.pubkey == target_pubkey)
+        }) {
+            Some(channel) => u64::from(channel.scid),
+            None => {
+                return Err("no channel between target and attacker".to_string().into());
             }
-            None => return Err("target not provided".to_string().into()),
-        }
+        };
+
+        get_history_for_bootstrap(
+            cli.attacker_bootstrap.clone().unwrap().1,
+            unfiltered_history,
+            HashSet::from_iter(vec![target_to_attacker]),
+        )?
     } else {
         let last_timestamp_nanos = unfiltered_history
             .iter()
@@ -148,6 +144,14 @@ async fn main() -> Result<(), BoxError> {
             last_timestamp_nanos,
         }
     };
+
+    let bootstrap_revenue = bootstrap.forwards.iter().fold(0, |acc, item| {
+        if item.forwarding_node == target_pubkey {
+            acc + item.incoming_amt - item.outgoing_amt
+        } else {
+            acc
+        }
+    });
 
     let reputation_check = if cli.incoming_reputation_only {
         Reputation::Incoming
@@ -201,17 +205,21 @@ async fn main() -> Result<(), BoxError> {
     };
     fs::create_dir_all(&snapshot_dir)?;
 
-    let file = OpenOptions::new()
+    let mut target_revenue = File::create(snapshot_dir.join("target-revenue.txt"))?;
+    write!(target_revenue, "{}", bootstrap_revenue)?;
+
+    let snapshot_file = OpenOptions::new()
         .write(true)
         .truncate(true)
         .create(true)
         .open(snapshot_dir.join("reputation-snapshot.csv"))?;
 
-    let mut csv_writer = Writer::from_writer(file);
+    let mut csv_writer = Writer::from_writer(snapshot_file);
     csv_writer.write_record([
         "pubkey",
         "scid",
         "channel_capacity",
+        "incoming_reputation",
         "outgoing_reputation",
         "bidirectional_revenue",
     ])?;
@@ -226,6 +234,7 @@ async fn main() -> Result<(), BoxError> {
                 pubkey,
                 channel.0,
                 channel.1.capacity_msat,
+                channel.1.incoming_reputation,
                 channel.1.outgoing_reputation,
                 channel.1.bidirectional_revenue,
             ))?;
