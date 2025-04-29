@@ -217,6 +217,9 @@ fn calc_file_chunks(file_path: &PathBuf, num_chunks: u8) -> Result<Vec<u64>, Box
         breakpoints.push(current_breakpoint);
         let next_eol_point = find_next_newline(&mut reader, end)?;
         current_breakpoint = next_eol_point + 1;
+        if current_breakpoint >= file_size {
+            break;
+        }
     }
 
     Ok(breakpoints)
@@ -249,7 +252,7 @@ pub async fn history_from_file(
     let mut tasks: Vec<tokio::task::JoinHandle<Result<Vec<BootstrapForward>, BoxError>>> =
         Vec::with_capacity(num_chunks);
 
-    for i in 0..num_chunks {
+    for i in 0..breakpoints.len() - 1 {
         let start = breakpoints[i];
         let end = if i == num_chunks - 1 {
             file_size
