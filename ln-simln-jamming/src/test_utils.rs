@@ -1,21 +1,43 @@
+#![cfg(test)]
 use std::error::Error;
 use std::time::Instant;
 
+use crate::reputation_interceptor::{BootstrapForward, HtlcAdd, ReputationMonitor};
+use crate::{records_from_endorsement, BoxError};
+use async_trait::async_trait;
 use bitcoin::secp256k1::{PublicKey, Secp256k1, SecretKey};
 use lightning::ln::PaymentHash;
 use ln_resource_mgr::forward_manager::Reputation;
 use ln_resource_mgr::{
-    AllocationCheck, BucketResources, EndorsementSignal, ForwardingOutcome, ProposedForward,
-    ReputationCheck, ReputationValues, ResourceCheck,
+    AllocationCheck, BucketResources, ChannelSnapshot, EndorsementSignal, ForwardingOutcome,
+    ProposedForward, ReputationCheck, ReputationError, ReputationValues, ResourceCheck,
 };
+use mockall::mock;
 use rand::{distributions::Uniform, Rng};
-use simln_lib::sim_node::{CustomRecords, ForwardingError, InterceptRequest};
+use simln_lib::sim_node::{
+    ChannelPolicy, CustomRecords, ForwardingError, InterceptRequest, InterceptResolution,
+    Interceptor,
+};
 use simln_lib::ShortChannelID;
+use std::collections::HashMap;
 
-use crate::records_from_endorsement;
-use crate::reputation_interceptor::BootstrapForward;
+mock! {
+    pub ReputationInterceptor{}
 
-#[allow(dead_code)]
+    #[async_trait]
+    impl Interceptor for ReputationInterceptor{
+        async fn intercept_htlc(&self, req: InterceptRequest);
+        async fn notify_resolution(&self,_res: InterceptResolution) -> Result<(), Box<dyn Error + Send + Sync + 'static>>;
+        fn name(&self) -> String;
+    }
+
+    #[async_trait]
+    impl ReputationMonitor for ReputationInterceptor{
+        async fn list_channels(&self, node: PublicKey, access_ins: Instant) -> Result<HashMap<u64, ChannelSnapshot>, BoxError>;
+        async fn check_htlc_outcome(&self,htlc_add: HtlcAdd) -> Result<ForwardingOutcome, ReputationError>;
+    }
+}
+
 pub fn get_random_bytes(size: usize) -> Vec<u8> {
     rand::thread_rng()
         .sample_iter(Uniform::new(u8::MIN, u8::MAX))
@@ -23,7 +45,6 @@ pub fn get_random_bytes(size: usize) -> Vec<u8> {
         .collect()
 }
 
-#[allow(dead_code)]
 pub fn get_random_keypair() -> (SecretKey, PublicKey) {
     loop {
         if let Ok(sk) = SecretKey::from_slice(&get_random_bytes(32)) {
@@ -32,7 +53,7 @@ pub fn get_random_keypair() -> (SecretKey, PublicKey) {
     }
 }
 
-#[allow(dead_code, clippy::type_complexity)]
+#[allow(clippy::type_complexity)]
 pub fn setup_test_request(
     forwarding_node: PublicKey,
     channel_in: u64,
@@ -66,7 +87,6 @@ pub fn setup_test_request(
     )
 }
 
-#[allow(dead_code)]
 pub fn test_allocation_check(forward_succeeds: bool) -> AllocationCheck {
     let reputation_values = ReputationValues {
         reputation: 100_000,
@@ -107,7 +127,6 @@ pub fn test_allocation_check(forward_succeeds: bool) -> AllocationCheck {
     check
 }
 
-#[allow(dead_code)]
 pub fn test_proposed_forward(id: u64) -> ProposedForward {
     ProposedForward {
         incoming_ref: ln_resource_mgr::HtlcRef {
@@ -124,7 +143,6 @@ pub fn test_proposed_forward(id: u64) -> ProposedForward {
     }
 }
 
-#[allow(dead_code)]
 pub fn test_bootstrap_forward(
     added_ns: u64,
     settled_ns: u64,
@@ -141,5 +159,19 @@ pub fn test_bootstrap_forward(
         forwarding_node: get_random_keypair().1,
         channel_in_id,
         channel_out_id,
+    }
+}
+
+pub fn get_test_policy(pubkey: PublicKey) -> ChannelPolicy {
+    ChannelPolicy {
+        pubkey,
+        alias: "test_node".into(),
+        max_htlc_count: 483,
+        max_in_flight_msat: 100_000,
+        min_htlc_size_msat: 1000,
+        max_htlc_size_msat: 100_000,
+        cltv_expiry_delta: 40,
+        base_fee: 1000,
+        fee_rate_prop: 1,
     }
 }

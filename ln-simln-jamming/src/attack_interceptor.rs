@@ -1,32 +1,29 @@
+use crate::attacks::JammingAttack;
 use crate::clock::InstantClock;
 use crate::reputation_interceptor::{HtlcAdd, ReputationMonitor};
-use crate::{endorsement_from_records, records_from_endorsement, BoxError};
+use crate::{
+    endorsement_from_records, print_request, records_from_endorsement, send_intercept_result,
+    BoxError,
+};
 use async_trait::async_trait;
 use bitcoin::secp256k1::PublicKey;
 use ln_resource_mgr::{EndorsementSignal, ForwardingOutcome, HtlcRef, ProposedForward};
 use simln_lib::clock::Clock;
-use simln_lib::sim_node::{ForwardingError, InterceptRequest, InterceptResolution, Interceptor};
+use simln_lib::sim_node::{InterceptRequest, InterceptResolution, Interceptor};
 use std::collections::HashSet;
 use std::error::Error;
 use std::sync::Arc;
-use std::time::Duration;
-use tokio::select;
 use tokio::sync::Mutex;
-use triggered::{Listener, Trigger};
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub enum TargetChannelType {
-    Attacker,
-    Peer,
-}
+use triggered::Trigger;
 
 /// Wraps an innner reputation interceptor (which is responsible for implementing a mitigation to
 /// channel jamming) in an outer interceptor which can be used to take custom actions for attacks.
 #[derive(Clone)]
-pub struct AttackInterceptor<C, R>
+pub struct AttackInterceptor<C, R, A>
 where
     C: InstantClock + Clock,
     R: Interceptor + ReputationMonitor,
+    A: JammingAttack,
 {
     clock: Arc<C>,
     attacker_pubkey: PublicKey,
@@ -35,41 +32,18 @@ where
     target_channels: HashSet<u64>,
     /// Inner reputation monitor that implements jamming mitigation.
     reputation_interceptor: Arc<Mutex<R>>,
+    /// The attack that will be launched.
+    attack: Arc<Mutex<A>>,
     /// Used to control shutdown.
-    listener: Listener,
     shutdown: Trigger,
 }
 
-macro_rules! send_intercept_result {
-    ($req:expr, $result:expr, $shutdown:expr) => {
-        if let Err(e) = $req.response.send($result).await {
-            log::error!("Could not send to interceptor: {e}");
-            $shutdown.trigger();
-        }
-    };
-}
-
-fn print_request(req: &InterceptRequest) -> String {
-    format!(
-        "{}:{} {} -> {} with fee {} ({} -> {}) and cltv {} ({} -> {})",
-        u64::from(req.incoming_htlc.channel_id),
-        req.incoming_htlc.index,
-        endorsement_from_records(&req.incoming_custom_records),
-        if let Some(outgoing_chan) = req.outgoing_channel_id {
-            outgoing_chan.into()
-        } else {
-            0
-        },
-        req.incoming_amount_msat - req.outgoing_amount_msat,
-        req.incoming_amount_msat,
-        req.outgoing_amount_msat,
-        req.incoming_expiry_height - req.outgoing_expiry_height,
-        req.incoming_expiry_height,
-        req.outgoing_expiry_height
-    )
-}
-
-impl<C: InstantClock + Clock, R: Interceptor + ReputationMonitor> AttackInterceptor<C, R> {
+impl<C, R, A> AttackInterceptor<C, R, A>
+where
+    C: InstantClock + Clock,
+    R: Interceptor + ReputationMonitor,
+    A: JammingAttack + Sync + Send,
+{
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         clock: Arc<C>,
@@ -77,7 +51,7 @@ impl<C: InstantClock + Clock, R: Interceptor + ReputationMonitor> AttackIntercep
         target_pubkey: PublicKey,
         target_channels: HashSet<u64>,
         reputation_interceptor: Arc<Mutex<R>>,
-        listener: Listener,
+        attack: Arc<Mutex<A>>,
         shutdown: Trigger,
     ) -> Self {
         Self {
@@ -86,7 +60,7 @@ impl<C: InstantClock + Clock, R: Interceptor + ReputationMonitor> AttackIntercep
             target_pubkey,
             target_channels,
             reputation_interceptor,
-            listener,
+            attack,
             shutdown,
         }
     }
@@ -98,7 +72,7 @@ impl<C: InstantClock + Clock, R: Interceptor + ReputationMonitor> AttackIntercep
         target_pubkey: PublicKey,
         target_channels: HashSet<u64>,
         reputation_interceptor: Arc<Mutex<R>>,
-        listener: Listener,
+        attack: Arc<Mutex<A>>,
         shutdown: Trigger,
     ) -> Self {
         Self::new(
@@ -107,47 +81,9 @@ impl<C: InstantClock + Clock, R: Interceptor + ReputationMonitor> AttackIntercep
             target_pubkey,
             target_channels,
             reputation_interceptor,
-            listener,
+            attack,
             shutdown,
         )
-    }
-
-    /// Intercepts payments flowing from target -> attacker, holding the htlc for the maximum allowable time to
-    /// trash its reputation if the htlc is endorsed. We do not use our underlying jamming mitigation interceptor
-    /// at all because the attacker is not required to run the mitigation.
-    async fn intercept_attacker_incoming(&self, req: InterceptRequest) {
-        // Exit early if not endorsed, no point in holding.
-        if endorsement_from_records(&req.incoming_custom_records) == EndorsementSignal::Unendorsed {
-            log::info!(
-                "HTLC from target -> attacker not endorsed, releasing: {}",
-                print_request(&req)
-            );
-            send_intercept_result!(
-                req,
-                Ok(Ok(records_from_endorsement(EndorsementSignal::Unendorsed))),
-                self.shutdown
-            );
-            return;
-        }
-
-        // Get maximum hold time assuming 10 minute blocks, assuming a zero block height (simulator doesn't track
-        // height).
-        let max_hold_secs = Duration::from_secs((req.incoming_expiry_height * 10 * 60).into());
-
-        log::info!(
-            "HTLC from target -> attacker endorsed, holding for {:?}: {}",
-            max_hold_secs,
-            print_request(&req),
-        );
-
-        // If the htlc is endorsed, then we go ahead and hold the htlc for as long as we can only exiting if we
-        // get a shutdown signal elsewhere.
-        let resp = select! {
-            _ = self.listener.clone() => Err(ForwardingError::InterceptorError("shutdown signal received".to_string().into())),
-            _ = self.clock.sleep(max_hold_secs) => Ok(records_from_endorsement(EndorsementSignal::Endorsed))
-        };
-
-        send_intercept_result!(req, Ok(resp), self.shutdown);
     }
 
     /// Intercepts payments flowing from peer -> target, simulating a general jamming attack by failing any
@@ -242,29 +178,21 @@ impl<C: InstantClock + Clock, R: Interceptor + ReputationMonitor> AttackIntercep
 }
 
 #[async_trait]
-impl<C: InstantClock + Clock, R: Interceptor + ReputationMonitor> Interceptor
-    for AttackInterceptor<C, R>
+impl<C, R, A> Interceptor for AttackInterceptor<C, R, A>
+where
+    C: InstantClock + Clock,
+    R: Interceptor + ReputationMonitor,
+    A: JammingAttack + Send + Sync,
 {
     /// Implemented by HTLC interceptors that provide input on the resolution of HTLCs forwarded in the simulation.
     async fn intercept_htlc(&self, req: InterceptRequest) {
         // Intercept payments on the attacking node. If they're incoming from the target, jam them. Otherwise just
         // fail other htlcs, they're not that interesting to us.
         if req.forwarding_node == self.attacker_pubkey {
-            if self
-                .target_channels
-                .contains(&req.incoming_htlc.channel_id.into())
-            {
-                self.intercept_attacker_incoming(req).await;
-                return;
+            if let Err(e) = self.attack.lock().await.intercept_attacker_htlc(req).await {
+                log::error!("Could not intercept attacker htlc: {e}");
+                self.shutdown.trigger();
             }
-
-            send_intercept_result!(
-                req,
-                Ok(Err(ForwardingError::InterceptorError(
-                    "attacker failing".into()
-                ))),
-                self.shutdown
-            );
             return;
         }
 
@@ -328,50 +256,42 @@ impl<C: InstantClock + Clock, R: Interceptor + ReputationMonitor> Interceptor
 
 #[cfg(test)]
 mod tests {
-    use std::collections::{HashMap, HashSet};
-    use std::error::Error;
+    use std::collections::HashSet;
     use std::sync::Arc;
-    use std::time::Instant;
 
-    use crate::reputation_interceptor::{HtlcAdd, ReputationMonitor};
-    use crate::test_utils::{get_random_keypair, setup_test_request};
-    use crate::{endorsement_from_records, records_from_endorsement, BoxError};
+    use crate::attacks::JammingAttack;
+    use crate::reputation_interceptor::HtlcAdd;
+    use crate::test_utils::{get_random_keypair, setup_test_request, MockReputationInterceptor};
+    use crate::{records_from_endorsement, BoxError, NetworkReputation};
     use async_trait::async_trait;
-    use bitcoin::secp256k1::PublicKey;
-    use ln_resource_mgr::{
-        ChannelSnapshot, EndorsementSignal, FailureReason, ForwardingOutcome, ReputationError,
-    };
+    use ln_resource_mgr::{EndorsementSignal, FailureReason, ForwardingOutcome};
     use mockall::mock;
     use mockall::predicate::function;
     use simln_lib::clock::SimulationClock;
-    use simln_lib::sim_node::{InterceptRequest, InterceptResolution, Interceptor};
+    use simln_lib::sim_node::{InterceptRequest, Interceptor};
     use tokio::sync::Mutex;
 
     use super::AttackInterceptor;
 
     mock! {
-        ReputationInterceptor{}
+        Attack{}
 
         #[async_trait]
-        impl Interceptor for ReputationInterceptor{
-            async fn intercept_htlc(&self, req: InterceptRequest);
-            async fn notify_resolution(&self,_res: InterceptResolution,) -> Result<(), Box<dyn Error + Send + Sync + 'static>>;
-            fn name(&self) -> String;
-        }
-
-        #[async_trait]
-        impl ReputationMonitor for ReputationInterceptor{
-            async fn list_channels(&self, node: PublicKey, access_ins: Instant) -> Result<HashMap<u64, ChannelSnapshot>, BoxError>;
-            async fn check_htlc_outcome(&self,htlc_add: HtlcAdd) -> Result<ForwardingOutcome, ReputationError>;
+        impl JammingAttack for Attack {
+            fn setup_for_network(&self) -> Result<crate::attacks::NetworkSetup, BoxError>;
+            async fn intercept_attacker_htlc(&self, req: InterceptRequest) -> Result<(), BoxError>;
+            async fn simulation_completed(&self, _start_reputation: NetworkReputation) -> Result<bool, BoxError>;
         }
     }
-    fn setup_interceptor_test() -> AttackInterceptor<SimulationClock, MockReputationInterceptor> {
+
+    fn setup_interceptor_test(
+    ) -> AttackInterceptor<SimulationClock, MockReputationInterceptor, MockAttack> {
         let target_pubkey = get_random_keypair().1;
         let attacker_pubkey = get_random_keypair().1;
 
         let target_channels = HashSet::from([0, 1, 2, 3]);
 
-        let (shutdown, listener) = triggered::trigger();
+        let (shutdown, _listener) = triggered::trigger();
         let mock = MockReputationInterceptor::new();
         AttackInterceptor::new(
             Arc::new(SimulationClock::new(1).unwrap()),
@@ -379,7 +299,7 @@ mod tests {
             attacker_pubkey,
             target_channels,
             Arc::new(Mutex::new(mock)),
-            listener,
+            Arc::new(Mutex::new(MockAttack::new())),
             shutdown,
         )
     }
@@ -403,13 +323,20 @@ mod tests {
             .return_once(|_| {});
     }
 
-    /// Tests attacker interception of htlcs from the target.
+    /// Tests that any attacker htlc are forwarded through to the attacker.
     #[tokio::test]
-    async fn test_attacker_from_target() {
+    async fn test_attacker_intercept() {
         let interceptor = setup_interceptor_test();
+        interceptor
+            .attack
+            .lock()
+            .await
+            .expect_intercept_attacker_htlc()
+            .returning(|_| Ok(()))
+            .times(2);
 
-        // Intercepted on attacker unendorsed: target -(0)-> attacker -(5)-> should just be forwarded unendorsed.
-        let (target_to_attacker, mut receiver) = setup_test_request(
+        // Intercepted on attacker: target -(0)-> attacker -(5)-> node.
+        let (target_to_attacker, _) = setup_test_request(
             interceptor.attacker_pubkey,
             0,
             5,
@@ -417,49 +344,11 @@ mod tests {
         );
         interceptor.intercept_htlc(target_to_attacker).await;
 
-        let interceptor_resp = receiver.recv().await.unwrap().unwrap().unwrap();
-        assert!(interceptor_resp.is_empty());
-
-        // Intercepted on attacker unendorsed: target -(0)-> attacker -(5)-> should just be forwarded unendorsed. We
-        // expect the htlc to be held for the full cltv delta, so we set this value to 0 so the test doesn't block.
-        let (mut target_to_attacker, mut receiver) = setup_test_request(
-            interceptor.attacker_pubkey,
-            0,
-            5,
-            EndorsementSignal::Endorsed,
-        );
-
-        target_to_attacker.incoming_expiry_height = 0;
-        target_to_attacker.outgoing_expiry_height = 0;
-        interceptor.intercept_htlc(target_to_attacker).await;
-
-        let interceptor_resp = receiver.recv().await.unwrap().unwrap().unwrap();
-        assert_eq!(
-            endorsement_from_records(&interceptor_resp),
-            EndorsementSignal::Endorsed
-        );
-    }
-
-    /// Tests attacker interception of htlcs that need no interception action - either from a random node or those
-    /// that are being sent to the target (rather than received from it).
-    #[tokio::test]
-    async fn test_attacker_drops_regular() {
-        let interceptor = setup_interceptor_test();
-
-        // Intercepted on the attacker: node -(5)-> attacker -(0)-> target, should just be dropped.
+        // Intercepted on attacker: node -(5)-> attacker -(0)-> target.
         let (attacker_to_target, _) = setup_test_request(
             interceptor.attacker_pubkey,
             5,
             0,
-            EndorsementSignal::Unendorsed,
-        );
-        interceptor.intercept_htlc(attacker_to_target).await;
-
-        // Intercepted on the attacker: node -(5)-> attacker -(6)-> node, should just be dropped.
-        let (attacker_to_target, _) = setup_test_request(
-            interceptor.attacker_pubkey,
-            5,
-            6,
             EndorsementSignal::Unendorsed,
         );
         interceptor.intercept_htlc(attacker_to_target).await;
