@@ -205,6 +205,7 @@ mod tests {
             (
                 0,
                 ChannelSnapshot {
+                    capacity_msat: 200_000,
                     // TODO: count_reputation_pairs method does not use incoming reputation for the
                     // outcome of the simulation yet. Hence, putting dummy values here.
                     incoming_reputation: 100_000,
@@ -215,6 +216,7 @@ mod tests {
             (
                 1,
                 ChannelSnapshot {
+                    capacity_msat: 200_000,
                     incoming_reputation: 100_000,
                     outgoing_reputation: 45_000,
                     bidirectional_revenue: 50_000,
@@ -223,6 +225,7 @@ mod tests {
             (
                 2,
                 ChannelSnapshot {
+                    capacity_msat: 200_000,
                     incoming_reputation: 100_000,
                     outgoing_reputation: 15_000,
                     bidirectional_revenue: 80_000,
@@ -273,6 +276,7 @@ mod tests {
                         (
                             0,
                             ChannelSnapshot {
+                                capacity_msat: 200_000,
                                 incoming_reputation: 100,
                                 outgoing_reputation: 100,
                                 bidirectional_revenue: 15,
@@ -281,6 +285,7 @@ mod tests {
                         (
                             1,
                             ChannelSnapshot {
+                                capacity_msat: 200_000,
                                 incoming_reputation: 100,
                                 outgoing_reputation: 150,
                                 bidirectional_revenue: 110,
@@ -289,6 +294,7 @@ mod tests {
                         (
                             2,
                             ChannelSnapshot {
+                                capacity_msat: 200_000,
                                 incoming_reputation: 100,
                                 outgoing_reputation: 200,
                                 bidirectional_revenue: 90,
@@ -297,6 +303,7 @@ mod tests {
                         (
                             3,
                             ChannelSnapshot {
+                                capacity_msat: 200_000,
                                 incoming_reputation: 100,
                                 outgoing_reputation: 75,
                                 bidirectional_revenue: 100,
@@ -308,6 +315,7 @@ mod tests {
                         (
                             1,
                             ChannelSnapshot {
+                                capacity_msat: 200_000,
                                 incoming_reputation: 100,
                                 outgoing_reputation: 500,
                                 bidirectional_revenue: 15,
@@ -316,6 +324,7 @@ mod tests {
                         (
                             4,
                             ChannelSnapshot {
+                                capacity_msat: 200_000,
                                 incoming_reputation: 100,
                                 outgoing_reputation: 150,
                                 bidirectional_revenue: 600,
@@ -324,6 +333,7 @@ mod tests {
                         (
                             5,
                             ChannelSnapshot {
+                                capacity_msat: 200_000,
                                 incoming_reputation: 100,
                                 outgoing_reputation: 200,
                                 bidirectional_revenue: 250,
@@ -335,6 +345,7 @@ mod tests {
                         (
                             2,
                             ChannelSnapshot {
+                                capacity_msat: 200_000,
                                 incoming_reputation: 100,
                                 outgoing_reputation: 1000,
                                 bidirectional_revenue: 50,
@@ -343,6 +354,7 @@ mod tests {
                         (
                             6,
                             ChannelSnapshot {
+                                capacity_msat: 200_000,
                                 incoming_reputation: 100,
                                 outgoing_reputation: 350,
                                 bidirectional_revenue: 800,
@@ -353,6 +365,7 @@ mod tests {
                     vec![(
                         3,
                         ChannelSnapshot {
+                            capacity_msat: 200_000,
                             incoming_reputation: 100,
                             outgoing_reputation: 1000,
                             bidirectional_revenue: 50,
