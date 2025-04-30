@@ -29,7 +29,5 @@ jobs:
         run: sudo apt install -y protobuf-compiler
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
-      - name: Install sim-cli
-        run: make install
       - name: cargo test
         run: cargo test --all-features --all-targets --benches
