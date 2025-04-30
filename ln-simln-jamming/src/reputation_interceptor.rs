@@ -137,6 +137,7 @@ where
                             $channel.scid.into(),
                             $channel.capacity_msat,
                             clock.now(),
+                            None,
                         )?;
 
                         e.insert(Node::new(forward_manager, $node_alias));
@@ -146,6 +147,7 @@ where
                             $channel.scid.into(),
                             $channel.capacity_msat,
                             clock.now(),
+                            None,
                         )?;
                     }
                 }
@@ -567,6 +569,7 @@ mod tests {
                 channel_id: u64,
                 capacity_msat: u64,
                 add_ins: Instant,
+                channel_reputation: Option<ChannelSnapshot>
             ) -> Result<(), ln_resource_mgr::ReputationError>;
 
             fn remove_channel(&self, channel_id: u64) -> Result<(), ReputationError>;
