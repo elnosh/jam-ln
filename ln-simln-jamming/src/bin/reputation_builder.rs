@@ -18,9 +18,9 @@ use ln_simln_jamming::{
     clock::InstantClock,
     parsing::{
         find_pubkey_by_alias, get_history_for_bootstrap, history_from_file, parse_duration,
-        SimNetwork, DEFAULT_BOOTSTRAP_FILE, DEFAULT_CLOCK_SPEEDUP, DEFAULT_REPUTATION_DIR,
-        DEFAULT_REPUTATION_FILENAME, DEFAULT_REPUTATION_MULTIPLIER, DEFAULT_REVENUE_FILENAME,
-        DEFAULT_REVENUE_WINDOW_SECONDS, DEFAULT_SIM_FILE,
+        SimNetwork, DEFAULT_CLOCK_SPEEDUP, DEFAULT_REPUTATION_DIR, DEFAULT_REPUTATION_FILENAME,
+        DEFAULT_REPUTATION_MULTIPLIER, DEFAULT_REVENUE_FILENAME, DEFAULT_REVENUE_WINDOW_SECONDS,
+        DEFAULT_SIM_FILE,
     },
     reputation_interceptor::{BoostrapRecords, ReputationInterceptor, ReputationMonitor},
     BoxError,
@@ -28,6 +28,9 @@ use ln_simln_jamming::{
 use log::LevelFilter;
 use simln_lib::clock::SimulationClock;
 use simple_logger::SimpleLogger;
+
+/// Default file used to bootstrap reputation.
+const DEFAULT_BOOTSTRAP_FILE: &str = "./bootstrap.csv";
 
 #[derive(Parser)]
 #[command(version, about)]
