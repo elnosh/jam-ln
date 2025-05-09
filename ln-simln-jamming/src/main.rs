@@ -8,7 +8,8 @@ use ln_simln_jamming::attacks::sink::SinkAttack;
 use ln_simln_jamming::attacks::JammingAttack;
 use ln_simln_jamming::clock::InstantClock;
 use ln_simln_jamming::parsing::{
-    find_pubkey_by_alias, get_history_for_bootstrap, history_from_file, Cli, SimNetwork,
+    find_pubkey_by_alias, reputation_snapshot_from_file, Cli, SimNetwork,
+    DEFAULT_REPUTATION_FILENAME, DEFAULT_REVENUE_FILENAME,
 };
 use ln_simln_jamming::reputation_interceptor::ReputationInterceptor;
 use ln_simln_jamming::revenue_interceptor::{RevenueInterceptor, RevenueSnapshot};
@@ -77,29 +78,6 @@ async fn main() -> Result<(), BoxError> {
 
     let clock = Arc::new(SimulationClock::new(cli.clock_speedup)?);
 
-    // Pull history that bootstraps the simulation in a network with the attacker's channels present, filter to only
-    // have attacker forwards present when the and calculate revenue for the target node during this bootstrap period.
-    let unfiltered_history =
-        history_from_file(&cli.bootstrap_file, Some(cli.reputation_window())).await?;
-    let bootstrap = get_history_for_bootstrap(
-        cli.attacker_bootstrap,
-        unfiltered_history,
-        HashSet::from_iter(target_channels.iter().filter_map(|(k, v)| {
-            if v.0 == target_pubkey {
-                Some(*k)
-            } else {
-                None
-            }
-        })),
-    )?;
-    let bootstrap_revenue = bootstrap.forwards.iter().fold(0, |acc, item| {
-        if item.forwarding_node == target_pubkey {
-            acc + item.incoming_amt - item.outgoing_amt
-        } else {
-            acc
-        }
-    });
-
     let reputation_check = if cli.incoming_reputation_only {
         Reputation::Incoming
     } else if cli.outgoing_reputation_only {
@@ -156,14 +134,25 @@ async fn main() -> Result<(), BoxError> {
         }
     });
 
-    let reputation_interceptor = Arc::new(Mutex::new(ReputationInterceptor::new_for_network(
-        forward_params,
-        &sim_network,
-        reputation_check,
-        clock.clone(),
-        Some(results_writer),
-        shutdown.clone(),
-    )?));
+    let reputation_dir = &cli.reputation_dir.join(cli.attacker_bootstrap.0.clone());
+    let reputation_snapshot =
+        reputation_snapshot_from_file(&reputation_dir.join(DEFAULT_REPUTATION_FILENAME))?;
+
+    let bootstrap_revenue: u64 =
+        std::fs::read_to_string(reputation_dir.join(DEFAULT_REVENUE_FILENAME))?.parse()?;
+
+    let reputation_interceptor = Arc::new(Mutex::new(
+        ReputationInterceptor::new_from_snapshot(
+            forward_params,
+            &sim_network,
+            reputation_check,
+            reputation_snapshot,
+            clock.clone(),
+            Some(results_writer),
+            shutdown.clone(),
+        )
+        .await?,
+    ));
 
     // Reputation is assessed for a channel pair and a specific HTLC that's being proposed. To assess whether pairs
     // have reputation, we'll use LND's default fee policy to get the HTLC risk for our configured htlc size and hold
@@ -188,20 +177,23 @@ async fn main() -> Result<(), BoxError> {
     reputation_interceptor
         .lock()
         .await
-        .bootstrap_network(&bootstrap, &attack_setup.general_jammed_nodes)
+        .jam_channels(&attack_setup.general_jammed_nodes)
         .await?;
 
     // Do some preliminary checks on our reputation state - there isn't much point in running if we haven't built up
     // some reputation.
     let target_pubkey_map: HashMap<u64, PublicKey> =
         target_channels.iter().map(|(k, v)| (*k, v.0)).collect();
+
     let start_reputation = get_network_reputation(
         reputation_interceptor.clone(),
         target_pubkey,
         attacker_pubkey,
         &target_pubkey_map,
         risk_margin,
-        now,
+        // The reputation_interceptor clock has been set on decaying averages so we use the clock
+        // to provide a new instant rather than the previous fixed point.
+        InstantClock::now(&*clock),
     )
     .await?;
 
@@ -249,7 +241,7 @@ async fn main() -> Result<(), BoxError> {
             clock.clone(),
             target_pubkey,
             bootstrap_revenue,
-            cli.attacker_bootstrap,
+            cli.attacker_bootstrap.1,
             cli.peacetime_file,
             listener.clone(),
             shutdown.clone(),

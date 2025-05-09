@@ -3,14 +3,12 @@ use std::{
     fs::{self, File, OpenOptions},
     io::Write,
     path::PathBuf,
-    str::FromStr,
     sync::Arc,
     time::Duration,
 };
 
 use clap::Parser;
 use csv::Writer;
-use humantime::Duration as HumanDuration;
 use ln_resource_mgr::{
     forward_manager::{ForwardManager, ForwardManagerParams, Reputation},
     ReputationParams,
@@ -19,9 +17,10 @@ use ln_simln_jamming::{
     analysis::BatchForwardWriter,
     clock::InstantClock,
     parsing::{
-        find_pubkey_by_alias, get_history_for_bootstrap, history_from_file, SimNetwork,
-        DEFAULT_BOOTSTRAP_FILE, DEFAULT_CLOCK_SPEEDUP, DEFAULT_REPUTATION_MULTIPLIER,
-        DEFAULT_REVENUE_WINDOW_SECONDS, DEFAULT_SIM_FILE,
+        find_pubkey_by_alias, get_history_for_bootstrap, history_from_file, parse_duration,
+        SimNetwork, DEFAULT_CLOCK_SPEEDUP, DEFAULT_REPUTATION_DIR, DEFAULT_REPUTATION_FILENAME,
+        DEFAULT_REPUTATION_MULTIPLIER, DEFAULT_REVENUE_FILENAME, DEFAULT_REVENUE_WINDOW_SECONDS,
+        DEFAULT_SIM_FILE,
     },
     reputation_interceptor::{BoostrapRecords, ReputationInterceptor, ReputationMonitor},
     BoxError,
@@ -30,8 +29,8 @@ use log::LevelFilter;
 use simln_lib::clock::SimulationClock;
 use simple_logger::SimpleLogger;
 
-/// The default location to output resulting reputation snapshot.
-const DEFAULT_RESULTS_DIR: &str = "./reputation-snapshots";
+/// Default file used to bootstrap reputation.
+const DEFAULT_BOOTSTRAP_FILE: &str = "./bootstrap.csv";
 
 #[derive(Parser)]
 #[command(version, about)]
@@ -62,8 +61,8 @@ struct Cli {
     #[arg(long, default_value = DEFAULT_REPUTATION_MULTIPLIER)]
     reputation_multiplier: u8,
 
-    /// The directory to write reputation snapshot file.
-    #[arg(long, default_value = DEFAULT_RESULTS_DIR)]
+    /// The directory to write reputation snapshot and revenue file.
+    #[arg(long, default_value = DEFAULT_REPUTATION_DIR)]
     results_dir: PathBuf,
 
     /// The alias of the target node.
@@ -87,12 +86,6 @@ impl Cli {
     fn reputation_window(&self) -> Duration {
         Duration::from_secs(self.revenue_window_seconds * self.reputation_multiplier as u64)
     }
-}
-
-fn parse_duration(s: &str) -> Result<(String, Duration), String> {
-    HumanDuration::from_str(s)
-        .map(|hd| (s.to_string(), hd.into()))
-        .map_err(|e| format!("Invalid duration '{}': {}", s, e))
 }
 
 #[tokio::main]
@@ -205,14 +198,14 @@ async fn main() -> Result<(), BoxError> {
     };
     fs::create_dir_all(&snapshot_dir)?;
 
-    let mut target_revenue = File::create(snapshot_dir.join("target-revenue.txt"))?;
+    let mut target_revenue = File::create(snapshot_dir.join(DEFAULT_REVENUE_FILENAME))?;
     write!(target_revenue, "{}", bootstrap_revenue)?;
 
     let snapshot_file = OpenOptions::new()
         .write(true)
         .truncate(true)
         .create(true)
-        .open(snapshot_dir.join("reputation-snapshot.csv"))?;
+        .open(snapshot_dir.join(DEFAULT_REPUTATION_FILENAME))?;
 
     let mut csv_writer = Writer::from_writer(snapshot_file);
     csv_writer.write_record([

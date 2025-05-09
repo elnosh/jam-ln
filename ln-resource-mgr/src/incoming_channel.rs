@@ -19,14 +19,28 @@ pub(super) struct IncomingChannel {
 }
 
 impl IncomingChannel {
-    pub(super) fn new(params: ReputationParams) -> Self {
-        Self {
+    pub(super) fn new(
+        params: ReputationParams,
+        incoming_reputation: Option<(i64, Instant)>,
+    ) -> Result<Self, ReputationError> {
+        let incoming_reputation = match incoming_reputation {
+            Some(value) => {
+                let mut reputation = DecayingAverage::new(
+                    params.revenue_window * params.reputation_multiplier.into(),
+                );
+                reputation.add_value(value.0, value.1)?;
+                reputation
+            }
+            None => {
+                DecayingAverage::new(params.revenue_window * params.reputation_multiplier.into())
+            }
+        };
+
+        Ok(Self {
             params,
-            incoming_reputation: DecayingAverage::new(
-                params.revenue_window * params.reputation_multiplier.into(),
-            ),
+            incoming_reputation,
             last_congestion_misuse: None,
-        }
+        })
     }
 
     /// Returns true if the channel has never misused congestion resources, or sufficient time has passed since last
@@ -115,7 +129,7 @@ mod tests {
             resolution_period: Duration::from_secs(90),
             expected_block_speed: None,
         };
-        let mut incoming_channel = IncomingChannel::new(params);
+        let mut incoming_channel = IncomingChannel::new(params, None).unwrap();
 
         assert!(incoming_channel.no_congestion_misuse(now));
 
@@ -166,7 +180,7 @@ mod tests {
 
     #[test]
     fn test_remove_incoming_htlc() {
-        let mut test_incoming_channel = IncomingChannel::new(get_test_params());
+        let mut test_incoming_channel = IncomingChannel::new(get_test_params(), None).unwrap();
 
         let htlc_1 = get_test_htlc(EndorsementSignal::Endorsed, 1000);
         test_incoming_channel

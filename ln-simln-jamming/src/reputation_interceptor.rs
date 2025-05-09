@@ -137,6 +137,7 @@ where
                             $channel.scid.into(),
                             $channel.capacity_msat,
                             clock.now(),
+                            None,
                         )?;
 
                         e.insert(Node::new(forward_manager, $node_alias));
@@ -146,6 +147,7 @@ where
                             $channel.scid.into(),
                             $channel.capacity_msat,
                             clock.now(),
+                            None,
                         )?;
                     }
                 }
@@ -176,15 +178,88 @@ where
         })
     }
 
-    /// Bootstraps the reputation of nodes in the interceptor network using the historical forwards provided.
-    pub async fn bootstrap_network(
-        &mut self,
-        bootstrap: &BoostrapRecords,
-        general_jammed: &[(u64, PublicKey)],
-    ) -> Result<(), BoxError> {
-        self.bootstrap_network_history(bootstrap).await?;
+    pub async fn new_from_snapshot(
+        params: ForwardManagerParams,
+        edges: &[NetworkParser],
+        reputation_check: Reputation,
+        reputation_snapshot: HashMap<PublicKey, HashMap<u64, ChannelSnapshot>>,
+        clock: Arc<dyn InstantClock + Send + Sync>,
+        results: Option<Arc<Mutex<R>>>,
+        shutdown: Trigger,
+    ) -> Result<Self, BoxError> {
+        let mut network_nodes = HashMap::with_capacity(reputation_snapshot.len());
 
-        // After the network has been bootstrapped, we can go ahead and general jam required channels.
+        let add_ins = clock.now();
+        macro_rules! add_node_to_network {
+            ($channel:expr, $node:tt) => {{
+                let scid = $channel.scid.into();
+                let pubkey = $channel.$node.pubkey;
+                let alias = $channel.$node.alias.clone();
+
+                let snapshot = reputation_snapshot
+                    .get(&pubkey)
+                    .ok_or(format!("node: {} not found in snapshot", pubkey))?
+                    .get(&scid)
+                    .ok_or(format!(
+                        "channel: {} not found in snapshot for node: {}",
+                        scid, pubkey
+                    ))?;
+
+                if snapshot.capacity_msat != $channel.capacity_msat {
+                    return Err(format!(
+                        "channel {} has different capacities {} - {}",
+                        scid, snapshot.capacity_msat, $channel.capacity_msat
+                    )
+                    .into());
+                }
+
+                match network_nodes.entry(pubkey) {
+                    Entry::Vacant(e) => {
+                        let forward_manager = ForwardManager::new(params);
+                        forward_manager.add_channel(
+                            scid,
+                            $channel.capacity_msat,
+                            add_ins,
+                            Some(snapshot.clone()),
+                        )?;
+                        e.insert(Node::new(forward_manager, alias));
+                    }
+                    Entry::Occupied(mut e) => {
+                        e.get_mut().forward_manager.add_channel(
+                            scid,
+                            $channel.capacity_msat,
+                            add_ins,
+                            Some(snapshot.clone()),
+                        )?;
+                    }
+                }
+            }};
+        }
+
+        for channel in edges {
+            add_node_to_network!(channel, node_1);
+            add_node_to_network!(channel, node_2);
+        }
+
+        if edges.len() * 2
+            != reputation_snapshot
+                .values()
+                .map(|chan_map| chan_map.len())
+                .sum()
+        {
+            return Err("number of channels in snapshot and network graph do not match".into());
+        }
+
+        Ok(Self {
+            network_nodes: Arc::new(Mutex::new(network_nodes)),
+            reputation_check,
+            clock,
+            results,
+            shutdown,
+        })
+    }
+
+    pub async fn jam_channels(&self, general_jammed: &[(u64, PublicKey)]) -> Result<(), BoxError> {
         for (channel, pubkey) in general_jammed.iter() {
             self.network_nodes
                 .lock()
@@ -194,10 +269,10 @@ where
                 .forward_manager
                 .general_jam_channel(*channel)?;
         }
-
         Ok(())
     }
 
+    /// Bootstraps the reputation of nodes in the interceptor network using the historical forwards provided.
     pub async fn bootstrap_network_history(
         &mut self,
         bootstrap: &BoostrapRecords,
@@ -551,9 +626,10 @@ mod tests {
     use tokio::sync::Mutex;
 
     use crate::analysis::BatchForwardWriter;
-    use crate::endorsement_from_records;
+    use crate::clock::InstantClock;
     use crate::reputation_interceptor::{BoostrapRecords, BootstrapForward};
     use crate::test_utils::{get_random_keypair, setup_test_request, test_allocation_check};
+    use crate::{endorsement_from_records, BoxError};
 
     use super::{Node, ReputationInterceptor, ReputationMonitor};
 
@@ -567,6 +643,7 @@ mod tests {
                 channel_id: u64,
                 capacity_msat: u64,
                 add_ins: Instant,
+                channel_reputation: Option<ChannelSnapshot>
             ) -> Result<(), ln_resource_mgr::ReputationError>;
 
             fn remove_channel(&self, channel_id: u64) -> Result<(), ReputationError>;
@@ -817,8 +894,11 @@ mod tests {
         }
     }
 
+    type ReputationSnapshot = HashMap<PublicKey, HashMap<u64, ChannelSnapshot>>;
+
     /// Creates a reputation interceptor for a three hop network: Alice - Bob - Carol.
-    fn setup_three_hop_network_edges() -> (ForwardManagerParams, Vec<NetworkParser>) {
+    fn setup_three_hop_network_edges(
+    ) -> (ForwardManagerParams, Vec<NetworkParser>, ReputationSnapshot) {
         // Create a network with three channels
         let alice = get_random_keypair().1;
         let bob = get_random_keypair().1;
@@ -846,14 +926,39 @@ mod tests {
             setup_test_edge(bob_carol, bob, carol),
         ];
 
-        (params, edges)
+        let mut reputation_snapshot = HashMap::new();
+        for edge in &edges {
+            let node_1_snapshot = ChannelSnapshot {
+                capacity_msat: edge.capacity_msat,
+                incoming_reputation: 0,
+                outgoing_reputation: 0,
+                bidirectional_revenue: 0,
+            };
+            let node_2_snapshot = ChannelSnapshot {
+                capacity_msat: edge.capacity_msat,
+                incoming_reputation: 0,
+                outgoing_reputation: 0,
+                bidirectional_revenue: 0,
+            };
+
+            reputation_snapshot
+                .entry(edge.node_1.pubkey)
+                .or_insert_with(HashMap::new)
+                .insert(edge.scid.into(), node_1_snapshot);
+            reputation_snapshot
+                .entry(edge.node_2.pubkey)
+                .or_insert_with(HashMap::new)
+                .insert(edge.scid.into(), node_2_snapshot);
+        }
+
+        (params, edges, reputation_snapshot)
     }
 
     /// Tests that nodes are appropriately set up when an interceptor is created from a set of edges.
     #[tokio::test]
     async fn test_new_for_network_node_creation() {
         let (shutdown, _) = triggered::trigger();
-        let (params, edges) = setup_three_hop_network_edges();
+        let (params, edges, _) = setup_three_hop_network_edges();
 
         let interceptor: ReputationInterceptor<BatchForwardWriter, ForwardManager> =
             ReputationInterceptor::new_for_network(
@@ -899,14 +1004,14 @@ mod tests {
     #[tokio::test]
     async fn test_bootstrap_and_general_jam() {
         let (shutdown, _) = triggered::trigger();
-        let (params, edges) = setup_three_hop_network_edges();
+        let (params, edges, _) = setup_three_hop_network_edges();
 
         let bob_pk = edges[0].node_2.pubkey;
         let alice_to_bob: u64 = edges[0].scid.into();
         let bob_to_carol: u64 = edges[1].scid.into();
 
         // Create a bootstraped forward that'll be forwarded over the general jammed channel.
-        let boostrap = vec![BootstrapForward {
+        let bootstrap = vec![BootstrapForward {
             incoming_amt: 1000,
             outgoing_amt: 500,
             incoming_expiry: 100,
@@ -932,13 +1037,14 @@ mod tests {
             .unwrap();
 
         interceptor
-            .bootstrap_network(
-                &BoostrapRecords {
-                    forwards: boostrap,
-                    last_timestamp_nanos: 1_000_000,
-                },
-                &[(bob_to_carol, edges[1].node_1.pubkey)],
-            )
+            .bootstrap_network_history(&BoostrapRecords {
+                forwards: bootstrap,
+                last_timestamp_nanos: 1_000_000,
+            })
+            .await
+            .unwrap();
+        interceptor
+            .jam_channels(&[(bob_to_carol, edges[1].node_1.pubkey)])
             .await
             .unwrap();
 
@@ -994,5 +1100,186 @@ mod tests {
             receiver.recv().await.unwrap().unwrap().err().unwrap(),
             ForwardingError::InterceptorError(_),
         ));
+    }
+
+    /// Tests starting interceptor from valid snapshot.
+    #[tokio::test]
+    async fn test_new_from_snapshot() {
+        let (shutdown, _) = triggered::trigger();
+        let (params, edges, reputation_snapshot) = setup_three_hop_network_edges();
+
+        let clock = Arc::new(SimulationClock::new(1).unwrap());
+        let interceptor: Result<
+            ReputationInterceptor<BatchForwardWriter, ForwardManager>,
+            BoxError,
+        > = ReputationInterceptor::new_from_snapshot(
+            params,
+            &edges,
+            Reputation::Outgoing,
+            reputation_snapshot.clone(),
+            clock.clone(),
+            None,
+            shutdown,
+        )
+        .await;
+
+        assert!(interceptor.is_ok());
+
+        // Test channels in network nodes of interceptor match the channels in edges.
+        let interceptor = interceptor.unwrap();
+        for edge in edges {
+            let node_1_channels = interceptor
+                .network_nodes
+                .lock()
+                .await
+                .get(&edge.node_1.pubkey)
+                .unwrap()
+                .forward_manager
+                .list_channels(InstantClock::now(&*clock))
+                .unwrap();
+            let snapshot_channels_1 = reputation_snapshot.get(&edge.node_1.pubkey).unwrap();
+            assert_eq!(&node_1_channels, snapshot_channels_1);
+
+            let node_2_channels = interceptor
+                .network_nodes
+                .lock()
+                .await
+                .get(&edge.node_2.pubkey)
+                .unwrap()
+                .forward_manager
+                .list_channels(InstantClock::now(&*clock))
+                .unwrap();
+            let snapshot_channels_2 = reputation_snapshot.get(&edge.node_2.pubkey).unwrap();
+            assert_eq!(&node_2_channels, snapshot_channels_2)
+        }
+    }
+
+    /// Tests that an error is returned when the snapshot is missing a node.
+    #[tokio::test]
+    async fn test_new_from_snapshot_missing_node() {
+        let (shutdown, _) = triggered::trigger();
+        let (params, edges, _) = setup_three_hop_network_edges();
+
+        let mut reputation_snapshot: HashMap<PublicKey, HashMap<u64, ChannelSnapshot>> =
+            HashMap::new();
+
+        // Only include one node in the snapshot.
+        let edge = &edges[0];
+        let node_1_snapshot = ChannelSnapshot {
+            capacity_msat: edge.capacity_msat,
+            incoming_reputation: 0,
+            outgoing_reputation: 0,
+            bidirectional_revenue: 0,
+        };
+        reputation_snapshot
+            .entry(edge.node_1.pubkey)
+            .or_default()
+            .insert(edge.scid.into(), node_1_snapshot);
+
+        let interceptor: Result<
+            ReputationInterceptor<BatchForwardWriter, ForwardManager>,
+            BoxError,
+        > = ReputationInterceptor::new_from_snapshot(
+            params,
+            &edges,
+            Reputation::Outgoing,
+            reputation_snapshot,
+            Arc::new(SimulationClock::new(1).unwrap()),
+            None,
+            shutdown,
+        )
+        .await;
+
+        assert!(interceptor.is_err());
+    }
+
+    /// Tests that an error is returned when the snapshot is missing a channel for a node.
+    #[tokio::test]
+    async fn test_new_from_snapshot_missing_channel() {
+        let (shutdown, _) = triggered::trigger();
+        let (params, edges, _) = setup_three_hop_network_edges();
+
+        let mut reputation_snapshot: HashMap<PublicKey, HashMap<u64, ChannelSnapshot>> =
+            HashMap::new();
+
+        // Include node but do not include channel for node.
+        let edge = &edges[0];
+        reputation_snapshot.entry(edge.node_1.pubkey).or_default();
+
+        let interceptor: Result<
+            ReputationInterceptor<BatchForwardWriter, ForwardManager>,
+            BoxError,
+        > = ReputationInterceptor::new_from_snapshot(
+            params,
+            &edges,
+            Reputation::Outgoing,
+            reputation_snapshot,
+            Arc::new(SimulationClock::new(1).unwrap()),
+            None,
+            shutdown,
+        )
+        .await;
+
+        assert!(interceptor.is_err());
+    }
+
+    /// Tests that an error is returned when the snapshot has mismatched channel capacities.
+    #[tokio::test]
+    async fn test_new_from_snapshot_mismatched_capacity() {
+        let (shutdown, _) = triggered::trigger();
+        let (params, edges, mut reputation_snapshot) = setup_three_hop_network_edges();
+
+        // Modify the channel capacity to make it have a different value.
+        let channel_snapshot = reputation_snapshot
+            .get_mut(&edges[0].node_1.pubkey)
+            .unwrap()
+            .get_mut(&edges[0].scid.into())
+            .unwrap();
+        channel_snapshot.capacity_msat = 1000;
+
+        let interceptor: Result<
+            ReputationInterceptor<BatchForwardWriter, ForwardManager>,
+            BoxError,
+        > = ReputationInterceptor::new_from_snapshot(
+            params,
+            &edges,
+            Reputation::Outgoing,
+            reputation_snapshot,
+            Arc::new(SimulationClock::new(1).unwrap()),
+            None,
+            shutdown,
+        )
+        .await;
+
+        assert!(interceptor.is_err());
+    }
+
+    /// Tests that an error is returned when the snapshot has a mismatched number of channels.
+    #[tokio::test]
+    async fn test_new_from_snapshot_mismatched_channel_count() {
+        let (shutdown, _) = triggered::trigger();
+        let (params, edges, mut reputation_snapshot) = setup_three_hop_network_edges();
+
+        // Remove a channel to make them have mismatched number of channels.
+        let channels = reputation_snapshot
+            .get_mut(&edges[0].node_1.pubkey)
+            .unwrap();
+        channels.remove(&edges[0].scid.into()).unwrap();
+
+        let interceptor: Result<
+            ReputationInterceptor<BatchForwardWriter, ForwardManager>,
+            BoxError,
+        > = ReputationInterceptor::new_from_snapshot(
+            params,
+            &edges,
+            Reputation::Outgoing,
+            reputation_snapshot,
+            Arc::new(SimulationClock::new(1).unwrap()),
+            None,
+            shutdown,
+        )
+        .await;
+
+        assert!(interceptor.is_err());
     }
 }

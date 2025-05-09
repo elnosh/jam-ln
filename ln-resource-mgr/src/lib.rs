@@ -475,6 +475,7 @@ pub trait ReputationManager {
         channel_id: u64,
         capacity_msat: u64,
         add_ins: Instant,
+        channel_reputation: Option<ChannelSnapshot>,
     ) -> Result<(), ReputationError>;
 
     /// Called to clean up a channel once it has been closed and is no longer usable for htlc forwards.
