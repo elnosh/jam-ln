@@ -18,7 +18,7 @@ use ln_simln_jamming::{
     clock::InstantClock,
     parsing::{
         find_pubkey_by_alias, get_history_for_bootstrap, history_from_file, parse_duration,
-        SimNetwork, DEFAULT_CLOCK_SPEEDUP, DEFAULT_REPUTATION_DIR, DEFAULT_REPUTATION_FILENAME,
+        SimNetwork, DEFAULT_REPUTATION_DIR, DEFAULT_REPUTATION_FILENAME,
         DEFAULT_REPUTATION_MULTIPLIER, DEFAULT_REVENUE_FILENAME, DEFAULT_REVENUE_WINDOW_SECONDS,
         DEFAULT_SIM_FILE,
     },
@@ -48,10 +48,6 @@ struct Cli {
     /// readable values (eg: 1w, 3d).
     #[arg(long, value_parser = parse_duration)]
     attacker_bootstrap: Option<(String, Duration)>,
-
-    /// Speed up multiplier to add to the wall clock to run the simulation faster.
-    #[arg(long, default_value = DEFAULT_CLOCK_SPEEDUP)]
-    clock_speedup: u32,
 
     /// The window over which the value of a link's revenue to our node is calculated.
     #[arg(long, default_value = DEFAULT_REVENUE_WINDOW_SECONDS)]
@@ -155,7 +151,7 @@ async fn main() -> Result<(), BoxError> {
     };
 
     let (shutdown, _listener) = triggered::trigger();
-    let clock = Arc::new(SimulationClock::new(cli.clock_speedup)?);
+    let clock = Arc::new(SimulationClock::new(1)?);
     let forward_params = ForwardManagerParams {
         reputation_params: ReputationParams {
             revenue_window: Duration::from_secs(cli.revenue_window_seconds),
