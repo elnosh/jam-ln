@@ -1,6 +1,5 @@
 mod decaying_average;
 pub mod forward_manager;
-use forward_manager::Reputation;
 pub use htlc_manager::ReputationParams;
 mod htlc_manager;
 mod incoming_channel;
@@ -142,11 +141,11 @@ pub enum FailureReason {
     UpgradableSignalModified,
 }
 
-/// A snapshot of the incoming and outgoing reputation and resources available for a forward.
+/// A snapshot of the outgoing reputation and resources available for a forward.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 pub struct AllocationCheck {
-    /// The reputation values used to check the incoming and outgoing reputation for the htlc
-    /// proposed.
+    /// The reputation values used to compare the incoming channel's revenue to the outgoing channel's reputation for
+    /// the htlc proposed.
     pub reputation_check: ReputationCheck,
     /// Indicates whether the incoming channel is eligible to consume congestion resources.
     pub congestion_eligible: bool,
@@ -169,14 +168,8 @@ impl AllocationCheck {
         htlc_amt_msat: u64,
         incoming_endorsed: EndorsementSignal,
         incoming_upgradable: bool,
-        reputation_check: Reputation,
     ) -> ForwardingOutcome {
-        match self.inner_forwarding_outcome(
-            htlc_amt_msat,
-            incoming_endorsed,
-            incoming_upgradable,
-            reputation_check,
-        ) {
+        match self.inner_forwarding_outcome(htlc_amt_msat, incoming_endorsed, incoming_upgradable) {
             Ok(bucket) => match bucket {
                 ResourceBucketType::General => {
                     ForwardingOutcome::Forward(EndorsementSignal::Unendorsed)
@@ -198,7 +191,6 @@ impl AllocationCheck {
         htlc_amt_msat: u64,
         incoming_endorsed: EndorsementSignal,
         incoming_upgradable: bool,
-        reputation_check: Reputation,
     ) -> Result<ResourceBucketType, FailureReason> {
         if !incoming_upgradable && incoming_endorsed == EndorsementSignal::Endorsed {
             return Err(FailureReason::UpgradableSignalModified);
@@ -206,7 +198,7 @@ impl AllocationCheck {
 
         match incoming_endorsed {
             EndorsementSignal::Endorsed => {
-                if reputation_check.sufficient_reputation(self) {
+                if self.reputation_check.sufficient_reputation() {
                     Ok(ResourceBucketType::Protected)
                 } else {
                     // If the htlc was endorsed but the peer doesn't have reputation, we consider giving them a shot
@@ -215,29 +207,11 @@ impl AllocationCheck {
                         return Ok(ResourceBucketType::Congestion);
                     }
 
-                    // If we are looking at incoming reputation only, we use our general resources
-                    // if available because we are not held accountable for the behavior of
-                    // downstream nodes. If we are looking at outgoing/bidirectional reputation, we
-                    // drop the htlc to protect against downstream nodes possibly damaging our
-                    // reputation with our upstream peer.
-                    match reputation_check {
-                        Reputation::Incoming => {
-                            if self
-                                .resource_check
-                                .general_bucket
-                                .resources_available(htlc_amt_msat)
-                            {
-                                Ok(ResourceBucketType::General)
-                            } else {
-                                Err(FailureReason::NoResources)
-                            }
-                        }
-                        _ => Err(FailureReason::NoReputation),
-                    }
+                    Err(FailureReason::NoReputation)
                 }
             }
             EndorsementSignal::Unendorsed => {
-                if reputation_check.sufficient_reputation(self) && incoming_upgradable {
+                if self.reputation_check.sufficient_reputation() && incoming_upgradable {
                     return Ok(ResourceBucketType::Protected);
                 }
 
@@ -298,24 +272,16 @@ impl AllocationCheck {
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
-pub struct ReputationCheck {
-    /// Values used to check incoming reputation for the channel pair.
-    pub incoming_reputation: ReputationValues,
-    /// Values used to check outgoing reputation for the channel pair.
-    pub outgoing_reputation: ReputationValues,
-}
-
 /// A snapshot of a reputation check for a htlc forward.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
-pub struct ReputationValues {
+pub struct ReputationCheck {
     pub reputation: i64,
     pub revenue_threshold: i64,
     pub in_flight_total_risk: u64,
     pub htlc_risk: u64,
 }
 
-impl ReputationValues {
+impl ReputationCheck {
     /// Returns a boolean indicating whether the channel has sufficient reputation for this htlc to be
     /// forwarded.
     pub fn sufficient_reputation(&self) -> bool {
@@ -467,7 +433,6 @@ impl ProposedForward {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ChannelSnapshot {
     pub capacity_msat: u64,
-    pub incoming_reputation: i64,
     pub outgoing_reputation: i64,
     pub bidirectional_revenue: i64,
 }
@@ -542,24 +507,18 @@ pub trait ReputationManager {
 #[cfg(test)]
 mod tests {
     use crate::{
-        forward_manager::Reputation, AllocationCheck, BucketResources, EndorsementSignal,
-        FailureReason, ReputationCheck, ReputationValues, ResourceBucketType, ResourceCheck,
-        MINIMUM_CONGESTION_SLOT_LIQUDITY,
+        AllocationCheck, BucketResources, EndorsementSignal, FailureReason, ReputationCheck,
+        ResourceBucketType, ResourceCheck, MINIMUM_CONGESTION_SLOT_LIQUDITY,
     };
 
     /// Returns an AllocationCheck which is eligible for congestion resources.
     fn test_congestion_check() -> AllocationCheck {
-        let reputation_values = ReputationValues {
-            reputation: 0,
-            revenue_threshold: 0,
-            in_flight_total_risk: 0,
-            htlc_risk: 0,
-        };
-
         let check = AllocationCheck {
             reputation_check: ReputationCheck {
-                incoming_reputation: reputation_values.clone(),
-                outgoing_reputation: reputation_values,
+                reputation: 0,
+                revenue_threshold: 0,
+                in_flight_total_risk: 0,
+                htlc_risk: 0,
             },
             congestion_eligible: true,
             resource_check: ResourceCheck {
@@ -634,104 +593,43 @@ mod tests {
     #[test]
     fn test_inner_forwarding_outcome_congestion() {
         let check = test_congestion_check();
+        assert!(
+            check
+                .inner_forwarding_outcome(10, EndorsementSignal::Endorsed, true)
+                .unwrap()
+                == ResourceBucketType::Congestion
+        );
 
-        let test_inner_forwarding_outcome_congestion_for_reputation =
-            |check: &AllocationCheck, scheme: Reputation| {
-                // Endorsed htlc will be granted access to congestion resources.
-                assert!(
-                    check
-                        .inner_forwarding_outcome(10, EndorsementSignal::Endorsed, true, scheme)
-                        .unwrap()
-                        == ResourceBucketType::Congestion
-                );
-
-                // Unendorsed htlc will not be granted access to congestion resources.
-                assert!(
-                    check
-                        .inner_forwarding_outcome(10, EndorsementSignal::Unendorsed, true, scheme)
-                        .err()
-                        .unwrap()
-                        == FailureReason::NoResources,
-                );
-            };
-
-        test_inner_forwarding_outcome_congestion_for_reputation(&check, Reputation::Incoming);
-        test_inner_forwarding_outcome_congestion_for_reputation(&check, Reputation::Outgoing);
-        test_inner_forwarding_outcome_congestion_for_reputation(&check, Reputation::Bidirectional);
+        // Unendorsed htlc will not be granted access to congestion resources.
+        assert!(
+            check
+                .inner_forwarding_outcome(10, EndorsementSignal::Unendorsed, true)
+                .err()
+                .unwrap()
+                == FailureReason::NoResources,
+        );
     }
 
     #[test]
     fn test_inner_forwarding_outcome_reputation() {
         let mut check = test_congestion_check();
-        check.reputation_check.outgoing_reputation.reputation = 1000;
+        check.reputation_check.reputation = 1000;
         check.resource_check.general_bucket.slots_used = 0;
-        check.reputation_check.incoming_reputation.reputation = 1000;
 
         // Sufficient reputation and endorsed will go in the protected bucket.
-        let test_forwarding_outcome_protected_for_reputation =
-            |check: &AllocationCheck, scheme: Reputation| {
-                assert!(
-                    check
-                        .inner_forwarding_outcome(10, EndorsementSignal::Endorsed, true, scheme)
-                        .unwrap()
-                        == ResourceBucketType::Protected,
-                );
-            };
-
-        test_forwarding_outcome_protected_for_reputation(&check, Reputation::Incoming);
-        test_forwarding_outcome_protected_for_reputation(&check, Reputation::Outgoing);
-        test_forwarding_outcome_protected_for_reputation(&check, Reputation::Bidirectional);
+        assert!(
+            check
+                .inner_forwarding_outcome(10, EndorsementSignal::Endorsed, true)
+                .unwrap()
+                == ResourceBucketType::Protected,
+        );
 
         // Unendorsed htlc with sufficient reputation gets upgraded so it goes in the protected bucket.
         assert!(
             check
-                .inner_forwarding_outcome(
-                    10,
-                    EndorsementSignal::Unendorsed,
-                    true,
-                    Reputation::Bidirectional
-                )
+                .inner_forwarding_outcome(10, EndorsementSignal::Unendorsed, true,)
                 .unwrap()
                 == ResourceBucketType::Protected,
-        );
-    }
-
-    #[test]
-    fn test_inner_forwarding_outcome_partial_reputation() {
-        let mut check = test_congestion_check();
-        check.reputation_check.outgoing_reputation.reputation = 1000;
-        check.resource_check.general_bucket.slots_available = 0;
-        check.resource_check.congestion_bucket.slots_available = 0;
-
-        // Require reputation in both directions but only has outgoing.
-        assert!(
-            check
-                .inner_forwarding_outcome(
-                    10,
-                    EndorsementSignal::Endorsed,
-                    true,
-                    Reputation::Bidirectional
-                )
-                .err()
-                .unwrap()
-                == FailureReason::NoReputation
-        );
-
-        check.reputation_check.incoming_reputation.reputation = 1000;
-        check.reputation_check.outgoing_reputation.reputation = 0;
-
-        // Require reputation in both directions but only has incoming.
-        assert!(
-            check
-                .inner_forwarding_outcome(
-                    10,
-                    EndorsementSignal::Endorsed,
-                    true,
-                    Reputation::Bidirectional
-                )
-                .err()
-                .unwrap()
-                == FailureReason::NoReputation
         );
     }
 
@@ -740,43 +638,19 @@ mod tests {
         let mut check = test_congestion_check();
         check.resource_check.general_bucket.slots_used = 0;
 
-        // If reputation_check is Incoming and does not have reputation it will go to general
-        // bucket
+        // If insufficient reputation and no congestion resources will fail.
         assert!(
             check
-                .inner_forwarding_outcome(
-                    10,
-                    EndorsementSignal::Endorsed,
-                    true,
-                    Reputation::Incoming
-                )
+                .inner_forwarding_outcome(10, EndorsementSignal::Endorsed, true)
+                .err()
                 .unwrap()
-                == ResourceBucketType::General
+                == FailureReason::NoReputation,
         );
-
-        // If insufficient outgoing/bidirectional reputation and no congestion resources will fail.
-        let test_no_reputation = |check: &AllocationCheck, scheme: Reputation| {
-            assert!(
-                check
-                    .inner_forwarding_outcome(10, EndorsementSignal::Endorsed, true, scheme)
-                    .err()
-                    .unwrap()
-                    == FailureReason::NoReputation,
-            );
-        };
-
-        test_no_reputation(&check, Reputation::Outgoing);
-        test_no_reputation(&check, Reputation::Bidirectional);
 
         // Unendorsed htlc with no reputation and available resources goes into general bucket.
         assert!(
             check
-                .inner_forwarding_outcome(
-                    10,
-                    EndorsementSignal::Unendorsed,
-                    true,
-                    Reputation::Bidirectional
-                )
+                .inner_forwarding_outcome(10, EndorsementSignal::Unendorsed, true,)
                 .unwrap()
                 == ResourceBucketType::General
         );
@@ -789,12 +663,7 @@ mod tests {
         // return error if htlc has an endorsement signal but is not marked as upgradable.
         assert!(
             check
-                .inner_forwarding_outcome(
-                    10,
-                    EndorsementSignal::Endorsed,
-                    false,
-                    Reputation::Bidirectional
-                )
+                .inner_forwarding_outcome(10, EndorsementSignal::Endorsed, false,)
                 .err()
                 .unwrap()
                 == FailureReason::UpgradableSignalModified

@@ -142,14 +142,6 @@ pub struct Cli {
     /// The alias of the attacking node.
     #[arg(long)]
     pub attacker_alias: String,
-
-    /// Only check incoming reputation for the simulation.
-    #[arg(long)]
-    pub incoming_reputation_only: bool,
-
-    /// Only check outgoing reputation for the simulation.
-    #[arg(long)]
-    pub outgoing_reputation_only: bool,
 }
 
 impl Cli {
@@ -369,15 +361,13 @@ pub fn reputation_snapshot_from_file(
         let pubkey = PublicKey::from_slice(&hex::decode(&record[0])?)?;
         let scid: u64 = record[1].parse()?;
         let capacity_msat: u64 = record[2].parse()?;
-        let incoming_reputation: i64 = record[3].parse()?;
-        let outgoing_reputation: i64 = record[4].parse()?;
-        let bidirectional_revenue: i64 = record[5].parse()?;
+        let outgoing_reputation: i64 = record[3].parse()?;
+        let bidirectional_revenue: i64 = record[4].parse()?;
 
         reputation_snapshot.entry(pubkey).or_default().insert(
             scid,
             ChannelSnapshot {
                 capacity_msat,
-                incoming_reputation,
                 outgoing_reputation,
                 bidirectional_revenue,
             },

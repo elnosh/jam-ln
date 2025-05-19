@@ -6,7 +6,7 @@ use crate::{
 use async_trait::async_trait;
 use bitcoin::secp256k1::PublicKey;
 use ln_resource_mgr::forward_manager::{
-    ForwardManager, ForwardManagerParams, Reputation, SimualtionDebugManager,
+    ForwardManager, ForwardManagerParams, SimualtionDebugManager,
 };
 use ln_resource_mgr::{
     ChannelSnapshot, EndorsementSignal, ForwardResolution, ForwardingOutcome, HtlcRef,
@@ -109,7 +109,6 @@ where
     M: ReputationManager,
 {
     network_nodes: Arc<Mutex<HashMap<PublicKey, Node<M>>>>,
-    reputation_check: Reputation,
     clock: Arc<dyn InstantClock + Send + Sync>,
     results: Option<Arc<Mutex<R>>>,
     shutdown: Trigger,
@@ -122,7 +121,6 @@ where
     pub fn new_for_network(
         params: ForwardManagerParams,
         edges: &[NetworkParser],
-        reputation_check: Reputation,
         clock: Arc<dyn InstantClock + Send + Sync>,
         results: Option<Arc<Mutex<R>>>,
         shutdown: Trigger,
@@ -173,7 +171,6 @@ where
 
         Ok(Self {
             network_nodes: Arc::new(Mutex::new(network_nodes)),
-            reputation_check,
             clock,
             results,
             shutdown,
@@ -183,7 +180,6 @@ where
     pub async fn new_from_snapshot(
         params: ForwardManagerParams,
         edges: &[NetworkParser],
-        reputation_check: Reputation,
         reputation_snapshot: HashMap<PublicKey, HashMap<u64, ChannelSnapshot>>,
         clock: Arc<dyn InstantClock + Send + Sync>,
         results: Option<Arc<Mutex<R>>>,
@@ -254,7 +250,6 @@ where
 
         Ok(Self {
             network_nodes: Arc::new(Mutex::new(network_nodes)),
-            reputation_check,
             clock,
             results,
             shutdown,
@@ -406,7 +401,6 @@ where
             htlc_add.htlc.amount_out_msat,
             htlc_add.htlc.incoming_endorsed,
             htlc_add.htlc.upgradable_endorsement,
-            self.reputation_check,
         );
 
         if let Some(r) = &self.results {
@@ -417,7 +411,6 @@ where
                         htlc_add.forwarding_node,
                         allocation_check,
                         htlc_add.htlc.clone(),
-                        self.reputation_check,
                     )
                     .map_err(|e| ReputationError::ErrUnrecoverable(e.to_string()))?;
             }
@@ -514,7 +507,6 @@ where
                     htlc_add.htlc.amount_out_msat,
                     htlc_add.htlc.incoming_endorsed,
                     htlc_add.htlc.upgradable_endorsement,
-                    self.reputation_check,
                 ))
             }
             Entry::Vacant(_) => Err(ReputationError::ErrUnrecoverable(format!(
@@ -616,7 +608,7 @@ where
 mod tests {
     use async_trait::async_trait;
     use bitcoin::secp256k1::PublicKey;
-    use ln_resource_mgr::forward_manager::{ForwardManager, ForwardManagerParams, Reputation};
+    use ln_resource_mgr::forward_manager::{ForwardManager, ForwardManagerParams};
     use ln_resource_mgr::{
         AllocationCheck, ChannelSnapshot, EndorsementSignal, ForwardResolution, HtlcRef,
         ProposedForward, ReputationError, ReputationManager, ReputationParams,
@@ -717,7 +709,6 @@ mod tests {
         (
             ReputationInterceptor {
                 network_nodes: Arc::new(Mutex::new(nodes)),
-                reputation_check: Reputation::Outgoing,
                 clock: Arc::new(SimulationClock::new(1).unwrap()),
                 results: None,
                 shutdown,
@@ -942,7 +933,6 @@ mod tests {
                 resolution_period: Duration::from_secs(90),
                 expected_block_speed: None,
             },
-            reputation_check: Reputation::Outgoing,
             general_slot_portion: 30,
             general_liquidity_portion: 30,
             congestion_slot_portion: 20,
@@ -958,13 +948,11 @@ mod tests {
         for edge in &edges {
             let node_1_snapshot = ChannelSnapshot {
                 capacity_msat: edge.capacity_msat,
-                incoming_reputation: 0,
                 outgoing_reputation: 0,
                 bidirectional_revenue: 0,
             };
             let node_2_snapshot = ChannelSnapshot {
                 capacity_msat: edge.capacity_msat,
-                incoming_reputation: 0,
                 outgoing_reputation: 0,
                 bidirectional_revenue: 0,
             };
@@ -992,7 +980,6 @@ mod tests {
             ReputationInterceptor::new_for_network(
                 params,
                 &edges,
-                Reputation::Outgoing,
                 Arc::new(SimulationClock::new(1).unwrap()),
                 None,
                 shutdown,
@@ -1057,7 +1044,6 @@ mod tests {
             ReputationInterceptor::new_for_network(
                 params,
                 &edges,
-                Reputation::Outgoing,
                 Arc::new(SimulationClock::new(1).unwrap()),
                 None,
                 shutdown,
@@ -1143,7 +1129,6 @@ mod tests {
         > = ReputationInterceptor::new_from_snapshot(
             params,
             &edges,
-            Reputation::Outgoing,
             reputation_snapshot.clone(),
             clock.clone(),
             None,
@@ -1195,7 +1180,6 @@ mod tests {
         let edge = &edges[0];
         let node_1_snapshot = ChannelSnapshot {
             capacity_msat: edge.capacity_msat,
-            incoming_reputation: 0,
             outgoing_reputation: 0,
             bidirectional_revenue: 0,
         };
@@ -1210,7 +1194,6 @@ mod tests {
         > = ReputationInterceptor::new_from_snapshot(
             params,
             &edges,
-            Reputation::Outgoing,
             reputation_snapshot,
             Arc::new(SimulationClock::new(1).unwrap()),
             None,
@@ -1240,7 +1223,6 @@ mod tests {
         > = ReputationInterceptor::new_from_snapshot(
             params,
             &edges,
-            Reputation::Outgoing,
             reputation_snapshot,
             Arc::new(SimulationClock::new(1).unwrap()),
             None,
@@ -1271,7 +1253,6 @@ mod tests {
         > = ReputationInterceptor::new_from_snapshot(
             params,
             &edges,
-            Reputation::Outgoing,
             reputation_snapshot,
             Arc::new(SimulationClock::new(1).unwrap()),
             None,
@@ -1300,7 +1281,6 @@ mod tests {
         > = ReputationInterceptor::new_from_snapshot(
             params,
             &edges,
-            Reputation::Outgoing,
             reputation_snapshot,
             Arc::new(SimulationClock::new(1).unwrap()),
             None,

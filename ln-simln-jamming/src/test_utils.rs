@@ -7,10 +7,9 @@ use crate::{records_from_endorsement, BoxError};
 use async_trait::async_trait;
 use bitcoin::secp256k1::{PublicKey, Secp256k1, SecretKey};
 use lightning::ln::PaymentHash;
-use ln_resource_mgr::forward_manager::Reputation;
 use ln_resource_mgr::{
     AllocationCheck, BucketResources, ChannelSnapshot, EndorsementSignal, ForwardingOutcome,
-    ProposedForward, ReputationCheck, ReputationError, ReputationValues, ResourceCheck,
+    ProposedForward, ReputationCheck, ReputationError, ResourceCheck,
 };
 use mockall::mock;
 use rand::{distributions::Uniform, Rng};
@@ -88,17 +87,12 @@ pub fn setup_test_request(
 }
 
 pub fn test_allocation_check(forward_succeeds: bool) -> AllocationCheck {
-    let reputation_values = ReputationValues {
-        reputation: 100_000,
-        revenue_threshold: if forward_succeeds { 0 } else { 200_000 },
-        in_flight_total_risk: 0,
-        htlc_risk: 0,
-    };
-
     let check = AllocationCheck {
         reputation_check: ReputationCheck {
-            incoming_reputation: reputation_values.clone(),
-            outgoing_reputation: reputation_values,
+            reputation: 100_000,
+            revenue_threshold: if forward_succeeds { 0 } else { 200_000 },
+            in_flight_total_risk: 0,
+            htlc_risk: 0,
         },
         congestion_eligible: true,
         resource_check: ResourceCheck {
@@ -119,7 +113,7 @@ pub fn test_allocation_check(forward_succeeds: bool) -> AllocationCheck {
 
     assert!(
         matches!(
-            check.forwarding_outcome(0, EndorsementSignal::Endorsed, true, Reputation::Outgoing),
+            check.forwarding_outcome(0, EndorsementSignal::Endorsed, true),
             ForwardingOutcome::Forward(_)
         ) == forward_succeeds
     );
