@@ -1,5 +1,5 @@
 use bitcoin::secp256k1::PublicKey;
-use ln_resource_mgr::{ChannelSnapshot, EndorsementSignal};
+use ln_resource_mgr::{AccountableSignal, ChannelSnapshot};
 use simln_lib::sim_node::{CustomRecords, InterceptRequest};
 use std::collections::HashMap;
 use std::error::Error;
@@ -21,28 +21,28 @@ pub(crate) mod test_utils;
 /// Error type for errors that can be erased, includes 'static so that down-casting is possible.
 pub type BoxError = Box<dyn Error + Send + Sync + 'static>;
 
-/// The TLV type used to represent experimental endorsement signals.
-pub const ENDORSEMENT_TYPE: u64 = 106823;
+/// The TLV type used to represent experimental accountable signals.
+pub const ACCOUNTABLE_TYPE: u64 = 106823;
 
-/// The TLV type used to represent upgradable endorsement signals. In real life this will be in
+/// The TLV type used to represent upgradable accountability signal. In real life this will be in
 /// the onion.
 pub const UPGRADABLE_TYPE: u64 = 106825;
 
-/// Converts a set of custom tlv records to an endorsement signal.
-pub fn endorsement_from_records(records: &CustomRecords) -> EndorsementSignal {
-    match records.get(&ENDORSEMENT_TYPE) {
-        Some(endorsed) => {
-            if endorsed.len() == 1 && endorsed[0] == 1 {
-                EndorsementSignal::Endorsed
+/// Converts a set of custom tlv records to an accountable signal.
+pub fn accountable_from_records(records: &CustomRecords) -> AccountableSignal {
+    match records.get(&ACCOUNTABLE_TYPE) {
+        Some(accountable) => {
+            if accountable.len() == 1 && accountable[0] == 1 {
+                AccountableSignal::Accountable
             } else {
-                EndorsementSignal::Unendorsed
+                AccountableSignal::Unaccountable
             }
         }
-        None => EndorsementSignal::Unendorsed,
+        None => AccountableSignal::Unaccountable,
     }
 }
 
-/// Converts a set of custom tlv records to a bool signaling if the endorsement signal is
+/// Converts a set of custom tlv records to a bool signaling if the accountable signal is
 /// upgradable.
 pub fn upgradable_from_records(records: &CustomRecords) -> bool {
     match records.get(&UPGRADABLE_TYPE) {
@@ -51,15 +51,15 @@ pub fn upgradable_from_records(records: &CustomRecords) -> bool {
     }
 }
 
-/// Converts an endorsement signal to custom records using the blip-04 experimental TLV. Note that
-/// we add by default the upgradable endorsement signal to the custom records returned.
-pub fn records_from_endorsement(endorsement: EndorsementSignal) -> CustomRecords {
+/// Converts an accountable signal to custom records using the blip-04 experimental TLV. Note that
+/// we add by default the upgradable accountability signal to the custom records returned.
+pub fn records_from_signal(signal: AccountableSignal) -> CustomRecords {
     let mut records = CustomRecords::default();
     records.insert(UPGRADABLE_TYPE, vec![1]);
-    match endorsement {
-        EndorsementSignal::Unendorsed => records,
-        EndorsementSignal::Endorsed => {
-            records.insert(ENDORSEMENT_TYPE, vec![1]);
+    match signal {
+        AccountableSignal::Unaccountable => records,
+        AccountableSignal::Accountable => {
+            records.insert(ACCOUNTABLE_TYPE, vec![1]);
             records
         }
     }
@@ -172,7 +172,7 @@ fn print_request(req: &InterceptRequest) -> String {
         "{}:{} {} -> {} with fee {} ({} -> {}) and cltv {} ({} -> {})",
         u64::from(req.incoming_htlc.channel_id),
         req.incoming_htlc.index,
-        endorsement_from_records(&req.incoming_custom_records),
+        accountable_from_records(&req.incoming_custom_records),
         if let Some(outgoing_chan) = req.outgoing_channel_id {
             outgoing_chan.into()
         } else {

@@ -3,12 +3,12 @@ use std::error::Error;
 use std::time::Instant;
 
 use crate::reputation_interceptor::{BootstrapForward, HtlcAdd, ReputationMonitor};
-use crate::{records_from_endorsement, BoxError};
+use crate::{records_from_signal, BoxError};
 use async_trait::async_trait;
 use bitcoin::secp256k1::{PublicKey, Secp256k1, SecretKey};
 use lightning::ln::PaymentHash;
 use ln_resource_mgr::{
-    AllocationCheck, BucketResources, ChannelSnapshot, EndorsementSignal, ForwardingOutcome,
+    AccountableSignal, AllocationCheck, BucketResources, ChannelSnapshot, ForwardingOutcome,
     ProposedForward, ReputationCheck, ReputationError, ResourceCheck,
 };
 use mockall::mock;
@@ -57,7 +57,7 @@ pub fn setup_test_request(
     forwarding_node: PublicKey,
     channel_in: u64,
     channel_out: u64,
-    incoming_endorsed: EndorsementSignal,
+    incoming_accountable: AccountableSignal,
 ) -> (
     InterceptRequest,
     tokio::sync::mpsc::Receiver<
@@ -74,7 +74,7 @@ pub fn setup_test_request(
                 channel_id: channel_in.into(),
                 index: 0,
             },
-            incoming_custom_records: records_from_endorsement(incoming_endorsed),
+            incoming_custom_records: records_from_signal(incoming_accountable),
             outgoing_channel_id: Some(ShortChannelID::from(channel_out)),
             incoming_amount_msat: 100,
             outgoing_amount_msat: 50,
@@ -113,7 +113,7 @@ pub fn test_allocation_check(forward_succeeds: bool) -> AllocationCheck {
 
     assert!(
         matches!(
-            check.forwarding_outcome(0, EndorsementSignal::Endorsed, true),
+            check.forwarding_outcome(0, AccountableSignal::Accountable, true),
             ForwardingOutcome::Forward(_)
         ) == forward_succeeds
     );
@@ -133,8 +133,8 @@ pub fn test_proposed_forward(id: u64) -> ProposedForward {
         expiry_in_height: 80,
         expiry_out_height: 40,
         added_at: Instant::now(),
-        incoming_endorsed: EndorsementSignal::Endorsed,
-        upgradable_endorsement: true,
+        incoming_accountable: AccountableSignal::Accountable,
+        upgradable_accountability: true,
     }
 }
 

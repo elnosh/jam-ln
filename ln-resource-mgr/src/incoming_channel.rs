@@ -45,7 +45,7 @@ mod tests {
 
     use super::IncomingChannel;
     use crate::htlc_manager::InFlightHtlc;
-    use crate::{EndorsementSignal, ReputationParams, ResourceBucketType};
+    use crate::{AccountableSignal, ReputationParams, ResourceBucketType};
 
     #[test]
     fn test_no_congestion_abuse() {
@@ -68,7 +68,7 @@ mod tests {
                 hold_blocks: 40,
                 outgoing_amt_msat: 5000,
                 added_instant: now,
-                incoming_endorsed: EndorsementSignal::Endorsed,
+                accountable: AccountableSignal::Accountable,
                 bucket: ResourceBucketType::Congestion,
             },
             now.checked_add(params.resolution_period / 2).unwrap(),
@@ -84,7 +84,7 @@ mod tests {
                 hold_blocks: 40,
                 outgoing_amt_msat: 5000,
                 added_instant: now,
-                incoming_endorsed: EndorsementSignal::Endorsed,
+                accountable: AccountableSignal::Accountable,
                 bucket: ResourceBucketType::Congestion,
             },
             last_misuse,

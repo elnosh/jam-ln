@@ -49,12 +49,12 @@ impl Serialize for Record {
         state.serialize_field("amount_out_msat", &self.forward.amount_out_msat)?;
         state.serialize_field("expiry_in_height", &self.forward.expiry_in_height)?;
         state.serialize_field("expiry_out_height", &self.forward.expiry_out_height)?;
-        state.serialize_field("incoming_endorsed", &self.forward.incoming_endorsed)?;
+        state.serialize_field("incoming_accountable", &self.forward.incoming_accountable)?;
         state.serialize_field(
             "forwarding_outcome",
             &self.decision.forwarding_outcome(
                 self.forward.amount_in_msat,
-                self.forward.incoming_endorsed,
+                self.forward.incoming_accountable,
                 true,
             ),
         )?;

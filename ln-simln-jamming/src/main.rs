@@ -14,7 +14,7 @@ use ln_simln_jamming::parsing::{
 use ln_simln_jamming::reputation_interceptor::ReputationInterceptor;
 use ln_simln_jamming::revenue_interceptor::{RevenueInterceptor, RevenueSnapshot};
 use ln_simln_jamming::{
-    get_network_reputation, BoxError, NetworkReputation, ENDORSEMENT_TYPE, UPGRADABLE_TYPE,
+    get_network_reputation, BoxError, NetworkReputation, ACCOUNTABLE_TYPE, UPGRADABLE_TYPE,
 };
 use log::LevelFilter;
 use simln_lib::clock::Clock;
@@ -273,7 +273,7 @@ async fn main() -> Result<(), BoxError> {
         .collect::<Vec<SimulatedChannel>>();
 
     let custom_records =
-        CustomRecords::from([(UPGRADABLE_TYPE, vec![1]), (ENDORSEMENT_TYPE, vec![0])]);
+        CustomRecords::from([(UPGRADABLE_TYPE, vec![1]), (ACCOUNTABLE_TYPE, vec![0])]);
 
     // Setup the simulated network with our fake graph.
     let (simulation, graph) = Simulation::new_with_sim_network(

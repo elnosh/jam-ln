@@ -46,7 +46,7 @@ pub const DEFAULT_ATTACKER_REP_PERCENT: &str = "50";
 /// Default clock speedup to run with regular wall time.
 pub const DEFAULT_CLOCK_SPEEDUP: &str = "1";
 
-/// Default htlc size that a peer must be able to get endorsed to be considered as having good reputation, $10 at the
+/// Default htlc size that a peer must be able to get accountable to be considered as having good reputation, $10 at the
 /// time of writing.
 pub const DEFAULT_REPUTATION_MARGIN_MSAT: &str = "10000000";
 
@@ -104,7 +104,7 @@ pub struct Cli {
     #[arg(long, default_value = DEFAULT_CLOCK_SPEEDUP)]
     pub clock_speedup: u32,
 
-    /// The htlc amount that a peer must be able to get endorsed to be considered as having a good reputation, expressed
+    /// The htlc amount that a peer must be able to get accountable to be considered as having a good reputation, expressed
     /// in msat. This will be converted to a fee using a base fee of 1000 msat and a proportional charge of 0.01% of the
     /// amount.
     #[arg(long, default_value = DEFAULT_REPUTATION_MARGIN_MSAT)]

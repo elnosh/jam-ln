@@ -344,8 +344,8 @@ impl ReputationManager for ForwardManager {
 
         if let Ok(bucket) = allocation_check.inner_forwarding_outcome(
             forward.amount_out_msat,
-            forward.incoming_endorsed,
-            forward.upgradable_endorsement,
+            forward.incoming_accountable,
+            forward.upgradable_accountability,
         ) {
             inner_lock.htlcs.add_htlc(
                 forward.incoming_ref,
@@ -355,7 +355,7 @@ impl ReputationManager for ForwardManager {
                     outgoing_amt_msat: forward.amount_out_msat,
                     fee_msat: forward.fee_msat(),
                     added_instant: forward.added_at,
-                    incoming_endorsed: forward.incoming_endorsed,
+                    accountable: forward.incoming_accountable,
                     bucket,
                 },
             )?;

@@ -97,26 +97,26 @@ impl Display for ReputationError {
     }
 }
 
-/// The different possible endorsement signals on a htlc's update_add message.
+/// The different possible accountable signals on a htlc's update_add message.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
-pub enum EndorsementSignal {
-    Unendorsed,
-    Endorsed,
+pub enum AccountableSignal {
+    Unaccountable,
+    Accountable,
 }
 
-impl Display for EndorsementSignal {
+impl Display for AccountableSignal {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            EndorsementSignal::Endorsed => write!(f, "endorsed"),
-            EndorsementSignal::Unendorsed => write!(f, "unendorsed"),
+            AccountableSignal::Accountable => write!(f, "accountable"),
+            AccountableSignal::Unaccountable => write!(f, "unaccountable"),
         }
     }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 pub enum ForwardingOutcome {
-    /// Forward the outgoing htlc with the endorsement signal provided.
-    Forward(EndorsementSignal),
+    /// Forward the outgoing htlc with the accountable signal provided.
+    Forward(AccountableSignal),
     /// Fail the incoming htlc back with the reason provided.
     Fail(FailureReason),
 }
@@ -132,8 +132,7 @@ impl Display for ForwardingOutcome {
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 pub enum FailureReason {
-    /// There is no space in the outgoing channel's general resource bucket, so the htlc should be failed back. It
-    /// may be retired with endorsement set to gain access to protected resources.
+    /// There is no space in the incoming channel's general resource bucket, so the htlc should be failed back.
     NoResources,
     /// The outgoing peer has insufficient reputation for the htlc to occupy protected resources.
     NoReputation,
@@ -166,19 +165,23 @@ impl AllocationCheck {
     pub fn forwarding_outcome(
         &self,
         htlc_amt_msat: u64,
-        incoming_endorsed: EndorsementSignal,
+        incoming_accountable: AccountableSignal,
         incoming_upgradable: bool,
     ) -> ForwardingOutcome {
-        match self.inner_forwarding_outcome(htlc_amt_msat, incoming_endorsed, incoming_upgradable) {
+        match self.inner_forwarding_outcome(
+            htlc_amt_msat,
+            incoming_accountable,
+            incoming_upgradable,
+        ) {
             Ok(bucket) => match bucket {
                 ResourceBucketType::General => {
-                    ForwardingOutcome::Forward(EndorsementSignal::Unendorsed)
+                    ForwardingOutcome::Forward(AccountableSignal::Unaccountable)
                 }
                 ResourceBucketType::Congestion => {
-                    ForwardingOutcome::Forward(EndorsementSignal::Unendorsed)
+                    ForwardingOutcome::Forward(AccountableSignal::Unaccountable)
                 }
                 ResourceBucketType::Protected => {
-                    ForwardingOutcome::Forward(EndorsementSignal::Endorsed)
+                    ForwardingOutcome::Forward(AccountableSignal::Accountable)
                 }
             },
             Err(fail_reason) => ForwardingOutcome::Fail(fail_reason),
@@ -189,19 +192,19 @@ impl AllocationCheck {
     fn inner_forwarding_outcome(
         &self,
         htlc_amt_msat: u64,
-        incoming_endorsed: EndorsementSignal,
+        incoming_accountable: AccountableSignal,
         incoming_upgradable: bool,
     ) -> Result<ResourceBucketType, FailureReason> {
-        if !incoming_upgradable && incoming_endorsed == EndorsementSignal::Endorsed {
+        if !incoming_upgradable && incoming_accountable == AccountableSignal::Accountable {
             return Err(FailureReason::UpgradableSignalModified);
         }
 
-        match incoming_endorsed {
-            EndorsementSignal::Endorsed => {
+        match incoming_accountable {
+            AccountableSignal::Accountable => {
                 if self.reputation_check.sufficient_reputation() {
                     Ok(ResourceBucketType::Protected)
                 } else {
-                    // If the htlc was endorsed but the peer doesn't have reputation, we consider giving them a shot
+                    // If the htlc was accountable but the peer doesn't have reputation, we consider giving them a shot
                     // at our reserved congestion resources.
                     if self.congestion_resources_available(htlc_amt_msat) {
                         return Ok(ResourceBucketType::Congestion);
@@ -210,7 +213,7 @@ impl AllocationCheck {
                     Err(FailureReason::NoReputation)
                 }
             }
-            EndorsementSignal::Unendorsed => {
+            AccountableSignal::Unaccountable => {
                 if self.reputation_check.sufficient_reputation() && incoming_upgradable {
                     return Ok(ResourceBucketType::Protected);
                 }
@@ -378,8 +381,8 @@ pub struct ProposedForward {
     pub expiry_in_height: u32,
     pub expiry_out_height: u32,
     pub added_at: Instant,
-    pub incoming_endorsed: EndorsementSignal,
-    pub upgradable_endorsement: bool,
+    pub incoming_accountable: AccountableSignal,
+    pub upgradable_accountability: bool,
 }
 
 impl Display for ProposedForward {
@@ -389,7 +392,7 @@ impl Display for ProposedForward {
             "{}:{} {} -> {} with fee {} ({} -> {}) and cltv {} ({} -> {})",
             self.incoming_ref.channel_id,
             self.incoming_ref.htlc_index,
-            self.incoming_endorsed,
+            self.incoming_accountable,
             self.outgoing_channel_id,
             self.amount_in_msat - self.amount_out_msat,
             self.amount_in_msat,
@@ -467,7 +470,7 @@ pub trait ReputationManager {
     /// Called to clean up a channel once it has been closed and is no longer usable for htlc forwards.
     fn remove_channel(&self, channel_id: u64) -> Result<(), ReputationError>;
 
-    /// Returns a forwarding assessment for the proposed HTLC based on its endorsement status and the reputation of
+    /// Returns a forwarding assessment for the proposed HTLC based on its accountable status and the reputation of
     /// the incoming and outgoing channel. This call can optionally be used to co-locate reputation checks with
     /// other forwarding checks (such as fee policies and expiry delta) so that the htlc can be failed early, saving
     /// the need to propagate it to the outgoing link. Using this method *does not* replace the need to call
@@ -477,7 +480,7 @@ pub trait ReputationManager {
         forward: &ProposedForward,
     ) -> Result<AllocationCheck, ReputationError>;
 
-    /// Checks the endorsement signal and reputation of a proposed forward to determine whether a htlc should be
+    /// Checks the accountable signal and reputation of a proposed forward to determine whether a htlc should be
     /// forwarded on the outgoing link. If the htlc can be forwarded, it will be added to the internal state of
     /// the [`ReputationManager`], and it *must* be cleared out using [`resolve_htlc`]. If the htlc cannot
     /// be forwarded, no further action is expected. The [`outgoing_ref`] provided for the outgoing htlc *must*
@@ -507,7 +510,7 @@ pub trait ReputationManager {
 #[cfg(test)]
 mod tests {
     use crate::{
-        AllocationCheck, BucketResources, EndorsementSignal, FailureReason, ReputationCheck,
+        AccountableSignal, AllocationCheck, BucketResources, FailureReason, ReputationCheck,
         ResourceBucketType, ResourceCheck, MINIMUM_CONGESTION_SLOT_LIQUDITY,
     };
 
@@ -595,15 +598,15 @@ mod tests {
         let check = test_congestion_check();
         assert!(
             check
-                .inner_forwarding_outcome(10, EndorsementSignal::Endorsed, true)
+                .inner_forwarding_outcome(10, AccountableSignal::Accountable, true)
                 .unwrap()
                 == ResourceBucketType::Congestion
         );
 
-        // Unendorsed htlc will not be granted access to congestion resources.
+        // Unaccountable htlc will not be granted access to congestion resources.
         assert!(
             check
-                .inner_forwarding_outcome(10, EndorsementSignal::Unendorsed, true)
+                .inner_forwarding_outcome(10, AccountableSignal::Unaccountable, true)
                 .err()
                 .unwrap()
                 == FailureReason::NoResources,
@@ -616,18 +619,18 @@ mod tests {
         check.reputation_check.reputation = 1000;
         check.resource_check.general_bucket.slots_used = 0;
 
-        // Sufficient reputation and endorsed will go in the protected bucket.
+        // Sufficient reputation and accountable will go in the protected bucket.
         assert!(
             check
-                .inner_forwarding_outcome(10, EndorsementSignal::Endorsed, true)
+                .inner_forwarding_outcome(10, AccountableSignal::Accountable, true)
                 .unwrap()
                 == ResourceBucketType::Protected,
         );
 
-        // Unendorsed htlc with sufficient reputation gets upgraded so it goes in the protected bucket.
+        // Unaccountable htlc with sufficient reputation gets upgraded so it goes in the protected bucket.
         assert!(
             check
-                .inner_forwarding_outcome(10, EndorsementSignal::Unendorsed, true,)
+                .inner_forwarding_outcome(10, AccountableSignal::Unaccountable, true,)
                 .unwrap()
                 == ResourceBucketType::Protected,
         );
@@ -641,16 +644,16 @@ mod tests {
         // If insufficient reputation and no congestion resources will fail.
         assert!(
             check
-                .inner_forwarding_outcome(10, EndorsementSignal::Endorsed, true)
+                .inner_forwarding_outcome(10, AccountableSignal::Accountable, true)
                 .err()
                 .unwrap()
                 == FailureReason::NoReputation,
         );
 
-        // Unendorsed htlc with no reputation and available resources goes into general bucket.
+        // Unaccountable htlc with no reputation and available resources goes into general bucket.
         assert!(
             check
-                .inner_forwarding_outcome(10, EndorsementSignal::Unendorsed, true,)
+                .inner_forwarding_outcome(10, AccountableSignal::Unaccountable, true,)
                 .unwrap()
                 == ResourceBucketType::General
         );
@@ -660,10 +663,10 @@ mod tests {
     fn test_inner_forwarding_outcome_modified_signal() {
         let check = test_congestion_check();
 
-        // return error if htlc has an endorsement signal but is not marked as upgradable.
+        // return error if htlc has an accountable signal but is not marked as upgradable.
         assert!(
             check
-                .inner_forwarding_outcome(10, EndorsementSignal::Endorsed, false,)
+                .inner_forwarding_outcome(10, AccountableSignal::Accountable, false,)
                 .err()
                 .unwrap()
                 == FailureReason::UpgradableSignalModified
