@@ -183,7 +183,7 @@ impl AllocationCheck {
                     ForwardingOutcome::Forward(AccountableSignal::Unaccountable)
                 }
                 ResourceBucketType::Congestion => {
-                    ForwardingOutcome::Forward(AccountableSignal::Unaccountable)
+                    ForwardingOutcome::Forward(AccountableSignal::Accountable)
                 }
                 ResourceBucketType::Protected => {
                     ForwardingOutcome::Forward(AccountableSignal::Accountable)
