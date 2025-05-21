@@ -138,6 +138,8 @@ impl Display for ForwardingOutcome {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 pub enum FailureReason {
     /// There is no space in the incoming channel's general resource bucket, so the htlc should be failed back.
+    NoGeneralResources,
+    /// There are no resources on the incoming channel, so the htlc should be failed back.
     NoResources,
     /// The outgoing peer has insufficient reputation for the htlc to occupy protected resources.
     NoReputation,
@@ -207,30 +209,57 @@ impl AllocationCheck {
         match incoming_accountable {
             AccountableSignal::Accountable => {
                 if self.reputation_check.sufficient_reputation() {
-                    Ok(ResourceBucketType::Protected)
-                } else {
-                    // If the htlc was accountable but the peer doesn't have reputation, we consider giving them a shot
-                    // at our reserved congestion resources.
-                    if self.congestion_resources_available(htlc_amt_msat) {
-                        return Ok(ResourceBucketType::Congestion);
+                    // If the htlc is accountable and the peer has reputation, assign to protected
+                    // bucket.
+                    if self
+                        .resource_check
+                        .protected_bucket
+                        .resources_available(htlc_amt_msat)
+                    {
+                        Ok(ResourceBucketType::Protected)
+                    } else {
+                        // In the unlikely case that the protected bucket is full but there are
+                        // slots available in either general or congestion buckets, assign it
+                        // there.
+                        if self
+                            .resource_check
+                            .general_bucket
+                            .resources_available(htlc_amt_msat)
+                        {
+                            Ok(ResourceBucketType::General)
+                        } else if self.congestion_eligible
+                            && self.congestion_resources_available(htlc_amt_msat)
+                        {
+                            Ok(ResourceBucketType::Congestion)
+                        } else {
+                            Err(FailureReason::NoResources)
+                        }
                     }
-
+                } else {
+                    // If our node will be held accountable for the resolution of the htlc but the
+                    // peer does not have reputation, we fail it.
                     Err(FailureReason::NoReputation)
                 }
             }
             AccountableSignal::Unaccountable => {
-                if self.reputation_check.sufficient_reputation() && incoming_upgradable {
-                    return Ok(ResourceBucketType::Protected);
-                }
-
+                // Assign to general bucket if there are general resources available.
                 if self
                     .resource_check
                     .general_bucket
                     .resources_available(htlc_amt_msat)
                 {
                     Ok(ResourceBucketType::General)
+                } else if self.reputation_check.sufficient_reputation() && incoming_upgradable {
+                    // If the peer has reputation, use protected bucket.
+                    Ok(ResourceBucketType::Protected)
+                } else if self.congestion_eligible
+                    && self.congestion_resources_available(htlc_amt_msat)
+                {
+                    // If no general resources available and peer does not have reputation, we
+                    // check congestion resources.
+                    Ok(ResourceBucketType::Congestion)
                 } else {
-                    Err(FailureReason::NoResources)
+                    Err(FailureReason::NoGeneralResources)
                 }
             }
         }
@@ -334,6 +363,7 @@ impl BucketResources {
 impl Display for FailureReason {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            FailureReason::NoGeneralResources => write!(f, "no general resources"),
             FailureReason::NoResources => write!(f, "no resources"),
             FailureReason::NoReputation => write!(f, "no reputation"),
             FailureReason::UpgradableSignalModified => {
@@ -608,20 +638,27 @@ mod tests {
     #[test]
     fn test_inner_forwarding_outcome_congestion() {
         let check = test_congestion_check();
-        assert!(
-            check
-                .inner_forwarding_outcome(10, AccountableSignal::Accountable, true)
-                .unwrap()
-                == ResourceBucketType::Congestion
-        );
 
-        // Unaccountable htlc will not be granted access to congestion resources.
+        // Unaccountable htlc that is congestion elegible gets access to congestion bucket.
         assert!(
             check
                 .inner_forwarding_outcome(10, AccountableSignal::Unaccountable, true)
-                .err()
                 .unwrap()
-                == FailureReason::NoResources,
+                == ResourceBucketType::Congestion,
+        );
+    }
+
+    #[test]
+    fn test_inner_forwarding_outcome_general() {
+        let mut check = test_congestion_check();
+        check.resource_check.general_bucket.slots_used = 0;
+
+        // Unaccountable htlc with general resources available returns general bucket.
+        assert!(
+            check
+                .inner_forwarding_outcome(10, AccountableSignal::Unaccountable, true)
+                .unwrap()
+                == ResourceBucketType::General,
         );
     }
 
@@ -639,7 +676,10 @@ mod tests {
                 == ResourceBucketType::Protected,
         );
 
-        // Unaccountable htlc with sufficient reputation gets upgraded so it goes in the protected bucket.
+        // Unaccountable htlc with no general or congestion resources available but with sufficient
+        // reputation gets access to protected bucket.
+        check.resource_check.general_bucket.slots_available = 0;
+        check.congestion_eligible = false;
         assert!(
             check
                 .inner_forwarding_outcome(10, AccountableSignal::Unaccountable, true,)
@@ -653,7 +693,7 @@ mod tests {
         let mut check = test_congestion_check();
         check.resource_check.general_bucket.slots_used = 0;
 
-        // If insufficient reputation and no congestion resources will fail.
+        // Accountable htlc with no reputation fails with no reputation error.
         assert!(
             check
                 .inner_forwarding_outcome(10, AccountableSignal::Accountable, true)
@@ -668,6 +708,20 @@ mod tests {
                 .inner_forwarding_outcome(10, AccountableSignal::Unaccountable, true,)
                 .unwrap()
                 == ResourceBucketType::General
+        );
+
+        // Unaccountable htlc fails with no general resources if:
+        // - no reputation
+        // - no general resources
+        // - not congestion eligible
+        check.congestion_eligible = false;
+        check.resource_check.general_bucket.slots_available = 0;
+        assert!(
+            check
+                .inner_forwarding_outcome(10, AccountableSignal::Unaccountable, true)
+                .err()
+                .unwrap()
+                == FailureReason::NoGeneralResources
         );
     }
 
@@ -684,4 +738,6 @@ mod tests {
                 == FailureReason::UpgradableSignalModified
         );
     }
+
+    // TODO: add tests for forwarding_outcome
 }
