@@ -202,30 +202,38 @@ impl AllocationCheck {
         match incoming_accountable {
             AccountableSignal::Accountable => {
                 if self.reputation_check.sufficient_reputation() {
+                    // TODO: should we check first if there are general or congestion resources
+                    // available?
                     Ok(ResourceBucketType::Protected)
                 } else {
-                    // If the htlc was accountable but the peer doesn't have reputation, we consider giving them a shot
-                    // at our reserved congestion resources.
-                    if self.congestion_resources_available(htlc_amt_msat) {
-                        return Ok(ResourceBucketType::Congestion);
-                    }
-
+                    // If the node will be held accountable for the resolution of the htlc but the
+                    // peer does not have reputation, we fail it.
                     Err(FailureReason::NoReputation)
                 }
             }
             AccountableSignal::Unaccountable => {
-                if self.reputation_check.sufficient_reputation() && incoming_upgradable {
-                    return Ok(ResourceBucketType::Protected);
-                }
-
+                // Assign to general bucket if there are general resources available.
                 if self
                     .resource_check
                     .general_bucket
                     .resources_available(htlc_amt_msat)
                 {
                     Ok(ResourceBucketType::General)
+                } else if self.congestion_eligible
+                    && self.congestion_resources_available(htlc_amt_msat)
+                {
+                    // If the htlc is congestion eligible and we have congestion resources
+                    // available, assign it to congestion bucket.
+                    Ok(ResourceBucketType::Congestion)
                 } else {
-                    Err(FailureReason::NoResources)
+                    // If we don't have general or congestion resources available, we check if the
+                    // peer has sufficient reputation. If it has, we give it a slot in the
+                    // protected bucket.
+                    if self.reputation_check.sufficient_reputation() && incoming_upgradable {
+                        Ok(ResourceBucketType::Protected)
+                    } else {
+                        Err(FailureReason::NoResources)
+                    }
                 }
             }
         }
@@ -596,20 +604,27 @@ mod tests {
     #[test]
     fn test_inner_forwarding_outcome_congestion() {
         let check = test_congestion_check();
-        assert!(
-            check
-                .inner_forwarding_outcome(10, AccountableSignal::Accountable, true)
-                .unwrap()
-                == ResourceBucketType::Congestion
-        );
 
-        // Unaccountable htlc will not be granted access to congestion resources.
+        // Unaccountable htlc that is congestion elegible gets access to congestion bucket.
         assert!(
             check
                 .inner_forwarding_outcome(10, AccountableSignal::Unaccountable, true)
-                .err()
                 .unwrap()
-                == FailureReason::NoResources,
+                == ResourceBucketType::Congestion,
+        );
+    }
+
+    #[test]
+    fn test_inner_forwarding_outcome_general() {
+        let mut check = test_congestion_check();
+        check.resource_check.general_bucket.slots_used = 0;
+
+        // Unaccountable htlc with general resources available returns general bucket.
+        assert!(
+            check
+                .inner_forwarding_outcome(10, AccountableSignal::Unaccountable, true)
+                .unwrap()
+                == ResourceBucketType::General,
         );
     }
 
@@ -627,7 +642,10 @@ mod tests {
                 == ResourceBucketType::Protected,
         );
 
-        // Unaccountable htlc with sufficient reputation gets upgraded so it goes in the protected bucket.
+        // Unaccountable htlc with no general or congestion resources available but with sufficient
+        // reputation gets access to protected bucket.
+        check.resource_check.general_bucket.slots_available = 0;
+        check.congestion_eligible = false;
         assert!(
             check
                 .inner_forwarding_outcome(10, AccountableSignal::Unaccountable, true,)
@@ -641,7 +659,7 @@ mod tests {
         let mut check = test_congestion_check();
         check.resource_check.general_bucket.slots_used = 0;
 
-        // If insufficient reputation and no congestion resources will fail.
+        // Accountable htlc with no reputation fails with no reputation error.
         assert!(
             check
                 .inner_forwarding_outcome(10, AccountableSignal::Accountable, true)
@@ -656,6 +674,20 @@ mod tests {
                 .inner_forwarding_outcome(10, AccountableSignal::Unaccountable, true,)
                 .unwrap()
                 == ResourceBucketType::General
+        );
+
+        // Unaccountable htlc fails with no resources if:
+        // - no reputation
+        // - no general resources
+        // - not congestion eligible
+        check.congestion_eligible = false;
+        check.resource_check.general_bucket.slots_available = 0;
+        assert!(
+            check
+                .inner_forwarding_outcome(10, AccountableSignal::Unaccountable, true)
+                .err()
+                .unwrap()
+                == FailureReason::NoResources
         );
     }
 
@@ -672,4 +704,6 @@ mod tests {
                 == FailureReason::UpgradableSignalModified
         );
     }
+
+    // TODO: add tests for forwarding_outcome
 }
