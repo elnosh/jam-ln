@@ -3,16 +3,7 @@ use std::time::Instant;
 
 use crate::decaying_average::DecayingAverage;
 use crate::htlc_manager::{InFlightHtlc, ReputationParams};
-use crate::{ForwardResolution, ReputationError};
-
-/// Describes the size of a resource bucket.
-#[derive(Clone, Debug)]
-pub struct BucketParameters {
-    /// The number of HTLC slots available in the bucket.
-    pub slot_count: u16,
-    /// The amount of liquidity available in the bucket.
-    pub liquidity_msat: u64,
-}
+use crate::{ForwardResolution, ReputationError, ResourceBucketType};
 
 /// Tracks information about the usage of a channel when it utilized as the outgoing direction in
 /// a htlc forward.
@@ -24,19 +15,13 @@ pub(super) struct OutgoingChannel {
     /// average over the reputation_window that the tracker is created with.
     outgoing_reputation: DecayingAverage,
 
-    /// The resources available for htlcs that are not accountable, or are not sent by a peer with sufficient reputation.
-    pub(super) general_bucket: BucketParameters,
-
-    /// The resources available for htlcs that are accountable from peers that do not have sufficient reputation. This
-    /// bucket is only used when the general bucket is full, and peers are limited to a single slot/liquidity block.
-    pub(super) congestion_bucket: BucketParameters,
+    /// Tracks the last instant that the outgoing channel misused congested resources, if any.
+    last_congestion_misuse: Option<Instant>,
 }
 
 impl OutgoingChannel {
     pub(super) fn new(
         params: ReputationParams,
-        general_bucket: BucketParameters,
-        congestion_bucket: BucketParameters,
         outgoing_reputation: Option<(i64, Instant)>,
     ) -> Result<Self, ReputationError> {
         if params.reputation_multiplier <= 1 {
@@ -58,8 +43,7 @@ impl OutgoingChannel {
         Ok(Self {
             params,
             outgoing_reputation,
-            general_bucket,
-            congestion_bucket,
+            last_congestion_misuse: None,
         })
     }
 
@@ -72,6 +56,16 @@ impl OutgoingChannel {
         self.outgoing_reputation.value_at_instant(access_instant)
     }
 
+    /// Returns true if the channel has never misused congestion resources, or sufficient time has passed since last
+    /// abuse (set by ReputationParams.revenue_window, as this is the period we can be jammed for).
+    pub(super) fn no_congestion_misuse(&self, access_ins: Instant) -> bool {
+        if let Some(instant) = self.last_congestion_misuse {
+            access_ins.duration_since(instant) > self.params.revenue_window
+        } else {
+            true
+        }
+    }
+
     /// Removes an in flight htlc, updating reputation to reflect impact of resolution.
     pub(super) fn remove_outgoing_htlc(
         &mut self,
@@ -79,6 +73,13 @@ impl OutgoingChannel {
         resolution: ForwardResolution,
         resolved_instant: Instant,
     ) -> Result<(), ReputationError> {
+        if in_flight.bucket == ResourceBucketType::Congestion
+            && resolved_instant.duration_since(in_flight.added_instant)
+                >= self.params.resolution_period
+        {
+            self.last_congestion_misuse = Some(resolved_instant)
+        }
+
         // Unaccountable payments only have a positive impact on reputation (no negative effective fees are applied)
         let settled = resolution == ForwardResolution::Settled;
         let effective_fees = self.params.effective_fees(
@@ -94,13 +95,6 @@ impl OutgoingChannel {
 
         Ok(())
     }
-
-    pub(super) fn general_jam_channel(&mut self) {
-        self.general_bucket = BucketParameters {
-            slot_count: 0,
-            liquidity_msat: 0,
-        };
-    }
 }
 
 #[cfg(test)]
@@ -110,7 +104,7 @@ mod tests {
     use crate::htlc_manager::ReputationParams;
     use crate::{AccountableSignal, ForwardResolution, ResourceBucketType};
 
-    use super::{BucketParameters, InFlightHtlc, OutgoingChannel};
+    use super::{InFlightHtlc, OutgoingChannel};
 
     fn get_test_params() -> ReputationParams {
         ReputationParams {
@@ -121,32 +115,19 @@ mod tests {
         }
     }
 
-    /// Returns a ReputationTracker with 100 general slots and 100_00 msat of general liquidity.
-    fn get_test_tracker() -> OutgoingChannel {
-        OutgoingChannel::new(
-            get_test_params(),
-            BucketParameters {
-                slot_count: 100,
-                liquidity_msat: 100_000,
-            },
-            BucketParameters {
-                slot_count: 30,
-                liquidity_msat: 50_000,
-            },
-            None,
-        )
-        .unwrap()
-    }
-
-    fn get_test_htlc(accountable: AccountableSignal, fee_msat: u64) -> InFlightHtlc {
+    fn get_test_htlc(
+        accountable: AccountableSignal,
+        fee_msat: u64,
+        bucket: ResourceBucketType,
+    ) -> InFlightHtlc {
         InFlightHtlc {
             outgoing_channel_id: 1,
             hold_blocks: 1000,
-            outgoing_amt_msat: 2000,
+            incoming_amt_msat: 2000,
             fee_msat,
             added_instant: Instant::now(),
             accountable,
-            bucket: ResourceBucketType::General,
+            bucket,
         }
     }
 
@@ -238,8 +219,12 @@ mod tests {
     /// Tests update of outgoing reputation when htlcs are removed.
     #[test]
     fn test_remove_htlc() {
-        let mut tracker = get_test_tracker();
-        let htlc_1 = get_test_htlc(AccountableSignal::Accountable, 1000);
+        let mut tracker = OutgoingChannel::new(get_test_params(), None).unwrap();
+        let htlc_1 = get_test_htlc(
+            AccountableSignal::Accountable,
+            1000,
+            ResourceBucketType::General,
+        );
 
         tracker
             .remove_outgoing_htlc(&htlc_1, ForwardResolution::Settled, htlc_1.added_instant)
@@ -250,18 +235,64 @@ mod tests {
             htlc_1.fee_msat as i64
         );
 
-        let htlc_2 = get_test_htlc(AccountableSignal::Accountable, 5000);
+        let htlc_2 = get_test_htlc(
+            AccountableSignal::Accountable,
+            5000,
+            ResourceBucketType::General,
+        );
         tracker
-            .remove_outgoing_htlc(
-                &htlc_2.clone(),
-                ForwardResolution::Failed,
-                htlc_2.added_instant,
-            )
+            .remove_outgoing_htlc(&htlc_2, ForwardResolution::Failed, htlc_2.added_instant)
             .unwrap();
 
         assert_eq!(
             tracker.outgoing_reputation(htlc_1.added_instant).unwrap(),
             htlc_1.fee_msat as i64,
         );
+    }
+
+    #[test]
+    fn test_no_congestion_abuse() {
+        let now = Instant::now();
+        let test_params = get_test_params();
+        let mut outgoing_channel = OutgoingChannel::new(test_params, None).unwrap();
+        assert!(outgoing_channel.no_congestion_misuse(now));
+
+        let htlc_1 = get_test_htlc(
+            AccountableSignal::Accountable,
+            100,
+            ResourceBucketType::Congestion,
+        );
+
+        // Fast resolving HTLC does not trigger misuse.
+        outgoing_channel
+            .remove_outgoing_htlc(
+                &htlc_1,
+                ForwardResolution::Settled,
+                now.checked_add(test_params.resolution_period / 2).unwrap(),
+            )
+            .unwrap();
+        assert!(outgoing_channel.no_congestion_misuse(now));
+
+        let htlc_2 = get_test_htlc(
+            AccountableSignal::Accountable,
+            100,
+            ResourceBucketType::Congestion,
+        );
+
+        // Slow resolving HTLC does trigger misuse.
+        let last_misuse = now.checked_add(test_params.resolution_period * 2).unwrap();
+        outgoing_channel
+            .remove_outgoing_htlc(&htlc_2, ForwardResolution::Settled, last_misuse)
+            .unwrap();
+        assert!(!outgoing_channel.no_congestion_misuse(now));
+
+        // Only recover once the cooldown period has fully passed.
+        let half_recovered = last_misuse
+            .checked_add(test_params.revenue_window / 2)
+            .unwrap();
+        assert!(!outgoing_channel.no_congestion_misuse(half_recovered));
+
+        let fully_recovered = last_misuse.checked_add(test_params.revenue_window).unwrap();
+        assert!(!outgoing_channel.no_congestion_misuse(fully_recovered));
     }
 }

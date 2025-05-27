@@ -146,9 +146,9 @@ pub struct AllocationCheck {
     /// The reputation values used to compare the incoming channel's revenue to the outgoing channel's reputation for
     /// the htlc proposed.
     pub reputation_check: ReputationCheck,
-    /// Indicates whether the incoming channel is eligible to consume congestion resources.
+    /// Indicates whether the outgoing channel is eligible to consume congestion resources.
     pub congestion_eligible: bool,
-    /// The resources available on the outgoing channel.
+    /// The resources available on the incoming channel.
     pub resource_check: ResourceCheck,
 }
 
