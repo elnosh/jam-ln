@@ -317,6 +317,18 @@ async fn main() -> Result<(), BoxError> {
 
 /// Checks whether the attacker and target meet the required portion of high reputation pairs to required.
 fn check_reputation_status(cli: &Cli, status: &NetworkReputation) -> Result<(), BoxError> {
+    log::info!(
+        "Attacker has {} out of {} pairs with reputation",
+        status.attacker_reputation,
+        status.attacker_pair_count,
+    );
+
+    log::info!(
+        "Target has {}/{} pairs with reputation with its peers",
+        status.target_reputation,
+        status.target_pair_count,
+    );
+
     let attacker_threshold =
         status.attacker_pair_count * cli.attacker_reputation_percent as usize / 100;
     if status.attacker_reputation < attacker_threshold {
