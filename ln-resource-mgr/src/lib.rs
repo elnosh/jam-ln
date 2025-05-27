@@ -300,6 +300,7 @@ impl ReputationCheck {
 pub struct ResourceCheck {
     pub general_bucket: BucketResources,
     pub congestion_bucket: BucketResources,
+    pub protected_bucket: BucketResources,
 }
 
 /// Describes the resources currently used in a bucket.
@@ -529,13 +530,19 @@ mod tests {
                     slots_used: 10,
                     slots_available: 10,
                     liquidity_used_msat: 0,
-                    liquidity_available_msat: 200_000,
+                    liquidity_available_msat: 200_000_000,
                 },
                 congestion_bucket: BucketResources {
                     slots_used: 0,
                     slots_available: 10,
                     liquidity_used_msat: 0,
                     liquidity_available_msat: MINIMUM_CONGESTION_SLOT_LIQUDITY * 20,
+                },
+                protected_bucket: BucketResources {
+                    slots_used: 0,
+                    slots_available: 10,
+                    liquidity_used_msat: 0,
+                    liquidity_available_msat: 300_000_000,
                 },
             },
         };

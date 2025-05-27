@@ -16,16 +16,22 @@ pub(super) struct IncomingChannel {
     /// The resources available for htlcs that are accountable from peers that do not have sufficient reputation. This
     /// bucket is only used when the general bucket is full, and peers are limited to a single slot/liquidity block.
     pub(super) congestion_bucket: BucketParameters,
+
+    /// The resources available on the protected bucket. This will be used by htlcs that are
+    /// accountable from peers that have sufficient reputation.
+    pub(super) protected_bucket: BucketParameters,
 }
 
 impl IncomingChannel {
     pub(super) fn new(
         general_bucket: BucketParameters,
         congestion_bucket: BucketParameters,
+        protected_bucket: BucketParameters,
     ) -> Self {
         Self {
             general_bucket,
             congestion_bucket,
+            protected_bucket,
         }
     }
 

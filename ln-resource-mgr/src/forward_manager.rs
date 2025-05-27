@@ -226,6 +226,24 @@ impl ForwardManagerImpl {
                         .congestion_bucket
                         .liquidity_msat,
                 },
+                protected_bucket: BucketResources {
+                    slots_used: self.htlcs.bucket_in_flight_count(
+                        forward.incoming_ref.channel_id,
+                        ResourceBucketType::Protected,
+                    ),
+                    slots_available: incoming_channel
+                        .incoming_direction
+                        .protected_bucket
+                        .slot_count,
+                    liquidity_used_msat: self.htlcs.bucket_in_flight_msat(
+                        forward.incoming_ref.channel_id,
+                        ResourceBucketType::Protected,
+                    ),
+                    liquidity_available_msat: incoming_channel
+                        .incoming_direction
+                        .protected_bucket
+                        .liquidity_msat,
+                },
             },
         })
     }
@@ -233,6 +251,8 @@ impl ForwardManagerImpl {
 
 impl ForwardManager {
     pub fn new(params: ForwardManagerParams) -> Self {
+        assert!(params.general_slot_portion + params.congestion_slot_portion < 100);
+        assert!(params.general_liquidity_portion + params.congestion_liquidity_portion < 100);
         Self {
             params,
             inner: Mutex::new(ForwardManagerImpl {
@@ -282,6 +302,17 @@ impl ReputationManager for ForwardManager {
                 let congestion_liquidity_amount =
                     capacity_msat * self.params.congestion_liquidity_portion as u64 / 100;
 
+                let protected_slot_portion =
+                    100 - self.params.general_slot_portion - self.params.congestion_slot_portion;
+
+                let protected_liquidity_portion = 100
+                    - self.params.general_liquidity_portion
+                    - self.params.congestion_liquidity_portion;
+
+                let protected_slot_count = 483 * protected_slot_portion as u16 / 100;
+                let protected_liquidity_amount =
+                    capacity_msat * protected_liquidity_portion as u64 / 100;
+
                 let outgoing_reputation = channel_reputation
                     .as_ref()
                     .map(|channel| (channel.outgoing_reputation, add_ins));
@@ -306,6 +337,10 @@ impl ReputationManager for ForwardManager {
                         BucketParameters {
                             slot_count: congestion_slot_count,
                             liquidity_msat: congestion_liquidity_amount,
+                        },
+                        BucketParameters {
+                            slot_count: protected_slot_count,
+                            liquidity_msat: protected_liquidity_amount,
                         },
                     ),
                     outgoing_direction: OutgoingChannel::new(
