@@ -120,18 +120,6 @@ pub async fn get_network_reputation<R: ReputationMonitor>(
         }
     }
 
-    log::info!(
-        "Attacker has {} out of {} pairs with reputation",
-        network_reputation.attacker_reputation,
-        network_reputation.attacker_pair_count,
-    );
-
-    log::info!(
-        "Target has {}/{} pairs with reputation with its peers",
-        network_reputation.target_reputation,
-        network_reputation.target_pair_count,
-    );
-
     Ok(network_reputation)
 }
 
