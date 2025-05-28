@@ -319,6 +319,13 @@ impl ReputationManager for ForwardManager {
 
                 let revenue = match &channel_reputation {
                     Some(channel) => {
+                        if channel.capacity_msat != capacity_msat {
+                            return Err(ReputationError::ErrChannelCapacityMismatch(
+                                capacity_msat,
+                                channel.capacity_msat,
+                            ));
+                        }
+
                         let mut revenue =
                             RevenueAverage::new(&self.params.reputation_params, add_ins);
                         revenue.add_value(channel.bidirectional_revenue, add_ins)?;
