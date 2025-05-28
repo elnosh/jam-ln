@@ -501,8 +501,12 @@ impl ReputationManager for ForwardManager {
 mod tests {
     use std::time::{Duration, Instant};
 
-    use super::RevenueAverage;
-    use crate::ReputationParams;
+    use super::{ForwardManagerParams, RevenueAverage};
+    use crate::{
+        forward_manager::{ForwardManager, SimualtionDebugManager},
+        AccountableSignal, ChannelSnapshot, HtlcRef, ProposedForward, ReputationError,
+        ReputationManager, ReputationParams,
+    };
 
     #[test]
     fn test_revenue_average() {
@@ -587,5 +591,132 @@ mod tests {
                 .unwrap(),
             (decayed_value as f64 / params.reputation_multiplier as f64).round() as i64,
         );
+    }
+
+    fn test_forward_manager_params() -> ForwardManagerParams {
+        ForwardManagerParams {
+            reputation_params: ReputationParams {
+                revenue_window: Duration::from_secs(60 * 60 * 24 * 14),
+                reputation_multiplier: 10,
+                resolution_period: Duration::from_secs(90),
+                expected_block_speed: None,
+            },
+            general_slot_portion: 30,
+            general_liquidity_portion: 30,
+            congestion_slot_portion: 20,
+            congestion_liquidity_portion: 20,
+        }
+    }
+
+    #[test]
+    fn test_add_and_remove_channel() {
+        let params = test_forward_manager_params();
+        let now = Instant::now();
+
+        let fwd_manager = ForwardManager::new(params);
+
+        let channel_capacity = 10_000_000;
+        assert!(fwd_manager
+            .add_channel(0, channel_capacity, now, None)
+            .is_ok());
+
+        // Test adding channel from a snapshot
+        let snapshot = ChannelSnapshot {
+            capacity_msat: 10_000_000,
+            outgoing_reputation: 1000,
+            bidirectional_revenue: 500,
+        };
+        assert!(fwd_manager
+            .add_channel(1, channel_capacity, now, Some(snapshot.clone()))
+            .is_ok());
+
+        assert!(
+            fwd_manager
+                .add_channel(0, channel_capacity, now, None)
+                .err()
+                .unwrap()
+                == ReputationError::ErrChannelExists(0)
+        );
+        assert!(
+            fwd_manager
+                .add_channel(5, 20_000_000, now, Some(snapshot))
+                .err()
+                .unwrap()
+                == ReputationError::ErrChannelCapacityMismatch(20_000_000, 10_000_000)
+        );
+
+        let channels = fwd_manager.list_channels(Instant::now()).unwrap();
+
+        assert!(channels.len() == 2);
+        assert!(channels.get(&0).unwrap().capacity_msat == channel_capacity);
+        // Check values on 2nd channel added from snapshot
+        assert!(channels.get(&1).unwrap().capacity_msat == channel_capacity);
+        assert!(channels.get(&1).unwrap().outgoing_reputation == 1000);
+        assert!(channels.get(&1).unwrap().bidirectional_revenue == 500);
+
+        assert!(fwd_manager.remove_channel(0).is_ok());
+        assert!(
+            fwd_manager.remove_channel(100).err().unwrap()
+                == ReputationError::ErrChannelNotFound(100)
+        )
+    }
+
+    fn test_proposed_forward(
+        incoming: u64,
+        outgoing: u64,
+        htlc_index: u64,
+        accountable: AccountableSignal,
+    ) -> ProposedForward {
+        ProposedForward {
+            incoming_ref: HtlcRef {
+                channel_id: incoming,
+                htlc_index,
+            },
+            outgoing_channel_id: outgoing,
+            amount_in_msat: 10_000,
+            amount_out_msat: 10_000 - 100,
+            expiry_in_height: 80,
+            expiry_out_height: 40,
+            added_at: Instant::now(),
+            incoming_accountable: accountable,
+            upgradable_accountability: true,
+        }
+    }
+
+    #[test]
+    fn test_add_htlc() {
+        let params = test_forward_manager_params();
+        let now = Instant::now();
+        let fwd_manager = ForwardManager::new(params);
+
+        let channel_capacity = 10_000_000;
+        fwd_manager
+            .add_channel(0, channel_capacity, now, None)
+            .unwrap();
+        fwd_manager
+            .add_channel(1, channel_capacity, now, None)
+            .unwrap();
+
+        let htlc_1 = test_proposed_forward(0, 1, 1, AccountableSignal::Unaccountable);
+
+        let fwd_outcome_check = fwd_manager.get_forwarding_outcome(&htlc_1).unwrap();
+        let check = fwd_manager.add_htlc(&htlc_1).unwrap();
+        // Sanity check that add_htlc and get_forwarding_outcome return same check for the same
+        // proposed forward.
+        assert_eq!(fwd_outcome_check, check);
+
+        let htlc_2 = test_proposed_forward(0, 1, 2, AccountableSignal::Unaccountable);
+        let check = fwd_manager.add_htlc(&htlc_2).unwrap();
+
+        // With general resources available, check that htlc_1 was added in general bucket
+        assert!(check.congestion_eligible);
+        assert!(check.resource_check.general_bucket.slots_used == 1);
+        assert!(check.resource_check.general_bucket.liquidity_used_msat == htlc_1.amount_in_msat);
+
+        // Jam the channel and try adding more htlcs.
+        fwd_manager.general_jam_channel(0).unwrap();
+
+        // TODO: when we implement the correct bucketing outcomes, expand this test to check htlcs
+        // are added in correct buckets.
     }
 }
