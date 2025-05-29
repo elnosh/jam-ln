@@ -9,7 +9,7 @@ pub(super) struct InFlightHtlc {
     pub(super) outgoing_channel_id: u64,
     pub(super) fee_msat: u64,
     pub(super) hold_blocks: u32,
-    pub(super) outgoing_amt_msat: u64,
+    pub(super) incoming_amt_msat: u64,
     pub(super) added_instant: Instant,
     pub(super) accountable: AccountableSignal,
     pub(super) bucket: ResourceBucketType,
@@ -145,33 +145,38 @@ impl InFlightManager {
     /// Returns the total balance of htlcs in flight in the bucket provided.
     pub(super) fn bucket_in_flight_msat(
         &self,
-        outgoing_channel_id: u64,
+        incoming_channel_id: u64,
         bucket: ResourceBucketType,
     ) -> u64 {
         self.in_flight
             .iter()
-            .filter(|(_, v)| v.bucket == bucket && v.outgoing_channel_id == outgoing_channel_id)
-            .map(|(_, v)| v.outgoing_amt_msat)
+            .filter(|(incoming_ref, v)| {
+                v.bucket == bucket && incoming_ref.channel_id == incoming_channel_id
+            })
+            .map(|(_, v)| v.incoming_amt_msat)
             .sum()
     }
 
     /// Returns the total number of htlcs in flight in the bucket provided.
     pub(super) fn bucket_in_flight_count(
         &self,
-        outgoing_channel_id: u64,
+        incoming_channel_id: u64,
         bucket: ResourceBucketType,
     ) -> u16 {
         self.in_flight
             .iter()
-            .filter(|(_, v)| v.bucket == bucket && v.outgoing_channel_id == outgoing_channel_id)
+            .filter(|(incoming_ref, v)| {
+                v.bucket == bucket && incoming_ref.channel_id == incoming_channel_id
+            })
             .count() as u16 // Safe because we have in protocol limit 483.
     }
 
-    /// Returns false if the incoming channel currently has any in-flight htlcs that are utilizing
+    /// Returns false if the outgoing channel currently has any in-flight htlcs that are utilizing
     /// congestion resources.
-    pub(super) fn congestion_eligible(&self, incoming_channel_id: u64) -> bool {
-        !self.in_flight.iter().any(|(k, v)| {
-            v.bucket == ResourceBucketType::Congestion && k.channel_id == incoming_channel_id
+    pub(super) fn congestion_eligible(&self, outgoing_channel_id: u64) -> bool {
+        !self.in_flight.iter().any(|(_, v)| {
+            v.bucket == ResourceBucketType::Congestion
+                && v.outgoing_channel_id == outgoing_channel_id
         })
     }
 
@@ -210,7 +215,7 @@ mod tests {
         InFlightHtlc {
             outgoing_channel_id: outgoing_channel,
             hold_blocks: 1000,
-            outgoing_amt_msat: 2000,
+            incoming_amt_msat: 2000,
             fee_msat,
             added_instant: Instant::now(),
             accountable: if accountable {
@@ -238,20 +243,21 @@ mod tests {
         tracker.add_htlc(htlc_1_ref, htlc_1.clone()).unwrap();
 
         // Check that HTLC counts for buckets are correct.
+        // One in-flight htlc in protected bucket for incoming channel.
         assert_eq!(
-            tracker.bucket_in_flight_count(channel_1, ResourceBucketType::Protected),
+            tracker.bucket_in_flight_count(channel_0, ResourceBucketType::Protected),
             1
         );
         assert_eq!(
-            tracker.bucket_in_flight_count(channel_1, ResourceBucketType::General),
-            0
-        );
-        assert_eq!(
-            tracker.bucket_in_flight_count(channel_0, ResourceBucketType::Protected),
-            0
-        );
-        assert_eq!(
             tracker.bucket_in_flight_count(channel_0, ResourceBucketType::General),
+            0
+        );
+        assert_eq!(
+            tracker.bucket_in_flight_count(channel_1, ResourceBucketType::Protected),
+            0
+        );
+        assert_eq!(
+            tracker.bucket_in_flight_count(channel_1, ResourceBucketType::General),
             0
         );
 
@@ -278,33 +284,36 @@ mod tests {
         ));
 
         assert!(tracker.add_htlc(htlc_2_ref, htlc_2).is_ok());
+        // Newly added htlc is incoming on channel_1 on general bucket.
         assert_eq!(
-            tracker.bucket_in_flight_count(channel_1, ResourceBucketType::Protected),
+            tracker.bucket_in_flight_count(channel_1, ResourceBucketType::General),
             1
         );
         assert_eq!(
-            tracker.bucket_in_flight_count(channel_1, ResourceBucketType::General),
+            tracker.bucket_in_flight_count(channel_1, ResourceBucketType::Protected),
             0
         );
         assert_eq!(
             tracker.bucket_in_flight_count(channel_0, ResourceBucketType::Protected),
-            0
+            1
         );
         assert_eq!(
             tracker.bucket_in_flight_count(channel_0, ResourceBucketType::General),
-            1
+            0
         );
 
         // Removing outgoing htlc updates buckets accordingly.
         assert!(tracker
             .remove_htlc(htlc_1.outgoing_channel_id, htlc_1_ref)
             .is_ok());
+
+        // htlc_1 where incoming channel is channel_0, should be empty now since it was removed.
         assert_eq!(
-            tracker.bucket_in_flight_count(channel_1, ResourceBucketType::Protected),
+            tracker.bucket_in_flight_count(channel_0, ResourceBucketType::Protected),
             0
         );
         assert_eq!(
-            tracker.bucket_in_flight_count(channel_1, ResourceBucketType::General),
+            tracker.bucket_in_flight_count(channel_0, ResourceBucketType::General),
             0
         );
     }
@@ -436,29 +445,31 @@ mod tests {
         let htlc_1 = get_test_htlc(channel_1, true, ResourceBucketType::Protected, 1000);
         assert!(tracker.add_htlc(htlc_1_ref, htlc_1.clone()).is_ok());
 
+        // Newly added htlc_1 on protected bucket where incoming channel is channel_0 should now be
+        // present.
         assert_eq!(
-            tracker.bucket_in_flight_count(channel_1, ResourceBucketType::Protected),
+            tracker.bucket_in_flight_count(channel_0, ResourceBucketType::Protected),
             1
         );
         assert_eq!(
-            tracker.bucket_in_flight_msat(channel_1, ResourceBucketType::Protected),
-            htlc_1.outgoing_amt_msat,
+            tracker.bucket_in_flight_msat(channel_0, ResourceBucketType::Protected),
+            htlc_1.incoming_amt_msat,
         );
         assert_eq!(
-            tracker.bucket_in_flight_count(channel_1, ResourceBucketType::Congestion),
+            tracker.bucket_in_flight_count(channel_0, ResourceBucketType::Congestion),
             0
         );
 
         assert_eq!(
-            tracker.bucket_in_flight_count(channel_0, ResourceBucketType::Protected),
+            tracker.bucket_in_flight_count(channel_1, ResourceBucketType::Protected),
             0
         );
         assert_eq!(
-            tracker.bucket_in_flight_msat(channel_0, ResourceBucketType::Protected),
+            tracker.bucket_in_flight_msat(channel_1, ResourceBucketType::Protected),
             0,
         );
         assert_eq!(
-            tracker.bucket_in_flight_count(channel_0, ResourceBucketType::Congestion),
+            tracker.bucket_in_flight_count(channel_1, ResourceBucketType::Congestion),
             0
         );
 
@@ -470,12 +481,12 @@ mod tests {
 
         assert!(tracker.add_htlc(htlc_2_ref, htlc_2.clone()).is_ok());
         assert_eq!(
-            tracker.bucket_in_flight_count(channel_1, ResourceBucketType::Protected),
+            tracker.bucket_in_flight_count(channel_0, ResourceBucketType::Protected),
             2
         );
         assert_eq!(
-            tracker.bucket_in_flight_msat(channel_1, ResourceBucketType::Protected),
-            htlc_1.outgoing_amt_msat + htlc_2.outgoing_amt_msat,
+            tracker.bucket_in_flight_msat(channel_0, ResourceBucketType::Protected),
+            htlc_1.incoming_amt_msat + htlc_2.incoming_amt_msat,
         );
 
         // Removing htlc updates accordingly.
@@ -483,12 +494,12 @@ mod tests {
             .remove_htlc(htlc_1.outgoing_channel_id, htlc_1_ref)
             .is_ok());
         assert_eq!(
-            tracker.bucket_in_flight_count(channel_1, ResourceBucketType::Protected),
+            tracker.bucket_in_flight_count(channel_0, ResourceBucketType::Protected),
             1
         );
         assert_eq!(
-            tracker.bucket_in_flight_msat(channel_1, ResourceBucketType::Protected),
-            htlc_2.outgoing_amt_msat,
+            tracker.bucket_in_flight_msat(channel_0, ResourceBucketType::Protected),
+            htlc_2.incoming_amt_msat,
         );
     }
 
@@ -509,9 +520,9 @@ mod tests {
         let htlc_1 = get_test_htlc(channel_1, true, ResourceBucketType::Congestion, 1000);
         assert!(tracker.add_htlc(htlc_1_ref, htlc_1.clone()).is_ok());
 
-        // Congestion not eligible for incoming channel.
-        assert!(!tracker.congestion_eligible(channel_0));
-        assert!(tracker.congestion_eligible(channel_1));
+        // Congestion not eligible for outgoing channel.
+        assert!(tracker.congestion_eligible(channel_0));
+        assert!(!tracker.congestion_eligible(channel_1));
 
         // Re-eligible once htlc has been removed.
         assert!(tracker

@@ -1,7 +1,7 @@
 use crate::decaying_average::DecayingAverage;
 use crate::htlc_manager::{ChannelFilter, InFlightHtlc, InFlightManager};
-use crate::incoming_channel::IncomingChannel;
-use crate::outgoing_channel::{BucketParameters, OutgoingChannel};
+use crate::incoming_channel::{BucketParameters, IncomingChannel};
+use crate::outgoing_channel::OutgoingChannel;
 use crate::{
     AllocationCheck, BucketResources, ChannelSnapshot, ForwardResolution, HtlcRef, ProposedForward,
     ReputationCheck, ReputationError, ReputationManager, ReputationParams, ResourceBucketType,
@@ -151,6 +151,18 @@ impl ForwardManagerImpl {
     ) -> Result<AllocationCheck, ReputationError> {
         forward.validate()?;
 
+        // Check reputation and resources available for the forward.
+        let outgoing_channel = &mut self
+            .channels
+            .get_mut(&forward.outgoing_channel_id)
+            .ok_or(ReputationError::ErrOutgoingNotFound(
+                forward.outgoing_channel_id,
+            ))?
+            .outgoing_direction;
+
+        let no_congestion_misuse = outgoing_channel.no_congestion_misuse(forward.added_at);
+        let outgoing_reputation = outgoing_channel.outgoing_reputation(forward.added_at)?;
+
         let incoming_channel = self
             .channels
             .get_mut(&forward.incoming_ref.channel_id)
@@ -162,22 +174,9 @@ impl ForwardManagerImpl {
             .bidirectional_revenue
             .value_at_instant(forward.added_at)?;
 
-        let no_congestion_misuse = incoming_channel
-            .incoming_direction
-            .no_congestion_misuse(forward.added_at);
-
-        // Check reputation and resources available for the forward.
-        let outgoing_channel = &mut self
-            .channels
-            .get_mut(&forward.outgoing_channel_id)
-            .ok_or(ReputationError::ErrOutgoingNotFound(
-                forward.outgoing_channel_id,
-            ))?
-            .outgoing_direction;
-
         Ok(AllocationCheck {
             reputation_check: ReputationCheck {
-                reputation: outgoing_channel.outgoing_reputation(forward.added_at)?,
+                reputation: outgoing_reputation,
                 revenue_threshold: incoming_revenue_threshold,
                 in_flight_total_risk: self.htlcs.channel_in_flight_risk(
                     ChannelFilter::OutgoingChannel(forward.outgoing_channel_id),
@@ -186,36 +185,64 @@ impl ForwardManagerImpl {
                     .htlcs
                     .htlc_risk(forward.fee_msat(), forward.expiry_in_height),
             },
-            // The incoming channel can only use congestion resources if it hasn't recently misused congestion
+            // The outgoing channel can only use congestion resources if it hasn't recently misused congestion
             // resources and it doesn't currently have any htlcs using them.
             congestion_eligible: no_congestion_misuse
-                && self
-                    .htlcs
-                    .congestion_eligible(forward.incoming_ref.channel_id),
+                && self.htlcs.congestion_eligible(forward.outgoing_channel_id),
             resource_check: ResourceCheck {
                 general_bucket: BucketResources {
                     slots_used: self.htlcs.bucket_in_flight_count(
-                        forward.outgoing_channel_id,
+                        forward.incoming_ref.channel_id,
                         ResourceBucketType::General,
                     ),
-                    slots_available: outgoing_channel.general_bucket.slot_count,
+                    slots_available: incoming_channel
+                        .incoming_direction
+                        .general_bucket
+                        .slot_count,
                     liquidity_used_msat: self.htlcs.bucket_in_flight_msat(
-                        forward.outgoing_channel_id,
+                        forward.incoming_ref.channel_id,
                         ResourceBucketType::General,
                     ),
-                    liquidity_available_msat: outgoing_channel.general_bucket.liquidity_msat,
+                    liquidity_available_msat: incoming_channel
+                        .incoming_direction
+                        .general_bucket
+                        .liquidity_msat,
                 },
                 congestion_bucket: BucketResources {
                     slots_used: self.htlcs.bucket_in_flight_count(
-                        forward.outgoing_channel_id,
+                        forward.incoming_ref.channel_id,
                         ResourceBucketType::Congestion,
                     ),
-                    slots_available: outgoing_channel.congestion_bucket.slot_count,
+                    slots_available: incoming_channel
+                        .incoming_direction
+                        .congestion_bucket
+                        .slot_count,
                     liquidity_used_msat: self.htlcs.bucket_in_flight_msat(
-                        forward.outgoing_channel_id,
+                        forward.incoming_ref.channel_id,
                         ResourceBucketType::Congestion,
                     ),
-                    liquidity_available_msat: outgoing_channel.congestion_bucket.liquidity_msat,
+                    liquidity_available_msat: incoming_channel
+                        .incoming_direction
+                        .congestion_bucket
+                        .liquidity_msat,
+                },
+                protected_bucket: BucketResources {
+                    slots_used: self.htlcs.bucket_in_flight_count(
+                        forward.incoming_ref.channel_id,
+                        ResourceBucketType::Protected,
+                    ),
+                    slots_available: incoming_channel
+                        .incoming_direction
+                        .protected_bucket
+                        .slot_count,
+                    liquidity_used_msat: self.htlcs.bucket_in_flight_msat(
+                        forward.incoming_ref.channel_id,
+                        ResourceBucketType::Protected,
+                    ),
+                    liquidity_available_msat: incoming_channel
+                        .incoming_direction
+                        .protected_bucket
+                        .liquidity_msat,
                 },
             },
         })
@@ -224,6 +251,8 @@ impl ForwardManagerImpl {
 
 impl ForwardManager {
     pub fn new(params: ForwardManagerParams) -> Self {
+        assert!(params.general_slot_portion + params.congestion_slot_portion < 100);
+        assert!(params.general_liquidity_portion + params.congestion_liquidity_portion < 100);
         Self {
             params,
             inner: Mutex::new(ForwardManagerImpl {
@@ -242,9 +271,8 @@ impl SimualtionDebugManager for ForwardManager {
             .channels
             .get_mut(&channel)
             .ok_or(ReputationError::ErrChannelNotFound(channel))?
-            .outgoing_direction
+            .incoming_direction
             .general_jam_channel();
-
         Ok(())
     }
 }
@@ -274,12 +302,30 @@ impl ReputationManager for ForwardManager {
                 let congestion_liquidity_amount =
                     capacity_msat * self.params.congestion_liquidity_portion as u64 / 100;
 
+                let protected_slot_portion =
+                    100 - self.params.general_slot_portion - self.params.congestion_slot_portion;
+
+                let protected_liquidity_portion = 100
+                    - self.params.general_liquidity_portion
+                    - self.params.congestion_liquidity_portion;
+
+                let protected_slot_count = 483 * protected_slot_portion as u16 / 100;
+                let protected_liquidity_amount =
+                    capacity_msat * protected_liquidity_portion as u64 / 100;
+
                 let outgoing_reputation = channel_reputation
                     .as_ref()
                     .map(|channel| (channel.outgoing_reputation, add_ins));
 
                 let revenue = match &channel_reputation {
                     Some(channel) => {
+                        if channel.capacity_msat != capacity_msat {
+                            return Err(ReputationError::ErrChannelCapacityMismatch(
+                                capacity_msat,
+                                channel.capacity_msat,
+                            ));
+                        }
+
                         let mut revenue =
                             RevenueAverage::new(&self.params.reputation_params, add_ins);
                         revenue.add_value(channel.bidirectional_revenue, add_ins)?;
@@ -290,9 +336,7 @@ impl ReputationManager for ForwardManager {
 
                 v.insert(TrackedChannel {
                     capacity_msat,
-                    incoming_direction: IncomingChannel::new(self.params.reputation_params),
-                    outgoing_direction: OutgoingChannel::new(
-                        self.params.reputation_params,
+                    incoming_direction: IncomingChannel::new(
                         BucketParameters {
                             slot_count: general_slot_count,
                             liquidity_msat: general_liquidity_amount,
@@ -301,6 +345,13 @@ impl ReputationManager for ForwardManager {
                             slot_count: congestion_slot_count,
                             liquidity_msat: congestion_liquidity_amount,
                         },
+                        BucketParameters {
+                            slot_count: protected_slot_count,
+                            liquidity_msat: protected_liquidity_amount,
+                        },
+                    ),
+                    outgoing_direction: OutgoingChannel::new(
+                        self.params.reputation_params,
                         outgoing_reputation,
                     )?,
                     bidirectional_revenue: revenue,
@@ -352,7 +403,7 @@ impl ReputationManager for ForwardManager {
                 InFlightHtlc {
                     outgoing_channel_id: forward.outgoing_channel_id,
                     hold_blocks: forward.expiry_in_height,
-                    outgoing_amt_msat: forward.amount_out_msat,
+                    incoming_amt_msat: forward.amount_in_msat,
                     fee_msat: forward.fee_msat(),
                     added_instant: forward.added_at,
                     accountable: forward.incoming_accountable,
@@ -380,15 +431,6 @@ impl ReputationManager for ForwardManager {
         let in_flight = inner_lock
             .htlcs
             .remove_htlc(outgoing_channel, incoming_ref)?;
-
-        inner_lock
-            .channels
-            .get_mut(&incoming_ref.channel_id)
-            .ok_or(ReputationError::ErrIncomingNotFound(
-                incoming_ref.channel_id,
-            ))?
-            .incoming_direction
-            .remove_incoming_htlc(&in_flight, resolved_instant);
 
         inner_lock
             .channels
@@ -459,8 +501,12 @@ impl ReputationManager for ForwardManager {
 mod tests {
     use std::time::{Duration, Instant};
 
-    use super::RevenueAverage;
-    use crate::ReputationParams;
+    use super::{ForwardManagerParams, RevenueAverage};
+    use crate::{
+        forward_manager::{ForwardManager, SimualtionDebugManager},
+        AccountableSignal, ChannelSnapshot, HtlcRef, ProposedForward, ReputationError,
+        ReputationManager, ReputationParams,
+    };
 
     #[test]
     fn test_revenue_average() {
@@ -545,5 +591,132 @@ mod tests {
                 .unwrap(),
             (decayed_value as f64 / params.reputation_multiplier as f64).round() as i64,
         );
+    }
+
+    fn test_forward_manager_params() -> ForwardManagerParams {
+        ForwardManagerParams {
+            reputation_params: ReputationParams {
+                revenue_window: Duration::from_secs(60 * 60 * 24 * 14),
+                reputation_multiplier: 10,
+                resolution_period: Duration::from_secs(90),
+                expected_block_speed: None,
+            },
+            general_slot_portion: 30,
+            general_liquidity_portion: 30,
+            congestion_slot_portion: 20,
+            congestion_liquidity_portion: 20,
+        }
+    }
+
+    #[test]
+    fn test_add_and_remove_channel() {
+        let params = test_forward_manager_params();
+        let now = Instant::now();
+
+        let fwd_manager = ForwardManager::new(params);
+
+        let channel_capacity = 10_000_000;
+        assert!(fwd_manager
+            .add_channel(0, channel_capacity, now, None)
+            .is_ok());
+
+        // Test adding channel from a snapshot
+        let snapshot = ChannelSnapshot {
+            capacity_msat: 10_000_000,
+            outgoing_reputation: 1000,
+            bidirectional_revenue: 500,
+        };
+        assert!(fwd_manager
+            .add_channel(1, channel_capacity, now, Some(snapshot.clone()))
+            .is_ok());
+
+        assert!(
+            fwd_manager
+                .add_channel(0, channel_capacity, now, None)
+                .err()
+                .unwrap()
+                == ReputationError::ErrChannelExists(0)
+        );
+        assert!(
+            fwd_manager
+                .add_channel(5, 20_000_000, now, Some(snapshot))
+                .err()
+                .unwrap()
+                == ReputationError::ErrChannelCapacityMismatch(20_000_000, 10_000_000)
+        );
+
+        let channels = fwd_manager.list_channels(Instant::now()).unwrap();
+
+        assert!(channels.len() == 2);
+        assert!(channels.get(&0).unwrap().capacity_msat == channel_capacity);
+        // Check values on 2nd channel added from snapshot
+        assert!(channels.get(&1).unwrap().capacity_msat == channel_capacity);
+        assert!(channels.get(&1).unwrap().outgoing_reputation == 1000);
+        assert!(channels.get(&1).unwrap().bidirectional_revenue == 500);
+
+        assert!(fwd_manager.remove_channel(0).is_ok());
+        assert!(
+            fwd_manager.remove_channel(100).err().unwrap()
+                == ReputationError::ErrChannelNotFound(100)
+        )
+    }
+
+    fn test_proposed_forward(
+        incoming: u64,
+        outgoing: u64,
+        htlc_index: u64,
+        accountable: AccountableSignal,
+    ) -> ProposedForward {
+        ProposedForward {
+            incoming_ref: HtlcRef {
+                channel_id: incoming,
+                htlc_index,
+            },
+            outgoing_channel_id: outgoing,
+            amount_in_msat: 10_000,
+            amount_out_msat: 10_000 - 100,
+            expiry_in_height: 80,
+            expiry_out_height: 40,
+            added_at: Instant::now(),
+            incoming_accountable: accountable,
+            upgradable_accountability: true,
+        }
+    }
+
+    #[test]
+    fn test_add_htlc() {
+        let params = test_forward_manager_params();
+        let now = Instant::now();
+        let fwd_manager = ForwardManager::new(params);
+
+        let channel_capacity = 10_000_000;
+        fwd_manager
+            .add_channel(0, channel_capacity, now, None)
+            .unwrap();
+        fwd_manager
+            .add_channel(1, channel_capacity, now, None)
+            .unwrap();
+
+        let htlc_1 = test_proposed_forward(0, 1, 1, AccountableSignal::Unaccountable);
+
+        let fwd_outcome_check = fwd_manager.get_forwarding_outcome(&htlc_1).unwrap();
+        let check = fwd_manager.add_htlc(&htlc_1).unwrap();
+        // Sanity check that add_htlc and get_forwarding_outcome return same check for the same
+        // proposed forward.
+        assert_eq!(fwd_outcome_check, check);
+
+        let htlc_2 = test_proposed_forward(0, 1, 2, AccountableSignal::Unaccountable);
+        let check = fwd_manager.add_htlc(&htlc_2).unwrap();
+
+        // With general resources available, check that htlc_1 was added in general bucket
+        assert!(check.congestion_eligible);
+        assert!(check.resource_check.general_bucket.slots_used == 1);
+        assert!(check.resource_check.general_bucket.liquidity_used_msat == htlc_1.amount_in_msat);
+
+        // Jam the channel and try adding more htlcs.
+        fwd_manager.general_jam_channel(0).unwrap();
+
+        // TODO: when we implement the correct bucketing outcomes, expand this test to check htlcs
+        // are added in correct buckets.
     }
 }

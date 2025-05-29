@@ -44,6 +44,8 @@ pub enum ReputationError {
     ErrChannelExists(u64),
     /// Channel has already been removed or was never tracked.
     ErrChannelNotFound(u64),
+    /// Channel capacity does not match capacity in channel snapshot.
+    ErrChannelCapacityMismatch(u64, u64),
 }
 
 impl Error for ReputationError {}
@@ -92,6 +94,9 @@ impl Display for ReputationError {
             }
             ReputationError::ErrChannelNotFound(chan_id) => {
                 write!(f, "channel {chan_id} not found")
+            }
+            ReputationError::ErrChannelCapacityMismatch(capacity, snapshot_capacity) => {
+                write!(f, "channel capacity {capacity} does not match snapshot capacity {snapshot_capacity}")
             }
         }
     }
@@ -146,9 +151,9 @@ pub struct AllocationCheck {
     /// The reputation values used to compare the incoming channel's revenue to the outgoing channel's reputation for
     /// the htlc proposed.
     pub reputation_check: ReputationCheck,
-    /// Indicates whether the incoming channel is eligible to consume congestion resources.
+    /// Indicates whether the outgoing channel is eligible to consume congestion resources.
     pub congestion_eligible: bool,
-    /// The resources available on the outgoing channel.
+    /// The resources available on the incoming channel.
     pub resource_check: ResourceCheck,
 }
 
@@ -300,6 +305,7 @@ impl ReputationCheck {
 pub struct ResourceCheck {
     pub general_bucket: BucketResources,
     pub congestion_bucket: BucketResources,
+    pub protected_bucket: BucketResources,
 }
 
 /// Describes the resources currently used in a bucket.
@@ -529,13 +535,19 @@ mod tests {
                     slots_used: 10,
                     slots_available: 10,
                     liquidity_used_msat: 0,
-                    liquidity_available_msat: 200_000,
+                    liquidity_available_msat: 200_000_000,
                 },
                 congestion_bucket: BucketResources {
                     slots_used: 0,
                     slots_available: 10,
                     liquidity_used_msat: 0,
                     liquidity_available_msat: MINIMUM_CONGESTION_SLOT_LIQUDITY * 20,
+                },
+                protected_bucket: BucketResources {
+                    slots_used: 0,
+                    slots_available: 10,
+                    liquidity_used_msat: 0,
+                    liquidity_available_msat: 300_000_000,
                 },
             },
         };

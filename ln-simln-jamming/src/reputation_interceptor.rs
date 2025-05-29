@@ -1092,8 +1092,8 @@ mod tests {
         // unaccountable.
         let (request, mut receiver) = setup_test_request(
             edges[1].node_1.pubkey,
-            bob_to_carol,
             alice_to_bob,
+            bob_to_carol,
             AccountableSignal::Unaccountable,
         );
 
@@ -1106,8 +1106,8 @@ mod tests {
         // An unaccountable htlc using the jammed channel should be failed because there are no resources.
         let (request, mut receiver) = setup_test_request(
             edges[1].node_1.pubkey,
-            alice_to_bob,
             bob_to_carol,
+            alice_to_bob,
             AccountableSignal::Unaccountable,
         );
 

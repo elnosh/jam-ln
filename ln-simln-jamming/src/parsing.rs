@@ -60,7 +60,7 @@ pub const DEFAULT_ATTACKER_POLL_SECONDS: &str = "300";
 /// The default batch size for writing results to disk.
 pub const DEFAULT_RESULT_BATCH_SIZE: &str = "500";
 
-/// The default window that we consider revenue over (2 weeks = 60 * 60 * 24 * 7).
+/// The default window that we consider revenue over (2 weeks = 60 * 60 * 24 * 14).
 pub const DEFAULT_REVENUE_WINDOW_SECONDS: &str = "1210000";
 
 /// The default multiplier applied to the revenue window to get reputation window.
