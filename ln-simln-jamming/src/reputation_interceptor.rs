@@ -417,7 +417,9 @@ where
         );
 
         match fwd_decision {
-            ForwardingOutcome::Forward(signal) => Ok(Ok(records_from_signal(signal))),
+            ForwardingOutcome::Forward(fwd_outcome) => {
+                Ok(Ok(records_from_signal(fwd_outcome.accountable_signal)))
+            }
             ForwardingOutcome::Fail(reason) => Ok(Err(ForwardingError::InterceptorError(
                 reason.to_string().into(),
             ))),
