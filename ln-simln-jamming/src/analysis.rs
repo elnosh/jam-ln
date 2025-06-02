@@ -55,7 +55,7 @@ impl Serialize for Record {
             &self.decision.forwarding_outcome(
                 self.forward.amount_in_msat,
                 self.forward.incoming_accountable,
-                true,
+                self.forward.upgradable_accountability,
             ),
         )?;
         state.serialize_field(
