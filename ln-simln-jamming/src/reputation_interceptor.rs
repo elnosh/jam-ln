@@ -378,7 +378,7 @@ where
                 let node = e.get_mut();
                 (
                     node.forward_manager
-                        .get_forwarding_outcome(&htlc_add.htlc)?,
+                        .get_allocation_snapshot(&htlc_add.htlc)?,
                     node.forward_manager.add_htlc(&htlc_add.htlc)?,
                     node.alias.to_string(),
                 )
@@ -604,7 +604,7 @@ mod tests {
 
             fn remove_channel(&self, channel_id: u64) -> Result<(), ReputationError>;
 
-            fn get_forwarding_outcome(
+            fn get_allocation_snapshot(
                 &self,
                 forward: &ProposedForward,
             ) -> Result<AllocationCheck, ReputationError>;
@@ -731,7 +731,7 @@ mod tests {
             .get_mut(&pubkeys[0])
             .unwrap()
             .forward_manager
-            .expect_get_forwarding_outcome()
+            .expect_get_allocation_snapshot()
             .return_once(|_| Ok(test_allocation_check(true)));
 
         interceptor
@@ -764,7 +764,7 @@ mod tests {
             .get_mut(&pubkeys[0])
             .unwrap()
             .forward_manager
-            .expect_get_forwarding_outcome()
+            .expect_get_allocation_snapshot()
             .return_once(|_| Ok(test_allocation_check(true)));
 
         interceptor
@@ -799,7 +799,7 @@ mod tests {
             .get_mut(&pubkeys[0])
             .unwrap()
             .forward_manager
-            .expect_get_forwarding_outcome()
+            .expect_get_allocation_snapshot()
             .return_once(|_| Ok(test_allocation_check(false)));
 
         interceptor

@@ -542,7 +542,7 @@ pub trait ReputationManager {
     /// [`add_htlc`] before sending `update_add_htlc` on the outgoing link.
     /// NOTE: Use before [`add_htlc`]. The outcome will be different if the HTLC has already been
     /// added.
-    fn get_forwarding_outcome(
+    fn get_allocation_snapshot(
         &self,
         forward: &ProposedForward,
     ) -> Result<AllocationCheck, ReputationError>;

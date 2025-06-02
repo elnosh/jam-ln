@@ -145,7 +145,7 @@ struct ForwardManagerImpl {
 }
 
 impl ForwardManagerImpl {
-    fn get_forwarding_outcome(
+    fn get_allocation_snapshot(
         &mut self,
         forward: &ProposedForward,
     ) -> Result<AllocationCheck, ReputationError> {
@@ -375,14 +375,14 @@ impl ReputationManager for ForwardManager {
         }
     }
 
-    fn get_forwarding_outcome(
+    fn get_allocation_snapshot(
         &self,
         forward: &ProposedForward,
     ) -> Result<AllocationCheck, ReputationError> {
         self.inner
             .lock()
             .map_err(|e| ReputationError::ErrUnrecoverable(e.to_string()))?
-            .get_forwarding_outcome(forward)
+            .get_allocation_snapshot(forward)
     }
 
     fn add_htlc(&self, forward: &ProposedForward) -> Result<ForwardingOutcome, ReputationError> {
@@ -391,7 +391,7 @@ impl ReputationManager for ForwardManager {
             .lock()
             .map_err(|e| ReputationError::ErrUnrecoverable(e.to_string()))?;
 
-        let allocation_check = inner_lock.get_forwarding_outcome(forward)?;
+        let allocation_check = inner_lock.get_allocation_snapshot(forward)?;
 
         let fwd_outcome = allocation_check.inner_forwarding_outcome(
             forward.amount_out_msat,
