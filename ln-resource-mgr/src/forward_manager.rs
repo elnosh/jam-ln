@@ -409,7 +409,7 @@ impl ReputationManager for ForwardManager {
                         incoming_amt_msat: forward.amount_in_msat,
                         fee_msat: forward.fee_msat(),
                         added_instant: forward.added_at,
-                        accountable: fwd_sucess.accountable_signal,
+                        outgoing_accountable: fwd_sucess.accountable_signal,
                         bucket: fwd_sucess.bucket,
                     },
                 )?;
