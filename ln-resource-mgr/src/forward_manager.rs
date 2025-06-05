@@ -3,9 +3,9 @@ use crate::htlc_manager::{ChannelFilter, InFlightHtlc, InFlightManager};
 use crate::incoming_channel::{BucketParameters, IncomingChannel};
 use crate::outgoing_channel::OutgoingChannel;
 use crate::{
-    AllocationCheck, BucketResources, ChannelSnapshot, ForwardResolution, HtlcRef, ProposedForward,
-    ReputationCheck, ReputationError, ReputationManager, ReputationParams, ResourceBucketType,
-    ResourceCheck,
+    AllocationCheck, BucketResources, ChannelSnapshot, ForwardResolution, ForwardingOutcome,
+    HtlcRef, ProposedForward, ReputationCheck, ReputationError, ReputationManager,
+    ReputationParams, ResourceBucketType, ResourceCheck,
 };
 use std::collections::hash_map::Entry;
 use std::collections::HashMap;
@@ -145,7 +145,7 @@ struct ForwardManagerImpl {
 }
 
 impl ForwardManagerImpl {
-    fn get_forwarding_outcome(
+    fn get_allocation_snapshot(
         &mut self,
         forward: &ProposedForward,
     ) -> Result<AllocationCheck, ReputationError> {
@@ -375,44 +375,50 @@ impl ReputationManager for ForwardManager {
         }
     }
 
-    fn get_forwarding_outcome(
+    fn get_allocation_snapshot(
         &self,
         forward: &ProposedForward,
     ) -> Result<AllocationCheck, ReputationError> {
         self.inner
             .lock()
             .map_err(|e| ReputationError::ErrUnrecoverable(e.to_string()))?
-            .get_forwarding_outcome(forward)
+            .get_allocation_snapshot(forward)
     }
 
-    fn add_htlc(&self, forward: &ProposedForward) -> Result<AllocationCheck, ReputationError> {
+    fn add_htlc(&self, forward: &ProposedForward) -> Result<ForwardingOutcome, ReputationError> {
         let mut inner_lock = self
             .inner
             .lock()
             .map_err(|e| ReputationError::ErrUnrecoverable(e.to_string()))?;
 
-        let allocation_check = inner_lock.get_forwarding_outcome(forward)?;
+        let allocation_check = inner_lock.get_allocation_snapshot(forward)?;
 
-        if let Ok(bucket) = allocation_check.inner_forwarding_outcome(
+        let fwd_outcome = allocation_check.inner_forwarding_outcome(
             forward.amount_out_msat,
             forward.incoming_accountable,
             forward.upgradable_accountability,
-        ) {
-            inner_lock.htlcs.add_htlc(
-                forward.incoming_ref,
-                InFlightHtlc {
-                    outgoing_channel_id: forward.outgoing_channel_id,
-                    hold_blocks: forward.expiry_in_height,
-                    incoming_amt_msat: forward.amount_in_msat,
-                    fee_msat: forward.fee_msat(),
-                    added_instant: forward.added_at,
-                    accountable: forward.incoming_accountable,
-                    bucket,
-                },
-            )?;
-        }
+        );
 
-        Ok(allocation_check)
+        let fwd_outcome = match fwd_outcome {
+            Ok(fwd_sucess) => {
+                inner_lock.htlcs.add_htlc(
+                    forward.incoming_ref,
+                    InFlightHtlc {
+                        outgoing_channel_id: forward.outgoing_channel_id,
+                        hold_blocks: forward.expiry_in_height,
+                        incoming_amt_msat: forward.amount_in_msat,
+                        fee_msat: forward.fee_msat(),
+                        added_instant: forward.added_at,
+                        outgoing_accountable: fwd_sucess.accountable_signal,
+                        bucket: fwd_sucess.bucket,
+                    },
+                )?;
+                ForwardingOutcome::Forward(fwd_sucess.accountable_signal)
+            }
+            Err(e) => ForwardingOutcome::Fail(e),
+        };
+
+        Ok(fwd_outcome)
     }
 
     fn resolve_htlc(
@@ -504,8 +510,8 @@ mod tests {
     use super::{ForwardManagerParams, RevenueAverage};
     use crate::{
         forward_manager::{ForwardManager, SimualtionDebugManager},
-        AccountableSignal, ChannelSnapshot, HtlcRef, ProposedForward, ReputationError,
-        ReputationManager, ReputationParams,
+        AccountableSignal, ChannelSnapshot, FailureReason, ForwardingOutcome, HtlcRef,
+        ProposedForward, ReputationError, ReputationManager, ReputationParams,
     };
 
     #[test]
@@ -684,7 +690,7 @@ mod tests {
     }
 
     #[test]
-    fn test_add_htlc() {
+    fn test_add_htlc_incoming_unaccountable() {
         let params = test_forward_manager_params();
         let now = Instant::now();
         let fwd_manager = ForwardManager::new(params);
@@ -698,25 +704,99 @@ mod tests {
             .unwrap();
 
         let htlc_1 = test_proposed_forward(0, 1, 1, AccountableSignal::Unaccountable);
+        let fwd_outcome = fwd_manager.add_htlc(&htlc_1).unwrap();
 
-        let fwd_outcome_check = fwd_manager.get_forwarding_outcome(&htlc_1).unwrap();
-        let check = fwd_manager.add_htlc(&htlc_1).unwrap();
-        // Sanity check that add_htlc and get_forwarding_outcome return same check for the same
-        // proposed forward.
-        assert_eq!(fwd_outcome_check, check);
-
-        let htlc_2 = test_proposed_forward(0, 1, 2, AccountableSignal::Unaccountable);
-        let check = fwd_manager.add_htlc(&htlc_2).unwrap();
-
-        // With general resources available, check that htlc_1 was added in general bucket
-        assert!(check.congestion_eligible);
-        assert!(check.resource_check.general_bucket.slots_used == 1);
-        assert!(check.resource_check.general_bucket.liquidity_used_msat == htlc_1.amount_in_msat);
+        // With general resources available, check that htlc_1 is forwarded as unaccountable.
+        assert!(fwd_outcome == ForwardingOutcome::Forward(AccountableSignal::Unaccountable));
 
         // Jam the channel and try adding more htlcs.
         fwd_manager.general_jam_channel(0).unwrap();
 
-        // TODO: when we implement the correct bucketing outcomes, expand this test to check htlcs
-        // are added in correct buckets.
+        // With no general resources available, unaccountable htlc should go into congestion bucket
+        // and be forwarded as accountable.
+        let htlc_2 = test_proposed_forward(0, 1, 2, AccountableSignal::Unaccountable);
+        let fwd_outcome = fwd_manager.add_htlc(&htlc_2).unwrap();
+        assert!(fwd_outcome == ForwardingOutcome::Forward(AccountableSignal::Accountable));
+
+        // Outgoing channel is already using a congestion slot, so it should fail with no resources
+        let htlc_3 = test_proposed_forward(0, 1, 3, AccountableSignal::Unaccountable);
+        let fwd_outcome = fwd_manager.add_htlc(&htlc_3).unwrap();
+        assert!(fwd_outcome == ForwardingOutcome::Fail(FailureReason::NoGeneralResources));
+
+        // Add a channel with sufficient reputation
+        let snapshot = ChannelSnapshot {
+            capacity_msat: channel_capacity,
+            outgoing_reputation: 10_000_000,
+            bidirectional_revenue: 1_000_000,
+        };
+        let channel_with_reputation = 2;
+
+        fwd_manager
+            .add_channel(
+                channel_with_reputation,
+                channel_capacity,
+                now,
+                Some(snapshot),
+            )
+            .unwrap();
+
+        // With general resources jammed, an unaccountable htlc for a peer with reputation is
+        // upgraded to accountable
+        let htlc_4 = test_proposed_forward(
+            0,
+            channel_with_reputation,
+            4,
+            AccountableSignal::Unaccountable,
+        );
+        let fwd_outcome = fwd_manager.add_htlc(&htlc_4).unwrap();
+        assert!(fwd_outcome == ForwardingOutcome::Forward(AccountableSignal::Accountable));
+    }
+
+    #[test]
+    fn test_add_htlc_incoming_accountable() {
+        let params = test_forward_manager_params();
+        let now = Instant::now();
+        let fwd_manager = ForwardManager::new(params);
+
+        let channel_capacity = 10_000_000;
+        fwd_manager
+            .add_channel(0, channel_capacity, now, None)
+            .unwrap();
+        fwd_manager
+            .add_channel(1, channel_capacity, now, None)
+            .unwrap();
+
+        let htlc_1 = test_proposed_forward(0, 1, 1, AccountableSignal::Accountable);
+        let fwd_outcome = fwd_manager.add_htlc(&htlc_1).unwrap();
+
+        // Accountable htlc for a peer with no reputation should fail
+        assert!(fwd_outcome == ForwardingOutcome::Fail(FailureReason::NoReputation));
+
+        // Add a channel with sufficient reputation
+        let snapshot = ChannelSnapshot {
+            capacity_msat: channel_capacity,
+            outgoing_reputation: 10_000_000,
+            bidirectional_revenue: 1_000_000,
+        };
+        let channel_with_reputation = 2;
+
+        fwd_manager
+            .add_channel(
+                channel_with_reputation,
+                channel_capacity,
+                now,
+                Some(snapshot),
+            )
+            .unwrap();
+
+        // Accountable htlc for a peer with reputation
+        let htlc_2 = test_proposed_forward(
+            0,
+            channel_with_reputation,
+            2,
+            AccountableSignal::Accountable,
+        );
+        let fwd_outcome = fwd_manager.add_htlc(&htlc_2).unwrap();
+        assert!(fwd_outcome == ForwardingOutcome::Forward(AccountableSignal::Accountable));
     }
 }

@@ -11,7 +11,7 @@ pub(super) struct InFlightHtlc {
     pub(super) hold_blocks: u32,
     pub(super) incoming_amt_msat: u64,
     pub(super) added_instant: Instant,
-    pub(super) accountable: AccountableSignal,
+    pub(super) outgoing_accountable: AccountableSignal,
     pub(super) bucket: ResourceBucketType,
 }
 
@@ -129,7 +129,7 @@ impl InFlightManager {
             .iter()
             .filter(|(k, v)| {
                 // Unaccountable htlcs do not contribute to risk, so no option is given to count them.
-                if v.accountable == AccountableSignal::Unaccountable {
+                if v.outgoing_accountable == AccountableSignal::Unaccountable {
                     return false;
                 }
 
@@ -218,7 +218,7 @@ mod tests {
             incoming_amt_msat: 2000,
             fee_msat,
             added_instant: Instant::now(),
-            accountable: if accountable {
+            outgoing_accountable: if accountable {
                 AccountableSignal::Accountable
             } else {
                 AccountableSignal::Unaccountable

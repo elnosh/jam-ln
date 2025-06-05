@@ -368,7 +368,7 @@ where
         report: bool,
     ) -> Result<Result<HashMap<u64, Vec<u8>>, ForwardingError>, ReputationError> {
         // If the forwarding node can't be found, we've hit a critical error and can't proceed.
-        let (allocation_check, alias) = match self
+        let (allocation_check, fwd_outcome, alias) = match self
             .network_nodes
             .lock()
             .await
@@ -377,6 +377,8 @@ where
             Entry::Occupied(mut e) => {
                 let node = e.get_mut();
                 (
+                    node.forward_manager
+                        .get_allocation_snapshot(&htlc_add.htlc)?,
                     node.forward_manager.add_htlc(&htlc_add.htlc)?,
                     node.alias.to_string(),
                 )
@@ -388,13 +390,6 @@ where
                 )))
             }
         };
-
-        // Once we have a forwarding decision, return successfully to the interceptor with the call.
-        let fwd_decision = allocation_check.forwarding_outcome(
-            htlc_add.htlc.amount_out_msat,
-            htlc_add.htlc.incoming_accountable,
-            htlc_add.htlc.upgradable_accountability,
-        );
 
         if let Some(r) = &self.results {
             if report {
@@ -413,11 +408,13 @@ where
             "Node {} forwarding: {} with outcome {}",
             alias,
             htlc_add.htlc,
-            fwd_decision,
+            fwd_outcome,
         );
 
-        match fwd_decision {
-            ForwardingOutcome::Forward(signal) => Ok(Ok(records_from_signal(signal))),
+        match fwd_outcome {
+            ForwardingOutcome::Forward(accountable_signal) => {
+                Ok(Ok(records_from_signal(accountable_signal)))
+            }
             ForwardingOutcome::Fail(reason) => Ok(Err(ForwardingError::InterceptorError(
                 reason.to_string().into(),
             ))),
@@ -571,8 +568,8 @@ mod tests {
     use bitcoin::secp256k1::PublicKey;
     use ln_resource_mgr::forward_manager::{ForwardManager, ForwardManagerParams};
     use ln_resource_mgr::{
-        AccountableSignal, AllocationCheck, ChannelSnapshot, ForwardResolution, HtlcRef,
-        ProposedForward, ReputationError, ReputationManager, ReputationParams,
+        AccountableSignal, AllocationCheck, ChannelSnapshot, ForwardResolution, ForwardingOutcome,
+        HtlcRef, ProposedForward, ReputationError, ReputationManager, ReputationParams,
     };
     use mockall::mock;
     use simln_lib::clock::SimulationClock;
@@ -607,7 +604,7 @@ mod tests {
 
             fn remove_channel(&self, channel_id: u64) -> Result<(), ReputationError>;
 
-            fn get_forwarding_outcome(
+            fn get_allocation_snapshot(
                 &self,
                 forward: &ProposedForward,
             ) -> Result<AllocationCheck, ReputationError>;
@@ -615,7 +612,7 @@ mod tests {
             fn add_htlc(
                 &self,
                 forward: &ProposedForward
-            ) -> Result<AllocationCheck, ReputationError>;
+            ) -> Result<ForwardingOutcome, ReputationError>;
             fn resolve_htlc(
                 &self,
                 outgoing_channel: u64,
@@ -734,8 +731,18 @@ mod tests {
             .get_mut(&pubkeys[0])
             .unwrap()
             .forward_manager
-            .expect_add_htlc()
+            .expect_get_allocation_snapshot()
             .return_once(|_| Ok(test_allocation_check(true)));
+
+        interceptor
+            .network_nodes
+            .lock()
+            .await
+            .get_mut(&pubkeys[0])
+            .unwrap()
+            .forward_manager
+            .expect_add_htlc()
+            .return_once(|_| Ok(ForwardingOutcome::Forward(AccountableSignal::Accountable)));
 
         interceptor.intercept_htlc(request).await;
 
@@ -757,14 +764,24 @@ mod tests {
             .get_mut(&pubkeys[0])
             .unwrap()
             .forward_manager
-            .expect_add_htlc()
+            .expect_get_allocation_snapshot()
             .return_once(|_| Ok(test_allocation_check(true)));
+
+        interceptor
+            .network_nodes
+            .lock()
+            .await
+            .get_mut(&pubkeys[0])
+            .unwrap()
+            .forward_manager
+            .expect_add_htlc()
+            .return_once(|_| Ok(ForwardingOutcome::Forward(AccountableSignal::Accountable)));
 
         interceptor.intercept_htlc(request).await;
 
         assert!(matches!(
             accountable_from_records(&receiver.recv().await.unwrap().unwrap().unwrap()),
-            AccountableSignal::Unaccountable
+            AccountableSignal::Accountable
         ));
     }
 
@@ -782,8 +799,18 @@ mod tests {
             .get_mut(&pubkeys[0])
             .unwrap()
             .forward_manager
-            .expect_add_htlc()
+            .expect_get_allocation_snapshot()
             .return_once(|_| Ok(test_allocation_check(false)));
+
+        interceptor
+            .network_nodes
+            .lock()
+            .await
+            .get_mut(&pubkeys[0])
+            .unwrap()
+            .forward_manager
+            .expect_add_htlc()
+            .return_once(|_| Ok(ForwardingOutcome::Forward(AccountableSignal::Unaccountable)));
 
         interceptor.intercept_htlc(request).await;
 

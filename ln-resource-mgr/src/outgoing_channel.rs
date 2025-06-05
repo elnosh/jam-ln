@@ -85,7 +85,7 @@ impl OutgoingChannel {
         let effective_fees = self.params.effective_fees(
             in_flight.fee_msat,
             resolved_instant.sub(in_flight.added_instant),
-            in_flight.accountable,
+            in_flight.outgoing_accountable,
             settled,
         )?;
 
@@ -126,7 +126,7 @@ mod tests {
             incoming_amt_msat: 2000,
             fee_msat,
             added_instant: Instant::now(),
-            accountable,
+            outgoing_accountable: accountable,
             bucket,
         }
     }

@@ -126,6 +126,12 @@ pub enum ForwardingOutcome {
     Fail(FailureReason),
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SuccessForwardOutcome {
+    pub bucket: ResourceBucketType,
+    pub accountable_signal: AccountableSignal,
+}
+
 impl Display for ForwardingOutcome {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -160,11 +166,21 @@ pub struct AllocationCheck {
 }
 
 /// Represents the different resource buckets that htlcs can be assigned to.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub enum ResourceBucketType {
     Protected,
     Congestion,
     General,
+}
+
+impl ResourceBucketType {
+    fn accountable_signal(&self) -> AccountableSignal {
+        match self {
+            ResourceBucketType::General => AccountableSignal::Unaccountable,
+            ResourceBucketType::Congestion => AccountableSignal::Accountable,
+            ResourceBucketType::Protected => AccountableSignal::Accountable,
+        }
+    }
 }
 
 impl AllocationCheck {
@@ -180,17 +196,7 @@ impl AllocationCheck {
             incoming_accountable,
             incoming_upgradable,
         ) {
-            Ok(bucket) => match bucket {
-                ResourceBucketType::General => {
-                    ForwardingOutcome::Forward(AccountableSignal::Unaccountable)
-                }
-                ResourceBucketType::Congestion => {
-                    ForwardingOutcome::Forward(AccountableSignal::Accountable)
-                }
-                ResourceBucketType::Protected => {
-                    ForwardingOutcome::Forward(AccountableSignal::Accountable)
-                }
-            },
+            Ok(fwd_success) => ForwardingOutcome::Forward(fwd_success.accountable_signal),
             Err(fail_reason) => ForwardingOutcome::Fail(fail_reason),
         }
     }
@@ -201,11 +207,34 @@ impl AllocationCheck {
         htlc_amt_msat: u64,
         incoming_accountable: AccountableSignal,
         incoming_upgradable: bool,
-    ) -> Result<ResourceBucketType, FailureReason> {
+    ) -> Result<SuccessForwardOutcome, FailureReason> {
         if !incoming_upgradable && incoming_accountable == AccountableSignal::Accountable {
             return Err(FailureReason::UpgradableSignalModified);
         }
 
+        let bucket =
+            self.bucket_outcome(htlc_amt_msat, incoming_accountable, incoming_upgradable)?;
+
+        // If the incoming htlc is accountable, set as accountable regardless of which bucket it
+        // was assigned.
+        let accountable_signal = if incoming_accountable == AccountableSignal::Accountable {
+            AccountableSignal::Accountable
+        } else {
+            bucket.accountable_signal()
+        };
+
+        Ok(SuccessForwardOutcome {
+            bucket,
+            accountable_signal,
+        })
+    }
+
+    fn bucket_outcome(
+        &self,
+        htlc_amt_msat: u64,
+        incoming_accountable: AccountableSignal,
+        incoming_upgradable: bool,
+    ) -> Result<ResourceBucketType, FailureReason> {
         match incoming_accountable {
             AccountableSignal::Accountable => {
                 if self.reputation_check.sufficient_reputation() {
@@ -510,8 +539,10 @@ pub trait ReputationManager {
     /// the incoming and outgoing channel. This call can optionally be used to co-locate reputation checks with
     /// other forwarding checks (such as fee policies and expiry delta) so that the htlc can be failed early, saving
     /// the need to propagate it to the outgoing link. Using this method *does not* replace the need to call
-    /// [`add_hltc`] before sending `update_add_htlc` on the outgoing link.
-    fn get_forwarding_outcome(
+    /// [`add_htlc`] before sending `update_add_htlc` on the outgoing link.
+    /// NOTE: Use before [`add_htlc`]. The outcome will be different if the HTLC has already been
+    /// added.
+    fn get_allocation_snapshot(
         &self,
         forward: &ProposedForward,
     ) -> Result<AllocationCheck, ReputationError>;
@@ -524,7 +555,7 @@ pub trait ReputationManager {
     ///
     /// Note that this API is not currently replay-safe, so any htlcs that are replayed on restart will return
     /// [`ReputationError::ErrDuplicateHtlc`].
-    fn add_htlc(&self, forward: &ProposedForward) -> Result<AllocationCheck, ReputationError>;
+    fn add_htlc(&self, forward: &ProposedForward) -> Result<ForwardingOutcome, ReputationError>;
 
     /// Resolves a htlc that was previously added using [`add_htlc`], returning
     /// [`ReputationError::ErrForwardNotFound`] if the htlc is not found.
@@ -547,7 +578,7 @@ pub trait ReputationManager {
 mod tests {
     use crate::{
         AccountableSignal, AllocationCheck, BucketResources, FailureReason, ReputationCheck,
-        ResourceBucketType, ResourceCheck, MINIMUM_CONGESTION_SLOT_LIQUDITY,
+        ResourceBucketType, ResourceCheck, SuccessForwardOutcome, MINIMUM_CONGESTION_SLOT_LIQUDITY,
     };
 
     /// Returns an AllocationCheck which is eligible for congestion resources.
@@ -636,60 +667,104 @@ mod tests {
     }
 
     #[test]
-    fn test_inner_forwarding_outcome_congestion() {
-        let check = test_congestion_check();
+    fn test_forwarding_outcome_congestion() {
+        let mut check = test_congestion_check();
 
-        // Unaccountable htlc that is congestion elegible gets access to congestion bucket.
+        // Unaccountable htlc that is congestion elegible gets access to congestion bucket and is
+        // upgraded to accountable.
         assert!(
             check
                 .inner_forwarding_outcome(10, AccountableSignal::Unaccountable, true)
                 .unwrap()
-                == ResourceBucketType::Congestion,
+                == SuccessForwardOutcome {
+                    bucket: ResourceBucketType::Congestion,
+                    accountable_signal: AccountableSignal::Accountable
+                }
         );
-    }
 
-    #[test]
-    fn test_inner_forwarding_outcome_general() {
-        let mut check = test_congestion_check();
-        check.resource_check.general_bucket.slots_used = 0;
-
-        // Unaccountable htlc with general resources available returns general bucket.
-        assert!(
-            check
-                .inner_forwarding_outcome(10, AccountableSignal::Unaccountable, true)
-                .unwrap()
-                == ResourceBucketType::General,
-        );
-    }
-
-    #[test]
-    fn test_inner_forwarding_outcome_reputation() {
-        let mut check = test_congestion_check();
+        // Accountable htlc with sufficient reputation but no protected or general
+        // resources goes into congestion bucket and forwarded as accountable.
         check.reputation_check.reputation = 1000;
-        check.resource_check.general_bucket.slots_used = 0;
-
-        // Sufficient reputation and accountable will go in the protected bucket.
+        check.resource_check.general_bucket.slots_available = 0;
+        check.resource_check.protected_bucket.slots_available = 0;
         assert!(
             check
                 .inner_forwarding_outcome(10, AccountableSignal::Accountable, true)
                 .unwrap()
-                == ResourceBucketType::Protected,
-        );
-
-        // Unaccountable htlc with no general or congestion resources available but with sufficient
-        // reputation gets access to protected bucket.
-        check.resource_check.general_bucket.slots_available = 0;
-        check.congestion_eligible = false;
-        assert!(
-            check
-                .inner_forwarding_outcome(10, AccountableSignal::Unaccountable, true,)
-                .unwrap()
-                == ResourceBucketType::Protected,
+                == SuccessForwardOutcome {
+                    bucket: ResourceBucketType::Congestion,
+                    accountable_signal: AccountableSignal::Accountable
+                }
         );
     }
 
     #[test]
-    fn test_inner_forwarding_outcome_no_reputation() {
+    fn test_forwarding_outcome_general() {
+        let mut check = test_congestion_check();
+        check.resource_check.general_bucket.slots_used = 0;
+
+        // Unaccountable htlc with general resources available goes into general bucket and
+        // forwarded as unaccountable.
+        assert!(
+            check
+                .inner_forwarding_outcome(10, AccountableSignal::Unaccountable, true)
+                .unwrap()
+                == SuccessForwardOutcome {
+                    bucket: ResourceBucketType::General,
+                    accountable_signal: AccountableSignal::Unaccountable
+                }
+        );
+
+        // Accountable htlc with sufficient reputation but no protected resources goes into general
+        // bucket forwarded as accountable.
+        check.reputation_check.reputation = 1000;
+        check.resource_check.protected_bucket.slots_available = 0;
+        assert!(
+            check
+                .inner_forwarding_outcome(10, AccountableSignal::Accountable, true)
+                .unwrap()
+                == SuccessForwardOutcome {
+                    bucket: ResourceBucketType::General,
+                    accountable_signal: AccountableSignal::Accountable
+                }
+        );
+    }
+
+    #[test]
+    fn test_forwarding_outcome_upgrade() {
+        let mut check = test_congestion_check();
+        check.reputation_check.reputation = 1000;
+        check.resource_check.general_bucket.slots_used = 0;
+
+        // Sufficient reputation and accountable will go in the protected bucket and forwarded as
+        // accountable.
+        assert!(
+            check
+                .inner_forwarding_outcome(10, AccountableSignal::Accountable, true)
+                .unwrap()
+                == SuccessForwardOutcome {
+                    bucket: ResourceBucketType::Protected,
+                    accountable_signal: AccountableSignal::Accountable
+                }
+        );
+
+        // Unaccountable htlc with no general or congestion resources available but with sufficient
+        // reputation gets access to protected bucket and forwarded as accountable.
+        check.resource_check.general_bucket.slots_available = 0;
+        check.congestion_eligible = false;
+        assert!(
+            check
+                .inner_forwarding_outcome(10, AccountableSignal::Unaccountable, true)
+                .unwrap()
+                == SuccessForwardOutcome {
+                    bucket: ResourceBucketType::Protected,
+                    accountable_signal: AccountableSignal::Accountable
+                }
+        );
+    }
+
+    #[test]
+    fn test_forwarding_outcome_no_reputation() {
         let mut check = test_congestion_check();
         check.resource_check.general_bucket.slots_used = 0;
 
@@ -705,9 +780,12 @@ mod tests {
         // Unaccountable htlc with no reputation and available resources goes into general bucket.
         assert!(
             check
-                .inner_forwarding_outcome(10, AccountableSignal::Unaccountable, true,)
+                .inner_forwarding_outcome(10, AccountableSignal::Unaccountable, true)
                 .unwrap()
-                == ResourceBucketType::General
+                == SuccessForwardOutcome {
+                    bucket: ResourceBucketType::General,
+                    accountable_signal: AccountableSignal::Unaccountable
+                }
         );
 
         // Unaccountable htlc fails with no general resources if:
@@ -726,6 +804,23 @@ mod tests {
     }
 
     #[test]
+    fn test_forwarding_outcome_no_resources() {
+        let mut check = test_congestion_check();
+        check.congestion_eligible = false;
+        check.resource_check.protected_bucket.slots_available = 0;
+        check.reputation_check.reputation = 1000;
+
+        // Accountable htlc with reputation but no resources at all fails with no resources.
+        assert!(
+            check
+                .inner_forwarding_outcome(10, AccountableSignal::Accountable, true)
+                .err()
+                .unwrap()
+                == FailureReason::NoResources,
+        );
+    }
+
+    #[test]
     fn test_inner_forwarding_outcome_modified_signal() {
         let check = test_congestion_check();
 
@@ -738,6 +833,4 @@ mod tests {
                 == FailureReason::UpgradableSignalModified
         );
     }
-
-    // TODO: add tests for forwarding_outcome
 }
