@@ -21,7 +21,7 @@ where
     /// Inner reputation monitor that implements jamming mitigation.
     reputation_interceptor: Arc<Mutex<R>>,
     /// The attack that will be launched.
-    attack: Arc<Mutex<A>>,
+    attack: Arc<A>,
 }
 
 impl<R, A> AttackInterceptor<R, A>
@@ -33,7 +33,7 @@ where
     pub fn new(
         attacker_pubkey: PublicKey,
         reputation_interceptor: Arc<Mutex<R>>,
-        attack: Arc<Mutex<A>>,
+        attack: Arc<A>,
     ) -> Self {
         Self {
             attacker_pubkey,
@@ -59,8 +59,6 @@ where
         if req.forwarding_node == self.attacker_pubkey {
             return self
                 .attack
-                .lock()
-                .await
                 .intercept_attacker_htlc(req)
                 .await
                 .map_err(|e| CriticalError::InterceptorError(e.to_string()));
@@ -130,7 +128,7 @@ mod tests {
         AttackInterceptor::new(
             attacker_pubkey,
             Arc::new(Mutex::new(mock)),
-            Arc::new(Mutex::new(MockAttack::new())),
+            Arc::new(MockAttack::new()),
         )
     }
 
@@ -156,14 +154,18 @@ mod tests {
     /// Tests that any attacker htlc are forwarded through to the attacker.
     #[tokio::test]
     async fn test_attacker_intercept() {
-        let interceptor = setup_interceptor_test();
-        interceptor
-            .attack
-            .lock()
-            .await
+        let attacker_pubkey = get_random_keypair().1;
+        let mut mock_attack = MockAttack::new();
+        mock_attack
             .expect_intercept_attacker_htlc()
             .returning(|_| Ok(Ok(CustomRecords::new())))
             .times(2);
+
+        let interceptor = AttackInterceptor::new(
+            attacker_pubkey,
+            Arc::new(Mutex::new(MockReputationInterceptor::new())),
+            Arc::new(mock_attack),
+        );
 
         // Intercepted on attacker: target -(0)-> attacker -(5)-> node.
         let target_to_attacker = setup_test_request(
