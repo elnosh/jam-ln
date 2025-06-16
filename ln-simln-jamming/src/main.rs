@@ -155,7 +155,7 @@ async fn main() -> Result<(), BoxError> {
     );
 
     // Next, setup the attack interceptor to use our custom attack.
-    let attack = Arc::new(Mutex::new(SinkAttack::new(
+    let attack = Arc::new(SinkAttack::new(
         clock.clone(),
         &sim_network,
         target_pubkey,
@@ -163,8 +163,9 @@ async fn main() -> Result<(), BoxError> {
         risk_margin,
         reputation_interceptor.clone(),
         listener.clone(),
-    )));
-    let attack_setup = attack.lock().await.setup_for_network()?;
+    ));
+
+    let attack_setup = attack.setup_for_network()?;
     reputation_interceptor
         .lock()
         .await
@@ -211,7 +212,7 @@ async fn main() -> Result<(), BoxError> {
             select! {
                 _ = attack_listener.clone() => return,
                 _ = attack_clock.sleep(interval) => {
-                    match attack.lock().await.simulation_completed(start_reputation_1.clone()).await {
+                    match attack.simulation_completed(start_reputation_1.clone()).await {
                         Ok(shutdown) => if shutdown {attack_shutdown.trigger()},
                         Err(e) => {
                             log::error!("Shutdown check failed: {e}");
