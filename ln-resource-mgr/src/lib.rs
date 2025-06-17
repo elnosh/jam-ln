@@ -256,7 +256,8 @@ impl AllocationCheck {
                             .resources_available(htlc_amt_msat)
                         {
                             Ok(ResourceBucketType::General)
-                        } else if self.congestion_eligible
+                        } else if incoming_upgradable
+                            && self.congestion_eligible
                             && self.congestion_resources_available(htlc_amt_msat)
                         {
                             Ok(ResourceBucketType::Congestion)
@@ -281,7 +282,8 @@ impl AllocationCheck {
                 } else if self.reputation_check.sufficient_reputation() && incoming_upgradable {
                     // If the peer has reputation, use protected bucket.
                     Ok(ResourceBucketType::Protected)
-                } else if self.congestion_eligible
+                } else if incoming_upgradable
+                    && self.congestion_eligible
                     && self.congestion_resources_available(htlc_amt_msat)
                 {
                     // If no general resources available and peer does not have reputation, we
