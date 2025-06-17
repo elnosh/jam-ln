@@ -203,6 +203,22 @@ pub fn find_pubkey_by_alias(
     })
 }
 
+pub fn find_alias_by_pubkey(
+    pubkey: &PublicKey,
+    sim_network: &[NetworkParser],
+) -> Result<String, BoxError> {
+    let target_channel = sim_network
+        .iter()
+        .find(|hist| hist.node_1.pubkey == *pubkey || hist.node_2.pubkey == *pubkey)
+        .ok_or(format!("pubkey: {pubkey} not found in sim file"))?;
+
+    Ok(if target_channel.node_1.pubkey == *pubkey {
+        target_channel.node_1.alias.clone()
+    } else {
+        target_channel.node_2.alias.clone()
+    })
+}
+
 pub fn parse_duration(s: &str) -> Result<(String, Duration), String> {
     HumanDuration::from_str(s)
         .map(|hd| (s.to_string(), hd.into()))

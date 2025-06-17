@@ -1,5 +1,6 @@
 use bitcoin::secp256k1::PublicKey;
 use clap::Parser;
+use core::panic;
 use ln_resource_mgr::forward_manager::ForwardManagerParams;
 use ln_resource_mgr::ReputationParams;
 use ln_simln_jamming::analysis::BatchForwardWriter;
@@ -8,7 +9,7 @@ use ln_simln_jamming::attacks::sink::SinkAttack;
 use ln_simln_jamming::attacks::JammingAttack;
 use ln_simln_jamming::clock::InstantClock;
 use ln_simln_jamming::parsing::{
-    find_pubkey_by_alias, reputation_snapshot_from_file, Cli, SimNetwork,
+    find_alias_by_pubkey, find_pubkey_by_alias, reputation_snapshot_from_file, Cli, SimNetwork,
     DEFAULT_REPUTATION_FILENAME, DEFAULT_REVENUE_FILENAME,
 };
 use ln_simln_jamming::reputation_interceptor::ReputationInterceptor;
@@ -21,7 +22,7 @@ use sim_cli::parsing::{create_simulation_with_network, SimParams};
 use simln_lib::clock::Clock;
 use simln_lib::clock::SimulationClock;
 use simln_lib::latency_interceptor::LatencyIntercepor;
-use simln_lib::sim_node::{CustomRecords, Interceptor};
+use simln_lib::sim_node::{CustomRecords, Interceptor, SimGraph, SimNode};
 use simln_lib::SimulationCfg;
 use simple_logger::SimpleLogger;
 use std::collections::HashMap;
@@ -172,6 +173,8 @@ async fn main() -> Result<(), BoxError> {
         .jam_channels(&attack_setup.general_jammed_nodes)
         .await?;
 
+    let attack_custom_actions = Arc::clone(&attack);
+
     // Do some preliminary checks on our reputation state - there isn't much point in running if we haven't built up
     // some reputation.
     let target_pubkey_map: HashMap<u64, PublicKey> =
@@ -276,7 +279,7 @@ async fn main() -> Result<(), BoxError> {
     };
 
     let sim_cfg = SimulationCfg::new(None, 3_800_000, 2.0, None, Some(13995354354227336701));
-    let (simulation, validated_activities) = create_simulation_with_network(
+    let (simulation, validated_activities, sim_nodes) = create_simulation_with_network(
         sim_cfg,
         &sim_params,
         cli.clock_speedup,
@@ -285,6 +288,33 @@ async fn main() -> Result<(), BoxError> {
         custom_records,
     )
     .await?;
+
+    let attacker_nodes: HashMap<String, Arc<Mutex<SimNode<SimGraph>>>> = sim_nodes
+        .into_iter()
+        .filter_map(|(pk, node)| {
+            if pk == attacker_pubkey {
+                let alias = match find_alias_by_pubkey(&pk, &sim_params.sim_network) {
+                    Ok(alias) => alias,
+                    Err(e) => panic!("Attacker pubkey not found {}", e),
+                };
+
+                Some((alias, node))
+            } else {
+                None
+            }
+        })
+        .collect();
+
+    let attacker_actions_shutdown = shutdown.clone();
+    tokio::spawn(async move {
+        if let Err(e) = attack_custom_actions
+            .run_custom_actions(attacker_nodes, listener.clone())
+            .await
+        {
+            log::error!("Error running custom attacker actions: {e}");
+            attacker_actions_shutdown.trigger();
+        }
+    });
 
     // Run simulation until it shuts down, then wait for the graph to exit.
     simulation.run(&validated_activities).await?;
