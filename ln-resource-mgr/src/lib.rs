@@ -46,6 +46,8 @@ pub enum ReputationError {
     ErrChannelNotFound(u64),
     /// Channel capacity does not match capacity in channel snapshot.
     ErrChannelCapacityMismatch(u64, u64),
+    /// A HTLC has been removed from a bucket that doesn't hold enough for it to be removed.
+    ErrBucketTooEmpty(u64),
 }
 
 impl Error for ReputationError {}
@@ -98,6 +100,12 @@ impl Display for ReputationError {
             ReputationError::ErrChannelCapacityMismatch(capacity, snapshot_capacity) => {
                 write!(f, "channel capacity {capacity} does not match snapshot capacity {snapshot_capacity}")
             }
+            ReputationError::ErrBucketTooEmpty(amt_msat) => {
+                write!(
+                    f,
+                    "HTLC amount {amt_msat} has been removed from bucket that doesn't contain it"
+                )
+            }
         }
     }
 }
@@ -143,9 +151,11 @@ impl Display for ForwardingOutcome {
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 pub enum FailureReason {
-    /// There is no space in the incoming channel's general resource bucket, so the htlc should be failed back.
+    /// There is no space in the incoming channel's general resource bucket, which is all the HTLC
+    /// is eligible to use, so the htlc should be failed back.
     NoGeneralResources,
-    /// There are no resources on the incoming channel, so the htlc should be failed back.
+    /// There are no resources on the incoming channel, on any resource bucket, so the htlc should
+    /// be failed back.
     NoResources,
     /// The outgoing peer has insufficient reputation for the htlc to occupy protected resources.
     NoReputation,
@@ -159,6 +169,8 @@ pub struct AllocationCheck {
     /// The reputation values used to compare the incoming channel's revenue to the outgoing channel's reputation for
     /// the htlc proposed.
     pub reputation_check: ReputationCheck,
+    /// Indicates whether the outgoing channel may use general resources for the HTLC.
+    pub general_eligible: bool,
     /// Indicates whether the outgoing channel is eligible to consume congestion resources.
     pub congestion_eligible: bool,
     /// The resources available on the incoming channel.
@@ -235,57 +247,60 @@ impl AllocationCheck {
         incoming_accountable: AccountableSignal,
         incoming_upgradable: bool,
     ) -> Result<ResourceBucketType, FailureReason> {
+        let protected_resources_available = self
+            .resource_check
+            .protected_bucket
+            .resources_available(htlc_amt_msat);
+
+        let general_resources_available = self
+            .resource_check
+            .general_bucket
+            .resources_available(htlc_amt_msat);
+
         match incoming_accountable {
+            // When a HTLC is accountable, our reputation will be impacted by its resolution so
+            // we drop it if the outgoing peer does not have sufficient reputation. The HTLC is
+            // otherwise eligible to use any other bucket, provided it meets its restrictions.
+            // We prefer the protected bucket so that we leave more space in general for peers
+            // that don't have reputation, but will fall back in the unlikely case where
+            // protected is full. We keep our eligibility requirements for general and congestion
+            // buckets because it's possible that this peer is the one that's filling up our
+            // resources, so we don't do them any additional favors beyond protected resources.
             AccountableSignal::Accountable => {
                 if self.reputation_check.sufficient_reputation() {
-                    // If the htlc is accountable and the peer has reputation, assign to protected
-                    // bucket.
-                    if self
-                        .resource_check
-                        .protected_bucket
-                        .resources_available(htlc_amt_msat)
-                    {
+                    if protected_resources_available {
                         Ok(ResourceBucketType::Protected)
+                    } else if general_resources_available && self.general_eligible {
+                        Ok(ResourceBucketType::General)
+                    } else if incoming_upgradable
+                        && self.congestion_eligible
+                        && self.congestion_resources_available(htlc_amt_msat)
+                    {
+                        Ok(ResourceBucketType::Congestion)
                     } else {
-                        // In the unlikely case that the protected bucket is full but there are
-                        // slots available in either general or congestion buckets, assign it
-                        // there.
-                        if self
-                            .resource_check
-                            .general_bucket
-                            .resources_available(htlc_amt_msat)
-                        {
-                            Ok(ResourceBucketType::General)
-                        } else if self.congestion_eligible
-                            && self.congestion_resources_available(htlc_amt_msat)
-                        {
-                            Ok(ResourceBucketType::Congestion)
-                        } else {
-                            Err(FailureReason::NoResources)
-                        }
+                        Err(FailureReason::NoResources)
                     }
                 } else {
-                    // If our node will be held accountable for the resolution of the htlc but the
-                    // peer does not have reputation, we fail it.
                     Err(FailureReason::NoReputation)
                 }
             }
+            // When a HTLC is unaccountable, we have the option to upgrade it to accountable and
+            // use protected resources if the peer has sufficient reputation. We'll only do this
+            // if the peer can't use general resources, as upgrading to accountable will subject
+            // downstream forwarding to stricter conditions (ie, being dropped if there isn't
+            // reputation down the path).
             AccountableSignal::Unaccountable => {
-                // Assign to general bucket if there are general resources available.
-                if self
-                    .resource_check
-                    .general_bucket
-                    .resources_available(htlc_amt_msat)
-                {
+                if general_resources_available && self.general_eligible {
                     Ok(ResourceBucketType::General)
-                } else if self.reputation_check.sufficient_reputation() && incoming_upgradable {
-                    // If the peer has reputation, use protected bucket.
+                } else if self.reputation_check.sufficient_reputation()
+                    && protected_resources_available
+                    && incoming_upgradable
+                {
                     Ok(ResourceBucketType::Protected)
-                } else if self.congestion_eligible
+                } else if incoming_upgradable
+                    && self.congestion_eligible
                     && self.congestion_resources_available(htlc_amt_msat)
                 {
-                    // If no general resources available and peer does not have reputation, we
-                    // check congestion resources.
                     Ok(ResourceBucketType::Congestion)
                 } else {
                     Err(FailureReason::NoGeneralResources)
@@ -590,6 +605,7 @@ mod tests {
                 in_flight_total_risk: 0,
                 htlc_risk: 0,
             },
+            general_eligible: true,
             congestion_eligible: true,
             resource_check: ResourceCheck {
                 general_bucket: BucketResources {
@@ -668,28 +684,13 @@ mod tests {
 
     #[test]
     fn test_forwarding_outcome_congestion() {
-        let mut check = test_congestion_check();
+        let check = test_congestion_check();
 
-        // Unaccountable htlc that is congestion elegible gets access to congestion bucket and is
+        // Unaccountable htlc that is congestion eligible gets access to congestion bucket and is
         // upgraded to accountable.
         assert!(
             check
                 .inner_forwarding_outcome(10, AccountableSignal::Unaccountable, true)
-                .unwrap()
-                == SuccessForwardOutcome {
-                    bucket: ResourceBucketType::Congestion,
-                    accountable_signal: AccountableSignal::Accountable
-                }
-        );
-
-        // Accountable htlc with sufficient reputation but no protected or general
-        // resources goes into congestion bucket and forwarded as accountable.
-        check.reputation_check.reputation = 1000;
-        check.resource_check.general_bucket.slots_available = 0;
-        check.resource_check.protected_bucket.slots_available = 0;
-        assert!(
-            check
-                .inner_forwarding_outcome(10, AccountableSignal::Accountable, true)
                 .unwrap()
                 == SuccessForwardOutcome {
                     bucket: ResourceBucketType::Congestion,
@@ -714,44 +715,17 @@ mod tests {
                     accountable_signal: AccountableSignal::Unaccountable
                 }
         );
-
-        // Accountable htlc with sufficient reputation but no protected resources goes into general
-        // bucket forwarded as accountable.
-        check.reputation_check.reputation = 1000;
-        check.resource_check.protected_bucket.slots_available = 0;
-        assert!(
-            check
-                .inner_forwarding_outcome(10, AccountableSignal::Accountable, true)
-                .unwrap()
-                == SuccessForwardOutcome {
-                    bucket: ResourceBucketType::General,
-                    accountable_signal: AccountableSignal::Accountable
-                }
-        );
     }
 
     #[test]
     fn test_forwarding_outcome_upgrade() {
         let mut check = test_congestion_check();
         check.reputation_check.reputation = 1000;
-        check.resource_check.general_bucket.slots_used = 0;
-
-        // Sufficient reputation and accountable will go in the protected bucket and forwarded as
-        // accountable.
-        assert!(
-            check
-                .inner_forwarding_outcome(10, AccountableSignal::Accountable, true)
-                .unwrap()
-                == SuccessForwardOutcome {
-                    bucket: ResourceBucketType::Protected,
-                    accountable_signal: AccountableSignal::Accountable
-                }
-        );
+        check.resource_check.general_bucket.slots_available = 0;
+        check.congestion_eligible = false;
 
         // Unaccountable htlc with no general or congestion resources available but with sufficient
         // reputation gets access to protected bucket and forwarded as accountable.
-        check.resource_check.general_bucket.slots_available = 0;
-        check.congestion_eligible = false;
         assert!(
             check
                 .inner_forwarding_outcome(10, AccountableSignal::Unaccountable, true)
@@ -760,77 +734,285 @@ mod tests {
                     bucket: ResourceBucketType::Protected,
                     accountable_signal: AccountableSignal::Accountable
                 }
-        );
-    }
-
-    #[test]
-    fn test_forwarding_outcome_no_reputation() {
-        let mut check = test_congestion_check();
-        check.resource_check.general_bucket.slots_used = 0;
-
-        // Accountable htlc with no reputation fails with no reputation error.
-        assert!(
-            check
-                .inner_forwarding_outcome(10, AccountableSignal::Accountable, true)
-                .err()
-                .unwrap()
-                == FailureReason::NoReputation,
-        );
-
-        // Unaccountable htlc with no reputation and available resources goes into general bucket.
-        assert!(
-            check
-                .inner_forwarding_outcome(10, AccountableSignal::Unaccountable, true)
-                .unwrap()
-                == SuccessForwardOutcome {
-                    bucket: ResourceBucketType::General,
-                    accountable_signal: AccountableSignal::Unaccountable
-                }
-        );
-
-        // Unaccountable htlc fails with no general resources if:
-        // - no reputation
-        // - no general resources
-        // - not congestion eligible
-        check.congestion_eligible = false;
-        check.resource_check.general_bucket.slots_available = 0;
-        assert!(
-            check
-                .inner_forwarding_outcome(10, AccountableSignal::Unaccountable, true)
-                .err()
-                .unwrap()
-                == FailureReason::NoGeneralResources
-        );
-    }
-
-    #[test]
-    fn test_forwarding_outcome_no_resources() {
-        let mut check = test_congestion_check();
-        check.congestion_eligible = false;
-        check.resource_check.protected_bucket.slots_available = 0;
-        check.reputation_check.reputation = 1000;
-
-        // Accountable htlc with reputation but no resources at all fails with no resources.
-        assert!(
-            check
-                .inner_forwarding_outcome(10, AccountableSignal::Accountable, true)
-                .err()
-                .unwrap()
-                == FailureReason::NoResources,
         );
     }
 
     #[test]
     fn test_inner_forwarding_outcome_modified_signal() {
         let check = test_congestion_check();
-
-        // return error if htlc has an accountable signal but is not marked as upgradable.
         assert!(
             check
-                .inner_forwarding_outcome(10, AccountableSignal::Accountable, false,)
+                .inner_forwarding_outcome(10, AccountableSignal::Accountable, false)
                 .err()
                 .unwrap()
                 == FailureReason::UpgradableSignalModified
         );
+    }
+
+    #[test]
+    fn test_bucket_outcome_table() {
+        struct TestCase {
+            name: &'static str,
+            accountable: AccountableSignal,
+            upgradable: bool,
+            has_reputation: bool,
+            general_eligible: bool,
+            congestion_eligible: bool,
+            protected_available: bool,
+            general_available: bool,
+            congestion_available: bool,
+            expected: Result<ResourceBucketType, FailureReason>,
+        }
+
+        impl TestCase {
+            /// Creates a default test case with the basic parameters provided. Will produce a test
+            /// case where all buckets are available and the HTLC is eligible for them, except for
+            /// congestion (which can't be available when general is).
+            fn new(
+                name: &'static str,
+                accountable: AccountableSignal,
+                expected: Result<ResourceBucketType, FailureReason>,
+            ) -> Self {
+                TestCase {
+                    name,
+                    accountable,
+                    upgradable: true,
+                    has_reputation: true,
+                    general_eligible: true,
+                    congestion_eligible: true,
+                    protected_available: true,
+                    general_available: true,
+                    congestion_available: false,
+                    expected,
+                }
+            }
+
+            // Congestion resources are only available when general resources are NOT available,
+            // so this value can't be true if general_available is true. It may still be false
+            // when general_available is false, because there are multiple factors that may
+            // contribute to the availability of general resources.
+            fn set_congestion_available(&mut self) {
+                self.congestion_available = true;
+                self.general_available = false;
+            }
+        }
+
+        let test_cases = vec![
+            // Accountable cases
+            TestCase::new(
+                "accountable_with_reputation",
+                AccountableSignal::Accountable,
+                Ok(ResourceBucketType::Protected),
+            ),
+            {
+                let mut case = TestCase::new(
+                    "accountable_with_reputation_protected_full",
+                    AccountableSignal::Accountable,
+                    Ok(ResourceBucketType::General),
+                );
+                case.protected_available = false;
+                case
+            },
+            {
+                let mut case = TestCase::new(
+                    "accountable_with_reputation_general_ineligible",
+                    AccountableSignal::Accountable,
+                    Err(FailureReason::NoResources),
+                );
+                case.protected_available = false;
+                case.general_eligible = false;
+                case
+            },
+            {
+                let mut case = TestCase::new(
+                    "accountable_with_reputation_general_full",
+                    AccountableSignal::Accountable,
+                    Err(FailureReason::NoResources),
+                );
+                case.protected_available = false;
+                case.general_available = false;
+                case
+            },
+            {
+                let mut case = TestCase::new(
+                    "accountable_with_reputation_general_full_congestion_available",
+                    AccountableSignal::Accountable,
+                    Ok(ResourceBucketType::Congestion),
+                );
+                case.protected_available = false;
+                case.set_congestion_available();
+                case
+            },
+            {
+                let mut case = TestCase::new(
+                    "accountable_with_reputation_congestion_ineligible",
+                    AccountableSignal::Accountable,
+                    Err(FailureReason::NoResources),
+                );
+                case.protected_available = false;
+                case.set_congestion_available();
+                case.congestion_eligible = false;
+                case
+            },
+            {
+                let mut case = TestCase::new(
+                    "accountable_with_no_reputation",
+                    AccountableSignal::Accountable,
+                    Err(FailureReason::NoReputation),
+                );
+                case.has_reputation = false;
+                case
+            },
+            // Unaccountable cases
+            TestCase::new(
+                "unaccountable_general_available",
+                AccountableSignal::Unaccountable,
+                Ok(ResourceBucketType::General),
+            ),
+            {
+                let mut case = TestCase::new(
+                    "unaccountable_general_ineligible_upgrades",
+                    AccountableSignal::Unaccountable,
+                    Ok(ResourceBucketType::Protected),
+                );
+                case.general_eligible = false;
+                case
+            },
+            {
+                let mut case = TestCase::new(
+                    "unaccountable_general_full_upgrades",
+                    AccountableSignal::Unaccountable,
+                    Err(FailureReason::NoGeneralResources),
+                );
+                case.general_eligible = false;
+                case.upgradable = false;
+                case
+            },
+            {
+                let mut case = TestCase::new(
+                    "unaccountable_general_ineligible_no_reputation",
+                    AccountableSignal::Unaccountable,
+                    Err(FailureReason::NoGeneralResources),
+                );
+                case.general_eligible = false;
+                case.has_reputation = false;
+                case
+            },
+            {
+                let mut case = TestCase::new(
+                    "unaccountable_congestion_available",
+                    AccountableSignal::Unaccountable,
+                    Ok(ResourceBucketType::Congestion),
+                );
+                case.has_reputation = false;
+                case.set_congestion_available();
+                case
+            },
+            {
+                let mut case = TestCase::new(
+                    "unaccountable_congestion_ineligible",
+                    AccountableSignal::Unaccountable,
+                    Err(FailureReason::NoGeneralResources),
+                );
+                case.has_reputation = false;
+                case.congestion_eligible = false;
+                case.set_congestion_available();
+                case
+            },
+            {
+                let mut case = TestCase::new(
+                    "unaccountable_no_upgrade_congestion_available",
+                    AccountableSignal::Unaccountable,
+                    Err(FailureReason::NoGeneralResources),
+                );
+                case.upgradable = false;
+                case.set_congestion_available();
+                case
+            },
+            {
+                let mut case = TestCase::new(
+                    "unaccountable_upgrade_congestion_available",
+                    AccountableSignal::Unaccountable,
+                    Ok(ResourceBucketType::Congestion),
+                );
+                case.set_congestion_available();
+                case.protected_available = false;
+                case
+            },
+            {
+                let mut case = TestCase::new(
+                    "unaccountable_everything_full",
+                    AccountableSignal::Unaccountable,
+                    Err(FailureReason::NoGeneralResources),
+                );
+                case.protected_available = false;
+                case.general_eligible = false;
+                case
+            },
+        ];
+
+        for test_case in test_cases {
+            let check = AllocationCheck {
+                reputation_check: ReputationCheck {
+                    reputation: if test_case.has_reputation { 1000 } else { 0 },
+                    revenue_threshold: 0,
+                    in_flight_total_risk: 0,
+                    htlc_risk: 0,
+                },
+                general_eligible: test_case.general_eligible,
+                congestion_eligible: test_case.congestion_eligible,
+                resource_check: ResourceCheck {
+                    general_bucket: BucketResources {
+                        slots_used: 0,
+                        slots_available: if test_case.general_available { 10 } else { 0 },
+                        liquidity_used_msat: 0,
+                        liquidity_available_msat: if test_case.general_available {
+                            100_000_000
+                        } else {
+                            0
+                        },
+                    },
+                    congestion_bucket: BucketResources {
+                        slots_used: 0,
+                        slots_available: if test_case.congestion_available {
+                            10
+                        } else {
+                            0
+                        },
+                        liquidity_used_msat: 0,
+                        liquidity_available_msat: if test_case.congestion_available {
+                            MINIMUM_CONGESTION_SLOT_LIQUDITY * 20
+                        } else {
+                            0
+                        },
+                    },
+                    protected_bucket: BucketResources {
+                        slots_used: 0,
+                        slots_available: if test_case.protected_available { 10 } else { 0 },
+                        liquidity_used_msat: 0,
+                        liquidity_available_msat: if test_case.protected_available {
+                            100_000_000
+                        } else {
+                            0
+                        },
+                    },
+                },
+            };
+
+            if test_case.congestion_available {
+                assert!(
+                    !test_case.general_available,
+                    "Congestion can't be available is general is, bad test case: {}",
+                    test_case.name
+                );
+            }
+
+            let result = check.bucket_outcome(1000, test_case.accountable, test_case.upgradable);
+            assert_eq!(
+                result, test_case.expected,
+                "Test case '{}' failed. Expected {:?}, got {:?}",
+                test_case.name, test_case.expected, result
+            );
+        }
     }
 }
