@@ -9,6 +9,7 @@ use triggered::Listener;
 use crate::{accountable_from_records, records_from_signal, BoxError, NetworkReputation};
 
 pub mod sink;
+pub mod utils;
 
 pub struct NetworkSetup {
     /// The identifier for channel edges that should be general jammed during the simulation.
