@@ -410,6 +410,7 @@ where
                         allocation_check,
                         htlc_add.htlc.clone(),
                     )
+                    .await
                     .map_err(|e| ReputationError::ErrUnrecoverable(e.to_string()))?;
             }
         }
