@@ -6,6 +6,7 @@ use ln_resource_mgr::ReputationParams;
 use ln_simln_jamming::analysis::BatchForwardWriter;
 use ln_simln_jamming::attack_interceptor::AttackInterceptor;
 use ln_simln_jamming::attacks::sink::SinkAttack;
+use ln_simln_jamming::attacks::slow_jam::SlowJam;
 use ln_simln_jamming::attacks::JammingAttack;
 use ln_simln_jamming::clock::InstantClock;
 use ln_simln_jamming::parsing::{
@@ -155,6 +156,16 @@ async fn main() -> Result<(), BoxError> {
     let risk_margin = forward_params.htlc_opportunity_cost(
         1000 + (0.0001 * cli.reputation_margin_msat as f64) as u64,
         cli.reputation_margin_expiry_blocks,
+    );
+
+    let slow_jam_attack = SlowJam::new(
+        Arc::clone(&clock),
+        &sim_network,
+        target_pubkey,
+        attacker_pubkey,
+        Arc::clone(&reputation_interceptor),
+        general_jammer,
+        network_graph,
     );
 
     // Next, setup the attack interceptor to use our custom attack.
