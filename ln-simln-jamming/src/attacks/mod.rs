@@ -1,13 +1,15 @@
-use std::collections::HashMap;
+use std::{collections::HashMap, sync::Arc};
 
 use async_trait::async_trait;
 use bitcoin::secp256k1::PublicKey;
 use simln_lib::sim_node::{CustomRecords, ForwardingError, InterceptRequest, SimGraph, SimNode};
+use tokio::sync::Mutex;
 use triggered::Listener;
 
 use crate::{accountable_from_records, records_from_signal, BoxError, NetworkReputation};
 
 pub mod sink;
+pub mod slow_jam;
 pub mod utils;
 
 pub struct NetworkSetup {
@@ -54,9 +56,9 @@ pub trait JammingAttack {
     /// along a specific route for jamming with [`SimNode::send_to_route`] method.
     ///
     /// [`SimNode::send_to_route`]: simln_lib::sim_node::SimNode::send_to_route
-    async fn run_custom_actions<'a>(
+    async fn run_custom_actions(
         &self,
-        _attacker_nodes: HashMap<PublicKey, SimNode<'a, SimGraph>>,
+        _attacker_nodes: HashMap<PublicKey, Arc<Mutex<SimNode<SimGraph>>>>,
         _shutdown_listener: Listener,
     ) -> Result<(), BoxError> {
         Ok(())

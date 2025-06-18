@@ -4,7 +4,7 @@ use crate::{accountable_from_records, records_from_signal, upgradable_from_recor
 use async_trait::async_trait;
 use bitcoin::secp256k1::PublicKey;
 use ln_resource_mgr::forward_manager::{
-    ForwardManager, ForwardManagerParams, SimualtionDebugManager,
+    ForwardManager, ForwardManagerParams, SimulationDebugManager,
 };
 use ln_resource_mgr::{
     AccountableSignal, ChannelSnapshot, ForwardResolution, ForwardingOutcome, HtlcRef,
@@ -346,6 +346,23 @@ where
             }
         }
 
+        Ok(())
+    }
+}
+
+//impl<R> ReputationInterceptor<R, ForwardManager>
+impl<R> SimulationDebugManager for ReputationInterceptor<R, ForwardManager>
+where
+    R: ForwardReporter,
+{
+    fn general_jam_channel(&self, channel: u64) -> Result<(), ReputationError> {
+        let nodes = futures::executor::block_on(self.network_nodes.lock());
+        for node in nodes.iter() {
+            let node_channels = node.1.forward_manager.list_channels(self.clock.now())?;
+            if node_channels.contains_key(&channel) {
+                node.1.forward_manager.general_jam_channel(channel)?;
+            }
+        }
         Ok(())
     }
 }

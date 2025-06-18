@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use bitcoin::secp256k1::PublicKey;
 use lightning::{
     ln::msgs::LightningError,
@@ -12,7 +14,7 @@ pub fn build_custom_route(
     sender: &PublicKey,
     amount_msat: u64,
     hops: &[PublicKey],
-    network_graph: &NetworkGraph<&WrappedLog>,
+    network_graph: &NetworkGraph<Arc<WrappedLog>>,
 ) -> Result<Route, LightningError> {
     let route_params = &RouteParameters {
         payment_params: PaymentParameters::from_node_id(hops[hops.len() - 1], 0)

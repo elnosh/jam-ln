@@ -6,8 +6,7 @@ use simln_lib::sim_node::{
     CriticalError, CustomRecords, ForwardingError, InterceptRequest, InterceptResolution,
     Interceptor,
 };
-use std::sync::Arc;
-use tokio::sync::Mutex;
+use std::{collections::HashSet, sync::Arc};
 
 /// Wraps an innner reputation interceptor (which is responsible for implementing a mitigation to
 /// channel jamming) in an outer interceptor which can be used to take custom actions for attacks.
@@ -17,9 +16,9 @@ where
     R: Interceptor + ReputationMonitor,
     A: JammingAttack,
 {
-    attacker_pubkey: PublicKey,
+    attacker_pubkeys: HashSet<PublicKey>,
     /// Inner reputation monitor that implements jamming mitigation.
-    reputation_interceptor: Arc<Mutex<R>>,
+    reputation_interceptor: Arc<R>,
     /// The attack that will be launched.
     attack: Arc<A>,
 }
@@ -31,12 +30,12 @@ where
 {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
-        attacker_pubkey: PublicKey,
-        reputation_interceptor: Arc<Mutex<R>>,
+        attacker_pubkeys: HashSet<PublicKey>,
+        reputation_interceptor: Arc<R>,
         attack: Arc<A>,
     ) -> Self {
         Self {
-            attacker_pubkey,
+            attacker_pubkeys,
             reputation_interceptor,
             attack,
         }
@@ -56,7 +55,7 @@ where
     ) -> Result<Result<CustomRecords, ForwardingError>, CriticalError> {
         // Intercept payments on the attacking node. If they're incoming from the target, jam them. Otherwise just
         // fail other htlcs, they're not that interesting to us.
-        if req.forwarding_node == self.attacker_pubkey {
+        if self.attacker_pubkeys.contains(&req.forwarding_node) {
             return self
                 .attack
                 .intercept_attacker_htlc(req)
@@ -66,11 +65,7 @@ where
 
         // If attacker is not involved, use jamming interceptor to implement reputation and
         // bucketing.
-        self.reputation_interceptor
-            .lock()
-            .await
-            .intercept_htlc(req)
-            .await
+        self.reputation_interceptor.intercept_htlc(req).await
     }
 
     /// Notifies the underlying jamming interceptor of htlc resolution, as our attacking interceptor doesn't need
@@ -78,15 +73,12 @@ where
     async fn notify_resolution(&self, res: InterceptResolution) -> Result<(), CriticalError> {
         // If this was a payment forwarded through the attacker, it was not handled by the reputation interceptor
         // so we don't need to handle it (it hasn't seen the htlc add to begin with).
-        if res.forwarding_node == self.attacker_pubkey {
+        // if res.forwarding_node == self.attacker_pubkey {
+        if self.attacker_pubkeys.contains(&res.forwarding_node) {
             return Ok(());
         }
 
-        self.reputation_interceptor
-            .lock()
-            .await
-            .notify_resolution(res)
-            .await
+        self.reputation_interceptor.notify_resolution(res).await
     }
 
     fn name(&self) -> String {
@@ -96,7 +88,7 @@ where
 
 #[cfg(test)]
 mod tests {
-    use std::collections::HashMap;
+    use std::collections::{HashMap, HashSet};
     use std::sync::Arc;
 
     use crate::attacks::JammingAttack;
@@ -110,7 +102,6 @@ mod tests {
     use simln_lib::sim_node::{
         CustomRecords, ForwardingError, InterceptRequest, Interceptor, SimGraph, SimNode,
     };
-    use tokio::sync::Mutex;
     use triggered::Listener;
 
     use super::AttackInterceptor;
@@ -122,7 +113,7 @@ mod tests {
         impl JammingAttack for Attack {
             fn setup_for_network(&self) -> Result<crate::attacks::NetworkSetup, BoxError>;
             async fn intercept_attacker_htlc(&self, req: InterceptRequest) -> Result<Result<CustomRecords, ForwardingError>, BoxError>;
-            async fn run_custom_actions<'a>(&self, attacker_nodes: HashMap<PublicKey, SimNode<'a, SimGraph>>, shutdown_listener: Listener) -> Result<(), BoxError>;
+            async fn run_custom_actions(&self, attacker_nodes: HashMap<PublicKey, Arc<tokio::sync::Mutex<SimNode<SimGraph>>>>, shutdown_listener: Listener) -> Result<(), BoxError>;
             async fn simulation_completed(&self, _start_reputation: NetworkReputation) -> Result<bool, BoxError>;
         }
     }
@@ -132,23 +123,21 @@ mod tests {
 
         let mock = MockReputationInterceptor::new();
         AttackInterceptor::new(
-            attacker_pubkey,
-            Arc::new(Mutex::new(mock)),
+            HashSet::from([attacker_pubkey]),
+            Arc::new(mock),
             Arc::new(MockAttack::new()),
         )
     }
 
     /// Primes the mock to expect intercept_htlc called with the request provided.
     async fn mock_intercept_htlc(
-        interceptor: Arc<Mutex<MockReputationInterceptor>>,
+        interceptor: &mut MockReputationInterceptor,
         req: &InterceptRequest,
     ) {
         let expected_incoming = req.incoming_htlc.channel_id;
         let expected_outgoing = req.outgoing_channel_id.unwrap();
 
         interceptor
-            .lock()
-            .await
             .expect_intercept_htlc()
             .with(function(move |args: &InterceptRequest| {
                 args.incoming_htlc.channel_id == expected_incoming
@@ -168,18 +157,14 @@ mod tests {
             .times(2);
 
         let interceptor = AttackInterceptor::new(
-            attacker_pubkey,
-            Arc::new(Mutex::new(MockReputationInterceptor::new())),
+            HashSet::from([attacker_pubkey]),
+            Arc::new(MockReputationInterceptor::new()),
             Arc::new(mock_attack),
         );
 
         // Intercepted on attacker: target -(0)-> attacker -(5)-> node.
-        let target_to_attacker = setup_test_request(
-            interceptor.attacker_pubkey,
-            0,
-            5,
-            AccountableSignal::Unaccountable,
-        );
+        let target_to_attacker =
+            setup_test_request(attacker_pubkey, 0, 5, AccountableSignal::Unaccountable);
         interceptor
             .intercept_htlc(target_to_attacker)
             .await
@@ -187,12 +172,8 @@ mod tests {
             .unwrap();
 
         // Intercepted on attacker: node -(5)-> attacker -(0)-> target.
-        let attacker_to_target = setup_test_request(
-            interceptor.attacker_pubkey,
-            5,
-            0,
-            AccountableSignal::Unaccountable,
-        );
+        let attacker_to_target =
+            setup_test_request(attacker_pubkey, 5, 0, AccountableSignal::Unaccountable);
         interceptor
             .intercept_htlc(attacker_to_target)
             .await
@@ -202,13 +183,17 @@ mod tests {
 
     #[tokio::test]
     async fn test_peer_to_target_accountable() {
-        let interceptor = setup_interceptor_test();
+        let mut interceptor = setup_interceptor_test();
 
         // Intercepted on target's peer: node -(5) -> peer -(1)-> target, accountable payments just passed through.
         let peer_pubkey = get_random_keypair().1;
         let peer_to_target = setup_test_request(peer_pubkey, 5, 1, AccountableSignal::Accountable);
 
-        mock_intercept_htlc(interceptor.reputation_interceptor.clone(), &peer_to_target).await;
+        let mut reputation_interceptor =
+            Arc::into_inner(interceptor.reputation_interceptor).unwrap();
+        mock_intercept_htlc(&mut reputation_interceptor, &peer_to_target).await;
+
+        interceptor.reputation_interceptor = Arc::new(reputation_interceptor);
         interceptor
             .intercept_htlc(peer_to_target)
             .await
@@ -220,13 +205,17 @@ mod tests {
     /// sufficient reputation.
     #[tokio::test]
     async fn test_peer_to_target_upgraded() {
-        let interceptor = setup_interceptor_test();
+        let mut interceptor = setup_interceptor_test();
 
         let peer_pubkey = get_random_keypair().1;
         let peer_to_target =
             setup_test_request(peer_pubkey, 5, 1, AccountableSignal::Unaccountable);
 
-        mock_intercept_htlc(interceptor.reputation_interceptor.clone(), &peer_to_target).await;
+        let mut reputation_interceptor =
+            Arc::into_inner(interceptor.reputation_interceptor).unwrap();
+        mock_intercept_htlc(&mut reputation_interceptor, &peer_to_target).await;
+
+        interceptor.reputation_interceptor = Arc::new(reputation_interceptor);
         interceptor
             .intercept_htlc(peer_to_target)
             .await
@@ -238,13 +227,18 @@ mod tests {
     /// be upgraded to accountable.
     #[tokio::test]
     async fn test_peer_to_target_general_jammed() {
-        let interceptor = setup_interceptor_test();
+        let mut interceptor = setup_interceptor_test();
 
         let peer_pubkey = get_random_keypair().1;
         let peer_to_target =
             setup_test_request(peer_pubkey, 5, 1, AccountableSignal::Unaccountable);
 
-        mock_intercept_htlc(interceptor.reputation_interceptor.clone(), &peer_to_target).await;
+        let mut reputation_interceptor =
+            Arc::into_inner(interceptor.reputation_interceptor).unwrap();
+        mock_intercept_htlc(&mut reputation_interceptor, &peer_to_target).await;
+
+        interceptor.reputation_interceptor = Arc::new(reputation_interceptor);
+
         interceptor
             .intercept_htlc(peer_to_target)
             .await
@@ -255,7 +249,7 @@ mod tests {
     /// Tests that forwards through the target node to its peers will be upgraded to accountable.
     #[tokio::test]
     async fn test_target_to_peer() {
-        let interceptor = setup_interceptor_test();
+        let mut interceptor = setup_interceptor_test();
 
         let target_pubkey = get_random_keypair().1;
         let target_forward = setup_test_request(
@@ -267,7 +261,12 @@ mod tests {
 
         let mut expected_req = target_forward.clone();
         expected_req.incoming_custom_records = records_from_signal(AccountableSignal::Accountable);
-        mock_intercept_htlc(interceptor.reputation_interceptor.clone(), &expected_req).await;
+
+        let mut reputation_interceptor =
+            Arc::into_inner(interceptor.reputation_interceptor).unwrap();
+        mock_intercept_htlc(&mut reputation_interceptor, &expected_req).await;
+
+        interceptor.reputation_interceptor = Arc::new(reputation_interceptor);
         interceptor
             .intercept_htlc(target_forward)
             .await
@@ -278,7 +277,7 @@ mod tests {
     /// Tests that forwards through the target node to the attacker will be upgraded to accountable.
     #[tokio::test]
     async fn test_target_to_attacker() {
-        let interceptor = setup_interceptor_test();
+        let mut interceptor = setup_interceptor_test();
 
         let target_pubkey = get_random_keypair().1;
         let target_forward = setup_test_request(
@@ -290,7 +289,12 @@ mod tests {
 
         let mut expected_req = target_forward.clone();
         expected_req.incoming_custom_records = records_from_signal(AccountableSignal::Accountable);
-        mock_intercept_htlc(interceptor.reputation_interceptor.clone(), &expected_req).await;
+
+        let mut reputation_interceptor =
+            Arc::into_inner(interceptor.reputation_interceptor).unwrap();
+        mock_intercept_htlc(&mut reputation_interceptor, &expected_req).await;
+
+        interceptor.reputation_interceptor = Arc::new(reputation_interceptor);
         interceptor
             .intercept_htlc(target_forward)
             .await
@@ -301,18 +305,18 @@ mod tests {
     /// Tests that forwards by the target sent from attacker -> target are handled like any other target payment.
     #[tokio::test]
     async fn test_target_from_attacker() {
-        let interceptor = setup_interceptor_test();
+        let mut interceptor = setup_interceptor_test();
 
         let target_pubkey = get_random_keypair().1;
         let not_actually_attacker =
             setup_test_request(target_pubkey, 0, 3, AccountableSignal::Accountable);
 
         // This tests hangs; the target is actually jamming the attacker lol because we don't check the direction
-        mock_intercept_htlc(
-            interceptor.reputation_interceptor.clone(),
-            &not_actually_attacker,
-        )
-        .await;
+        let mut reputation_interceptor =
+            Arc::into_inner(interceptor.reputation_interceptor).unwrap();
+        mock_intercept_htlc(&mut reputation_interceptor, &not_actually_attacker).await;
+
+        interceptor.reputation_interceptor = Arc::new(reputation_interceptor);
         interceptor
             .intercept_htlc(not_actually_attacker)
             .await

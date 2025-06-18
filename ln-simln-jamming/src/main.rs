@@ -1,16 +1,16 @@
 use bitcoin::secp256k1::PublicKey;
 use clap::Parser;
-use lightning::ln::features::NodeFeatures;
+use lightning::routing::gossip::NetworkGraph;
 use ln_resource_mgr::forward_manager::ForwardManagerParams;
 use ln_resource_mgr::ReputationParams;
 use ln_simln_jamming::analysis::BatchForwardWriter;
 use ln_simln_jamming::attack_interceptor::AttackInterceptor;
-use ln_simln_jamming::attacks::sink::SinkAttack;
+use ln_simln_jamming::attacks::slow_jam::SlowJam;
 use ln_simln_jamming::attacks::JammingAttack;
 use ln_simln_jamming::clock::InstantClock;
 use ln_simln_jamming::parsing::{
     find_pubkey_by_alias, reputation_snapshot_from_file, Cli, SimNetwork,
-    DEFAULT_REPUTATION_FILENAME, DEFAULT_REVENUE_FILENAME,
+    DEFAULT_REPUTATION_FILENAME,
 };
 use ln_simln_jamming::reputation_interceptor::ReputationInterceptor;
 use ln_simln_jamming::revenue_interceptor::{RevenueInterceptor, RevenueSnapshot};
@@ -23,14 +23,15 @@ use simln_lib::clock::Clock;
 use simln_lib::clock::SimulationClock;
 use simln_lib::latency_interceptor::LatencyIntercepor;
 use simln_lib::sim_node::{
-    populate_network_graph, CustomRecords, Interceptor, SimGraph, SimNode, SimulatedChannel,
+    populate_network_graph, CustomRecords, Interceptor, SimulatedChannel, WrappedLog,
 };
-use simln_lib::{NodeInfo, SimulationCfg, SimulationError};
+use simln_lib::{SimulationCfg, SimulationError};
 use simple_logger::SimpleLogger;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs::{self, OpenOptions};
 use std::io::{BufWriter, Write};
 use std::path::PathBuf;
+use std::str::FromStr;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::select;
@@ -40,12 +41,14 @@ use tokio_util::task::TaskTracker;
 #[tokio::main]
 async fn main() -> Result<(), BoxError> {
     SimpleLogger::new()
-        .with_level(LevelFilter::Debug)
+        //.with_level(LevelFilter::Debug)
+        .with_level(LevelFilter::Off)
         // Lower logging from sim-ln so that we can focus on our own logs.
         .with_module_level("simln_lib", LevelFilter::Info)
         .with_module_level("sim_cli", LevelFilter::Off)
         // Debug so that we can read interceptor-related logging.
-        .with_module_level("simln_lib::sim_node", LevelFilter::Debug)
+        //.with_module_level("simln_lib::sim_node", LevelFilter::Debug)
+        .with_module_level("simln_lib::sim_node", LevelFilter::Off)
         .init()
         .unwrap();
 
@@ -62,6 +65,7 @@ async fn main() -> Result<(), BoxError> {
     // non-attacker target peers.
     let target_pubkey = find_pubkey_by_alias(&cli.target_alias, &sim_network)?;
     let attacker_pubkey = find_pubkey_by_alias(&cli.attacker_alias, &sim_network)?;
+    println!("attacker pubkey {}", attacker_pubkey.to_string());
 
     let target_channels: HashMap<u64, (PublicKey, String)> = sim_network
         .iter()
@@ -135,19 +139,21 @@ async fn main() -> Result<(), BoxError> {
     let reputation_snapshot =
         reputation_snapshot_from_file(&reputation_dir.join(DEFAULT_REPUTATION_FILENAME))?;
 
-    let bootstrap_revenue: u64 =
-        std::fs::read_to_string(reputation_dir.join(DEFAULT_REVENUE_FILENAME))?.parse()?;
+    // let bootstrap_revenue: u64 =
+    //     std::fs::read_to_string(reputation_dir.join(DEFAULT_REVENUE_FILENAME))?.parse()?;
 
-    let reputation_interceptor = Arc::new(Mutex::new(
-        ReputationInterceptor::new_from_snapshot(
-            forward_params,
-            &sim_network,
-            reputation_snapshot,
-            clock.clone(),
-            Some(results_writer),
-        )
-        .await?,
-    ));
+    let bootstrap_revenue = 0;
+
+    // let reputation_interceptor = Arc::new(Mutex::new(
+    //     ReputationInterceptor::new_from_snapshot(
+    //         forward_params,
+    //         &sim_network,
+    //         reputation_snapshot,
+    //         clock.clone(),
+    //         Some(results_writer),
+    //     )
+    //     .await?,
+    // ));
 
     // Reputation is assessed for a channel pair and a specific HTLC that's being proposed. To assess whether pairs
     // have reputation, we'll use LND's default fee policy to get the HTLC risk for our configured htlc size and hold
@@ -157,25 +163,50 @@ async fn main() -> Result<(), BoxError> {
         cli.reputation_margin_expiry_blocks,
     );
 
-    // Next, setup the attack interceptor to use our custom attack.
-    let attack = Arc::new(SinkAttack::new(
-        clock.clone(),
+    println!(
+        "Risk margin for reputation: {} msat",
+        risk_margin
+    );
+
+    let reputation_interceptor = Arc::new(
+        ReputationInterceptor::new_from_snapshot(
+            forward_params,
+            &sim_network,
+            reputation_snapshot,
+            clock.clone(),
+            Some(results_writer.clone()),
+        )
+        .await?,
+    );
+
+    let network_graph = network_graph(sim_network.clone())?;
+    let attack = Arc::new(SlowJam::new(
+        Arc::clone(&clock),
         &sim_network,
         target_pubkey,
         attacker_pubkey,
-        risk_margin,
-        reputation_interceptor.clone(),
-        listener.clone(),
+        Arc::clone(&reputation_interceptor),
+        Arc::clone(&reputation_interceptor),
+        network_graph,
     ));
+
+    // Next, setup the attack interceptor to use our custom attack.
+    // let attack = Arc::new(SinkAttack::new(
+    //     clock.clone(),
+    //     &sim_network,
+    //     target_pubkey,
+    //     attacker_pubkey,
+    //     risk_margin,
+    //     reputation_interceptor.clone(),
+    //     listener.clone(),
+    // ));
 
     let attack_setup = attack.setup_for_network()?;
     reputation_interceptor
-        .lock()
-        .await
         .jam_channels(&attack_setup.general_jammed_nodes)
         .await?;
 
-    let sink_custom_actions = Arc::clone(&attack);
+    let attack_custom_actions = Arc::clone(&attack);
 
     // Do some preliminary checks on our reputation state - there isn't much point in running if we haven't built up
     // some reputation.
@@ -194,10 +225,14 @@ async fn main() -> Result<(), BoxError> {
     )
     .await?;
 
-    check_reputation_status(&cli, &start_reputation)?;
+    // check_reputation_status(&cli, &start_reputation)?;
 
+    let from_attacker =
+        PublicKey::from_str("033dbb3f4662640d4888918eeb986069b9b775c921b9ec6debcada1b3ac58a1b0b")
+            .unwrap();
     let attack_interceptor = AttackInterceptor::new(
-        attacker_pubkey,
+        HashSet::from([attacker_pubkey, from_attacker]),
+        //attacker_pubkey,
         reputation_interceptor.clone(),
         attack.clone(),
     );
@@ -281,7 +316,7 @@ async fn main() -> Result<(), BoxError> {
     };
 
     let sim_cfg = SimulationCfg::new(None, 3_800_000, 2.0, None, Some(13995354354227336701));
-    let (simulation, validated_activities) = create_simulation_with_network(
+    let (simulation, validated_activities, nodes) = create_simulation_with_network(
         sim_cfg,
         &sim_params,
         cli.clock_speedup,
@@ -291,20 +326,28 @@ async fn main() -> Result<(), BoxError> {
     )
     .await?;
 
-    let attacker_nodes = attacker_nodes(sim_network, &[attacker_pubkey]).await?;
-    let attacker_actions_shutdown = shutdown.clone();
-    tokio::spawn(async move {
-        if let Err(e) = sink_custom_actions
-            .run_custom_actions(attacker_nodes, listener.clone())
-            .await
-        {
-            log::error!("Error running custom attacker actions: {e}");
-            attacker_actions_shutdown.trigger();
-        }
-    });
-
     // Run simulation until it shuts down, then wait for the graph to exit.
-    simulation.run(&validated_activities).await?;
+    tokio::spawn(async move {
+        simulation.run(&validated_activities).await.unwrap();
+    });
+    // simulation.run(&validated_activities).await?;
+
+    // let attacker_nodes =
+    //     attacker_nodes(sim_network, simgraph, &[from_attacker, attacker_pubkey]).await?;
+
+    // let attacker_nodes = nodes
+    //     .iter()
+    //     .filter(|(k, node)| (**k == from_attacker || **k == attacker_pubkey))
+    //     .collect();
+
+    let attacker_actions_shutdown = shutdown.clone();
+    if let Err(e) = attack_custom_actions
+        .run_custom_actions(nodes, listener.clone())
+        .await
+    {
+        log::error!("Error running custom attacker actions: {e}");
+        attacker_actions_shutdown.trigger();
+    }
 
     // Write start and end state to a summary file.
     let end_reputation = get_network_reputation(
@@ -365,52 +408,20 @@ fn check_reputation_status(cli: &Cli, status: &NetworkReputation) -> Result<(), 
     Ok(())
 }
 
-async fn attacker_nodes<'a>(
+fn network_graph(
     network: Vec<NetworkParser>,
-    attacker_nodes: &[PublicKey],
-) -> Result<HashMap<PublicKey, SimNode<'a, SimGraph>>, BoxError> {
+) -> Result<Arc<NetworkGraph<Arc<WrappedLog>>>, BoxError> {
     let channels = network
         .clone()
         .into_iter()
         .map(SimulatedChannel::from)
         .collect::<Vec<SimulatedChannel>>();
 
-    // Setup a simulation graph that will handle propagation of payments through the network
-    let simulation_graph = Arc::new(Mutex::new(
-        SimGraph::new(
-            channels.clone(),
-            TaskTracker::new(),
-            vec![],
-            CustomRecords::new(),
-            triggered::trigger(),
-        )
-        .map_err(|e| SimulationError::SimulatedNetworkError(format!("{:?}", e)))?,
-    ));
-
     let clock = Arc::new(SimulationClock::new(1)?);
-
-    let routing_graph = Arc::new(
+    Ok(Arc::new(
         populate_network_graph(channels, clock.clone())
             .map_err(|e| SimulationError::SimulatedNetworkError(format!("{:?}", e)))?,
-    );
-
-    let mut nodes = HashMap::new();
-    for attacker in attacker_nodes {
-        let simulation_graph = Arc::clone(&simulation_graph);
-        let routing_graph = Arc::clone(&routing_graph);
-
-        let mut features = NodeFeatures::empty();
-        features.set_keysend_optional();
-        let node_info = NodeInfo {
-            pubkey: *attacker,
-            alias: String::new(),
-            features,
-        };
-        let node = SimNode::new(node_info, simulation_graph, routing_graph);
-        nodes.insert(*attacker, node);
-    }
-
-    Ok(nodes)
+    ))
 }
 
 #[allow(clippy::too_many_arguments)]
