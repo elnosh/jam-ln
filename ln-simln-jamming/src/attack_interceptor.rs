@@ -96,6 +96,7 @@ where
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
     use std::sync::Arc;
 
     use crate::attacks::JammingAttack;
@@ -105,8 +106,11 @@ mod tests {
     use ln_resource_mgr::AccountableSignal;
     use mockall::mock;
     use mockall::predicate::function;
-    use simln_lib::sim_node::{CustomRecords, ForwardingError, InterceptRequest, Interceptor};
+    use simln_lib::sim_node::{
+        CustomRecords, ForwardingError, InterceptRequest, Interceptor, SimGraph, SimNode,
+    };
     use tokio::sync::Mutex;
+    use triggered::Listener;
 
     use super::AttackInterceptor;
 
@@ -117,6 +121,7 @@ mod tests {
         impl JammingAttack for Attack {
             fn setup_for_network(&self) -> Result<crate::attacks::NetworkSetup, BoxError>;
             async fn intercept_attacker_htlc(&self, req: InterceptRequest) -> Result<Result<CustomRecords, ForwardingError>, BoxError>;
+            async fn run_custom_actions(&self, attacker_nodes: HashMap<String, Arc<tokio::sync::Mutex<SimNode<SimGraph>>>>, shutdown_listener: Listener) -> Result<(), BoxError>;
             async fn simulation_completed(&self, _start_reputation: NetworkReputation) -> Result<bool, BoxError>;
         }
     }
