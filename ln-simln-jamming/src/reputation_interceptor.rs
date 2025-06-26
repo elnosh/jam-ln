@@ -4,7 +4,7 @@ use crate::{accountable_from_records, records_from_signal, upgradable_from_recor
 use async_trait::async_trait;
 use bitcoin::secp256k1::PublicKey;
 use ln_resource_mgr::forward_manager::{
-    ForwardManager, ForwardManagerParams, SimualtionDebugManager,
+    ForwardManager, ForwardManagerParams, SimulationDebugManager,
 };
 use ln_resource_mgr::{
     AccountableSignal, ChannelSnapshot, ForwardResolution, ForwardingOutcome, HtlcRef,
