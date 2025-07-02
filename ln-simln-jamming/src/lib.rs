@@ -83,9 +83,8 @@ pub async fn get_network_reputation<R: ReputationMonitor>(
     access_ins: Instant,
 ) -> Result<NetworkReputation, BoxError> {
     let reputation_monitor_lock = reputation_monitor.lock().await;
-    let target_channels_snapshot = reputation_monitor_lock
-        .list_channels(target_pubkey, access_ins)
-        .await?;
+    let target_channels_snapshot =
+        reputation_monitor_lock.list_channels(target_pubkey, access_ins)?;
 
     let mut network_reputation = NetworkReputation {
         attacker_reputation: 0,
@@ -101,9 +100,7 @@ pub async fn get_network_reputation<R: ReputationMonitor>(
             (&target_channels_snapshot, true)
         } else {
             (
-                &reputation_monitor_lock
-                    .list_channels(*pubkey, access_ins)
-                    .await?,
+                &reputation_monitor_lock.list_channels(*pubkey, access_ins)?,
                 false,
             )
         };
@@ -170,7 +167,6 @@ mod tests {
     use crate::test_utils::get_random_keypair;
     use crate::{count_reputation_pairs, get_network_reputation};
     use crate::{BoxError, NetworkReputation};
-    use async_trait::async_trait;
     use bitcoin::secp256k1::PublicKey;
     use ln_resource_mgr::ChannelSnapshot;
     use mockall::mock;
@@ -182,9 +178,8 @@ mod tests {
     mock! {
         Monitor{}
 
-        #[async_trait]
         impl ReputationMonitor for Monitor{
-            async fn list_channels(&self, node: PublicKey, access_ins: Instant) -> Result<HashMap<u64, ChannelSnapshot>, BoxError>;
+            fn list_channels(&self, node: PublicKey, access_ins: Instant) -> Result<HashMap<u64, ChannelSnapshot>, BoxError>;
         }
     }
 

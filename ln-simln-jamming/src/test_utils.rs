@@ -29,9 +29,8 @@ mock! {
         fn name(&self) -> String;
     }
 
-    #[async_trait]
     impl ReputationMonitor for ReputationInterceptor{
-        async fn list_channels(&self, node: PublicKey, access_ins: Instant) -> Result<HashMap<u64, ChannelSnapshot>, BoxError>;
+        fn list_channels(&self, node: PublicKey, access_ins: Instant) -> Result<HashMap<u64, ChannelSnapshot>, BoxError>;
     }
 }
 

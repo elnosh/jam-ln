@@ -157,9 +157,7 @@ async fn main() -> Result<(), BoxError> {
             None,
         )?;
 
-    reputation_interceptor
-        .bootstrap_network_history(&bootstrap)
-        .await?;
+    reputation_interceptor.bootstrap_network_history(&bootstrap)?;
 
     let mut node_pubkeys = HashSet::new();
     for chan in sim_network {
@@ -193,9 +191,7 @@ async fn main() -> Result<(), BoxError> {
     ])?;
 
     for pubkey in node_pubkeys {
-        let channels = reputation_interceptor
-            .list_channels(pubkey, InstantClock::now(&*clock))
-            .await?;
+        let channels = reputation_interceptor.list_channels(pubkey, InstantClock::now(&*clock))?;
 
         for channel in channels {
             csv_writer.serialize((

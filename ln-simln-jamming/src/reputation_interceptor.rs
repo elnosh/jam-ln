@@ -18,9 +18,8 @@ use simln_lib::sim_node::{
 use std::collections::hash_map::Entry;
 use std::collections::{HashMap, HashSet};
 use std::ops::Sub;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
-use tokio::sync::Mutex;
 
 #[derive(Clone)]
 pub struct HtlcAdd {
@@ -61,13 +60,13 @@ pub struct BootstrapForward {
 }
 
 /// Functionality to monitor reputation values in a network.
-#[async_trait]
+// #[async_trait]
 pub trait ReputationMonitor {
     /// Returns a snapshot of the state tracked for each of a node's channels at the instant provided.
     ///
     /// Note that this data tracks all reputation-related values for an individual channel. To create the pair that is
     /// used to assess reputation, two different channels must be cross-referenced.
-    async fn list_channels(
+    fn list_channels(
         &self,
         node: PublicKey,
         access_ins: Instant,
@@ -168,7 +167,7 @@ where
         })
     }
 
-    pub async fn new_from_snapshot(
+    pub fn new_from_snapshot(
         params: ForwardManagerParams,
         edges: &[NetworkParser],
         reputation_snapshot: HashMap<PublicKey, HashMap<u64, ChannelSnapshot>>,
@@ -246,7 +245,7 @@ where
     }
 
     /// Bootstraps the reputation of nodes in the interceptor network using the historical forwards provided.
-    pub async fn bootstrap_network_history(
+    pub fn bootstrap_network_history(
         &mut self,
         bootstrap: &BootstrapRecords,
     ) -> Result<(), BoxError> {
@@ -320,14 +319,14 @@ where
             match e {
                 BootstrapEvent::BootstrapAdd(htlc_add) => {
                     // Add to internal state but don't write to results.
-                    if let Err(e) = self.inner_add_htlc(htlc_add.clone(), false).await? {
+                    if let Err(e) = self.inner_add_htlc(htlc_add.clone(), false)? {
                         skipped_htlcs.insert(htlc_add.htlc.incoming_ref);
                         log::error!("Routing failure for bootstrap: {e}");
                     }
                 }
                 BootstrapEvent::BootstrapResolve(htlc_resolve) => {
                     if !skipped_htlcs.remove(&htlc_resolve.incoming_htlc) {
-                        self.inner_resolve_htlc(htlc_resolve).await?;
+                        self.inner_resolve_htlc(htlc_resolve)?;
                     }
                 }
             }
@@ -337,25 +336,23 @@ where
     }
 }
 
-#[async_trait]
 pub trait GeneralChannelJammer {
     /// The `pubkey` can be used to specify in which direction to jam the channel. For example, a
     /// channel between nodes A and B with channel ID 999:
     /// - `jam_channel(&A, 999)` will jam the channel in the B → A direction.
     /// - `jam_channel(&B, 999)` will jam the channel in the A → B direction.
-    async fn jam_channel(&self, pubkey: &PublicKey, channel: u64) -> Result<(), BoxError>;
+    fn jam_channel(&self, pubkey: &PublicKey, channel: u64) -> Result<(), BoxError>;
 }
 
-#[async_trait]
 impl<R, M> GeneralChannelJammer for ReputationInterceptor<R, M>
 where
     R: ForwardReporter,
     M: ReputationManager + SimulationDebugManager + Send,
 {
-    async fn jam_channel(&self, pubkey: &PublicKey, channel: u64) -> Result<(), BoxError> {
+    fn jam_channel(&self, pubkey: &PublicKey, channel: u64) -> Result<(), BoxError> {
         self.network_nodes
             .lock()
-            .await
+            .unwrap()
             .get_mut(pubkey)
             .ok_or(format!("jammed node: {} not found", pubkey))?
             .forward_manager
@@ -372,7 +369,7 @@ where
     /// Adds a htlc forward to the jamming interceptor, performing forwarding checks and returning the decided
     /// forwarding outcome for the htlc. Callers should fail if the outer result is an error, because an unexpected
     /// error has occurred.
-    async fn inner_add_htlc(
+    fn inner_add_htlc(
         &self,
         htlc_add: HtlcAdd,
         report: bool,
@@ -381,7 +378,7 @@ where
         let (allocation_check, fwd_outcome, alias) = match self
             .network_nodes
             .lock()
-            .await
+            .unwrap()
             .entry(htlc_add.forwarding_node)
         {
             Entry::Occupied(mut e) => {
@@ -404,7 +401,7 @@ where
         if let Some(r) = &self.results {
             if report {
                 r.lock()
-                    .await
+                    .unwrap()
                     .report_forward(
                         htlc_add.forwarding_node,
                         allocation_check,
@@ -432,7 +429,7 @@ where
     }
 
     /// Removes a htlc from the jamming interceptor, reporting its success/failure to the inner state machine.
-    async fn inner_resolve_htlc(&self, resolved_htlc: HtlcResolve) -> Result<(), ReputationError> {
+    fn inner_resolve_htlc(&self, resolved_htlc: HtlcResolve) -> Result<(), ReputationError> {
         log::info!(
             "Resolving htlc {}:{} on {} with outcome {}",
             resolved_htlc.incoming_htlc.channel_id,
@@ -444,7 +441,7 @@ where
         match self
             .network_nodes
             .lock()
-            .await
+            .unwrap()
             .entry(resolved_htlc.forwarding_node)
         {
             Entry::Occupied(mut e) => Ok(e.get_mut().forward_manager.resolve_htlc(
@@ -461,20 +458,20 @@ where
     }
 }
 
-#[async_trait]
+//#[async_trait]
 impl<R, M> ReputationMonitor for ReputationInterceptor<R, M>
 where
     R: ForwardReporter,
     M: ReputationManager + Send + SimulationDebugManager,
 {
-    async fn list_channels(
+    fn list_channels(
         &self,
         node: PublicKey,
         access_ins: Instant,
     ) -> Result<HashMap<u64, ChannelSnapshot>, BoxError> {
         self.network_nodes
             .lock()
-            .await
+            .unwrap()
             .get(&node)
             .ok_or(format!("node: {node} not found"))?
             .forward_manager
@@ -524,7 +521,6 @@ where
             },
             true,
         )
-        .await
         .map_err(|e| CriticalError::InterceptorError(e.to_string()))
     }
 
@@ -545,7 +541,6 @@ where
             forward_resolution: ForwardResolution::from(res.success),
             resolved_ins: self.clock.now(),
         })
-        .await
         .map_err(|e| CriticalError::InterceptorError(e.to_string()))
     }
 
@@ -572,10 +567,9 @@ mod tests {
     use simln_lib::sim_node::{ChannelPolicy, CriticalError, InterceptResolution, Interceptor};
     use simln_lib::ShortChannelID;
     use std::collections::HashMap;
-    use std::sync::Arc;
+    use std::sync::{Arc, Mutex};
     use std::time::Duration;
     use std::time::Instant;
-    use tokio::sync::Mutex;
 
     use crate::analysis::BatchForwardWriter;
     use crate::clock::InstantClock;
@@ -712,7 +706,7 @@ mod tests {
         interceptor
             .network_nodes
             .lock()
-            .await
+            .unwrap()
             .get_mut(&pubkeys[0])
             .unwrap()
             .forward_manager
@@ -722,7 +716,7 @@ mod tests {
         interceptor
             .network_nodes
             .lock()
-            .await
+            .unwrap()
             .get_mut(&pubkeys[0])
             .unwrap()
             .forward_manager
@@ -741,7 +735,7 @@ mod tests {
         interceptor
             .network_nodes
             .lock()
-            .await
+            .unwrap()
             .get_mut(&pubkeys[0])
             .unwrap()
             .forward_manager
@@ -751,7 +745,7 @@ mod tests {
         interceptor
             .network_nodes
             .lock()
-            .await
+            .unwrap()
             .get_mut(&pubkeys[0])
             .unwrap()
             .forward_manager
@@ -771,7 +765,7 @@ mod tests {
         interceptor
             .network_nodes
             .lock()
-            .await
+            .unwrap()
             .get_mut(&pubkeys[0])
             .unwrap()
             .forward_manager
@@ -781,7 +775,7 @@ mod tests {
         interceptor
             .network_nodes
             .lock()
-            .await
+            .unwrap()
             .get_mut(&pubkeys[0])
             .unwrap()
             .forward_manager
@@ -835,14 +829,14 @@ mod tests {
     }
 
     /// Tests successful removal of a htlc from the reputation interceptor.
-    #[tokio::test]
-    async fn test_successful_notify() {
+    #[test]
+    fn test_successful_notify() {
         let (interceptor, pubkeys) = setup_test_interceptor();
 
         interceptor
             .network_nodes
             .lock()
-            .await
+            .unwrap()
             .get_mut(&pubkeys[0])
             .unwrap()
             .forward_manager
@@ -935,8 +929,8 @@ mod tests {
     }
 
     /// Tests that nodes are appropriately set up when an interceptor is created from a set of edges.
-    #[tokio::test]
-    async fn test_new_for_network_node_creation() {
+    #[test]
+    fn test_new_for_network_node_creation() {
         let (params, edges, _) = setup_three_hop_network_edges();
 
         let interceptor: ReputationInterceptor<BatchForwardWriter, ForwardManager> =
@@ -951,7 +945,6 @@ mod tests {
         // Alice only has one channel tracked.
         let alice_channels = interceptor
             .list_channels(edges[0].node_1.pubkey, Instant::now())
-            .await
             .unwrap();
         assert_eq!(alice_channels.len(), 1);
         assert!(alice_channels.contains_key(&edges[0].scid.into()));
@@ -959,7 +952,6 @@ mod tests {
         // Bob has two channels tracked.
         let bob_channels = interceptor
             .list_channels(edges[1].node_1.pubkey, Instant::now())
-            .await
             .unwrap();
 
         assert_eq!(edges[0].node_2.pubkey, edges[1].node_1.pubkey);
@@ -970,7 +962,6 @@ mod tests {
         // Carol has one channel tracked.
         let carol_channels = interceptor
             .list_channels(edges[1].node_2.pubkey, Instant::now())
-            .await
             .unwrap();
         assert_eq!(carol_channels.len(), 1);
         assert!(carol_channels.contains_key(&edges[1].scid.into()));
@@ -1015,18 +1006,16 @@ mod tests {
                 forwards: bootstrap,
                 last_timestamp_nanos: 1_000_000,
             })
-            .await
             .unwrap();
 
         interceptor
             .jam_channel(&edges[1].node_1.pubkey, bob_to_carol)
-            .await
             .unwrap();
 
         let bob_reputation = interceptor
             .network_nodes
             .lock()
-            .await
+            .unwrap()
             .get(&bob_pk)
             .unwrap()
             .forward_manager
@@ -1074,8 +1063,8 @@ mod tests {
     }
 
     /// Tests starting interceptor from valid snapshot.
-    #[tokio::test]
-    async fn test_new_from_snapshot() {
+    #[test]
+    fn test_new_from_snapshot() {
         let (params, edges, reputation_snapshot) = setup_three_hop_network_edges();
 
         let clock = Arc::new(SimulationClock::new(1).unwrap());
@@ -1088,8 +1077,7 @@ mod tests {
             reputation_snapshot.clone(),
             clock.clone(),
             None,
-        )
-        .await;
+        );
 
         assert!(interceptor.is_ok());
 
@@ -1099,7 +1087,7 @@ mod tests {
             let node_1_channels = interceptor
                 .network_nodes
                 .lock()
-                .await
+                .unwrap()
                 .get(&edge.node_1.pubkey)
                 .unwrap()
                 .forward_manager
@@ -1111,7 +1099,7 @@ mod tests {
             let node_2_channels = interceptor
                 .network_nodes
                 .lock()
-                .await
+                .unwrap()
                 .get(&edge.node_2.pubkey)
                 .unwrap()
                 .forward_manager
@@ -1123,8 +1111,8 @@ mod tests {
     }
 
     /// Tests that an error is returned when the snapshot is missing a node.
-    #[tokio::test]
-    async fn test_new_from_snapshot_missing_node() {
+    #[test]
+    fn test_new_from_snapshot_missing_node() {
         let (params, edges, _) = setup_three_hop_network_edges();
 
         let mut reputation_snapshot: HashMap<PublicKey, HashMap<u64, ChannelSnapshot>> =
@@ -1151,15 +1139,14 @@ mod tests {
             reputation_snapshot,
             Arc::new(SimulationClock::new(1).unwrap()),
             None,
-        )
-        .await;
+        );
 
         assert!(interceptor.is_err());
     }
 
     /// Tests that an error is returned when the snapshot is missing a channel for a node.
-    #[tokio::test]
-    async fn test_new_from_snapshot_missing_channel() {
+    #[test]
+    fn test_new_from_snapshot_missing_channel() {
         let (params, edges, _) = setup_three_hop_network_edges();
 
         let mut reputation_snapshot: HashMap<PublicKey, HashMap<u64, ChannelSnapshot>> =
@@ -1178,15 +1165,14 @@ mod tests {
             reputation_snapshot,
             Arc::new(SimulationClock::new(1).unwrap()),
             None,
-        )
-        .await;
+        );
 
         assert!(interceptor.is_err());
     }
 
     /// Tests that an error is returned when the snapshot has mismatched channel capacities.
-    #[tokio::test]
-    async fn test_new_from_snapshot_mismatched_capacity() {
+    #[test]
+    fn test_new_from_snapshot_mismatched_capacity() {
         let (params, edges, mut reputation_snapshot) = setup_three_hop_network_edges();
 
         // Modify the channel capacity to make it have a different value.
@@ -1206,15 +1192,14 @@ mod tests {
             reputation_snapshot,
             Arc::new(SimulationClock::new(1).unwrap()),
             None,
-        )
-        .await;
+        );
 
         assert!(interceptor.is_err());
     }
 
     /// Tests that an error is returned when the snapshot has a mismatched number of channels.
-    #[tokio::test]
-    async fn test_new_from_snapshot_mismatched_channel_count() {
+    #[test]
+    fn test_new_from_snapshot_mismatched_channel_count() {
         let (params, edges, mut reputation_snapshot) = setup_three_hop_network_edges();
 
         // Remove a channel to make them have mismatched number of channels.
@@ -1232,8 +1217,7 @@ mod tests {
             reputation_snapshot,
             Arc::new(SimulationClock::new(1).unwrap()),
             None,
-        )
-        .await;
+        );
 
         assert!(interceptor.is_err());
     }

@@ -29,10 +29,10 @@ use std::collections::HashMap;
 use std::fs::{self, OpenOptions};
 use std::io::{BufWriter, Write};
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::select;
-use tokio::sync::Mutex;
+use tokio::sync::Mutex as TokioMutex;
 use tokio_util::task::TaskTracker;
 
 #[tokio::main]
@@ -119,7 +119,7 @@ async fn main() -> Result<(), BoxError> {
             select! {
                 _ = results_listener.clone() => return,
                 _ = results_clock.sleep(interval) => {
-                      if let Err(e) = results_writer_1.lock().await.write(){
+                      if let Err(e) = results_writer_1.lock().unwrap().write(){
                         log::error!("Error writing results: {e}");
                         results_shutdown.trigger();
                         return
@@ -136,16 +136,14 @@ async fn main() -> Result<(), BoxError> {
     let bootstrap_revenue: u64 =
         std::fs::read_to_string(reputation_dir.join(DEFAULT_REVENUE_FILENAME))?.parse()?;
 
-    let reputation_interceptor = Arc::new(Mutex::new(
-        ReputationInterceptor::new_from_snapshot(
+    let reputation_interceptor =
+        Arc::new(TokioMutex::new(ReputationInterceptor::new_from_snapshot(
             forward_params,
             &sim_network,
             reputation_snapshot,
             clock.clone(),
             Some(results_writer),
-        )
-        .await?,
-    ));
+        )?));
 
     // Reputation is assessed for a channel pair and a specific HTLC that's being proposed. To assess whether pairs
     // have reputation, we'll use LND's default fee policy to get the HTLC risk for our configured htlc size and hold
@@ -171,8 +169,7 @@ async fn main() -> Result<(), BoxError> {
         reputation_interceptor
             .lock()
             .await
-            .jam_channel(pubkey, *channel)
-            .await?;
+            .jam_channel(pubkey, *channel)?;
     }
 
     let attack_custom_actions = Arc::clone(&attack);
@@ -291,7 +288,7 @@ async fn main() -> Result<(), BoxError> {
     )
     .await?;
 
-    let attacker_nodes: HashMap<String, Arc<Mutex<SimNode<SimGraph>>>> = sim_nodes
+    let attacker_nodes: HashMap<String, Arc<TokioMutex<SimNode<SimGraph>>>> = sim_nodes
         .into_iter()
         .filter_map(|(pk, node)| {
             if pk == attacker_pubkey {
