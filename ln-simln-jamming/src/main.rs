@@ -277,7 +277,7 @@ async fn main() -> Result<(), BoxError> {
         nodes: vec![],
         sim_network,
         activity: vec![],
-        exclude: vec![],
+        exclude: vec![attacker_pubkey, target_pubkey],
     };
 
     let sim_cfg = SimulationCfg::new(None, 3_800_000, 2.0, None, Some(13995354354227336701));
