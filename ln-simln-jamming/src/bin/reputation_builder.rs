@@ -9,18 +9,14 @@ use std::{
 
 use clap::Parser;
 use csv::Writer;
-use ln_resource_mgr::{
-    forward_manager::{ForwardManager, ForwardManagerParams},
-    ReputationParams,
-};
+use ln_resource_mgr::forward_manager::{ForwardManager, ForwardManagerParams};
 use ln_simln_jamming::{
     analysis::BatchForwardWriter,
     clock::InstantClock,
     parsing::{
         find_pubkey_by_alias, get_history_for_bootstrap, history_from_file, parse_duration,
-        SimNetwork, DEFAULT_REPUTATION_DIR, DEFAULT_REPUTATION_FILENAME,
-        DEFAULT_REPUTATION_MULTIPLIER, DEFAULT_REVENUE_FILENAME, DEFAULT_REVENUE_WINDOW_SECONDS,
-        DEFAULT_SIM_FILE,
+        ReputationParams, SimNetwork, DEFAULT_REPUTATION_DIR, DEFAULT_REPUTATION_FILENAME,
+        DEFAULT_REVENUE_FILENAME, DEFAULT_SIM_FILE,
     },
     reputation_interceptor::{BootstrapRecords, ReputationInterceptor, ReputationMonitor},
     BoxError,
@@ -49,13 +45,8 @@ struct Cli {
     #[arg(long, value_parser = parse_duration)]
     attacker_bootstrap: Option<(String, Duration)>,
 
-    /// The window over which the value of a link's revenue to our node is calculated.
-    #[arg(long, default_value = DEFAULT_REVENUE_WINDOW_SECONDS)]
-    revenue_window_seconds: u64,
-
-    /// The multiplier applied to revenue_window_seconds to get the duration over which reputation is bootstrapped.
-    #[arg(long, default_value = DEFAULT_REPUTATION_MULTIPLIER)]
-    reputation_multiplier: u8,
+    #[command(flatten)]
+    pub reputation_params: ReputationParams,
 
     /// The directory to write reputation snapshot and revenue file.
     #[arg(long, default_value = DEFAULT_REPUTATION_DIR)]
@@ -70,12 +61,6 @@ struct Cli {
     attacker_alias: Option<String>,
 }
 
-impl Cli {
-    fn reputation_window(&self) -> Duration {
-        Duration::from_secs(self.revenue_window_seconds * self.reputation_multiplier as u64)
-    }
-}
-
 #[tokio::main]
 async fn main() -> Result<(), BoxError> {
     SimpleLogger::new()
@@ -85,12 +70,15 @@ async fn main() -> Result<(), BoxError> {
         .unwrap();
 
     let cli = Cli::parse();
-
+    let forward_params: ForwardManagerParams = cli.reputation_params.into();
     let SimNetwork { sim_network } =
         serde_json::from_str(&fs::read_to_string(cli.sim_file.as_path())?)?;
 
-    let unfiltered_history =
-        history_from_file(&cli.bootstrap_file, Some(cli.reputation_window())).await?;
+    let unfiltered_history = history_from_file(
+        &cli.bootstrap_file,
+        Some(forward_params.reputation_params.revenue_window),
+    )
+    .await?;
 
     let target_pubkey = find_pubkey_by_alias(&cli.target_alias, &sim_network)?;
 
@@ -135,19 +123,6 @@ async fn main() -> Result<(), BoxError> {
     });
 
     let clock = Arc::new(SimulationClock::new(1)?);
-    let forward_params = ForwardManagerParams {
-        reputation_params: ReputationParams {
-            revenue_window: Duration::from_secs(cli.revenue_window_seconds),
-            reputation_multiplier: cli.reputation_multiplier,
-            resolution_period: Duration::from_secs(90),
-            expected_block_speed: Some(Duration::from_secs(10 * 60)),
-        },
-        general_slot_portion: 30,
-        general_liquidity_portion: 30,
-        congestion_slot_portion: 20,
-        congestion_liquidity_portion: 20,
-    };
-
     let reputation_clock = Arc::clone(&clock);
     let mut reputation_interceptor: ReputationInterceptor<BatchForwardWriter, ForwardManager> =
         ReputationInterceptor::new_for_network(

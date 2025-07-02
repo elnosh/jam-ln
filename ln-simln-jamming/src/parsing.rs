@@ -5,6 +5,7 @@ use bitcoin::secp256k1::PublicKey;
 use clap::Parser;
 use csv::{ReaderBuilder, StringRecord};
 use humantime::Duration as HumanDuration;
+use ln_resource_mgr::forward_manager::ForwardManagerParams;
 use ln_resource_mgr::ChannelSnapshot;
 use serde::{Deserialize, Serialize};
 use sim_cli::parsing::NetworkParser;
@@ -60,14 +61,32 @@ pub const DEFAULT_ATTACKER_POLL_SECONDS: &str = "300";
 /// The default batch size for writing results to disk.
 pub const DEFAULT_RESULT_BATCH_SIZE: &str = "500";
 
-/// The default window that we consider revenue over (2 weeks = 60 * 60 * 24 * 14).
-pub const DEFAULT_REVENUE_WINDOW_SECONDS: &str = "1210000";
-
-/// The default multiplier applied to the revenue window to get reputation window.
-pub const DEFAULT_REPUTATION_MULTIPLIER: &str = "12";
-
 /// The default location to output results files.
 const DEFAULT_RESULTS_DIR: &str = ".";
+
+#[derive(Clone, Parser)]
+pub struct ReputationParams {
+    /// The window over which the value of a link's revenue to our node is calculated.
+    #[arg(long)]
+    pub revenue_window_seconds: Option<u64>,
+
+    /// The multiplier applied to revenue_window_seconds to get the duration over which reputation is bootstrapped.
+    #[arg(long)]
+    pub reputation_multiplier: Option<u8>,
+}
+
+impl From<ReputationParams> for ForwardManagerParams {
+    fn from(cli: ReputationParams) -> Self {
+        let mut forward_params = ForwardManagerParams::default();
+        if let Some(revenue_window) = cli.revenue_window_seconds {
+            forward_params.reputation_params.revenue_window = Duration::from_secs(revenue_window);
+        }
+        if let Some(multiplier) = cli.reputation_multiplier {
+            forward_params.reputation_params.reputation_multiplier = multiplier;
+        }
+        forward_params
+    }
+}
 
 #[derive(Parser)]
 #[command(version, about)]
@@ -123,13 +142,8 @@ pub struct Cli {
     #[arg(long, default_value = DEFAULT_RESULT_BATCH_SIZE)]
     pub result_batch_size: u16,
 
-    /// The window over which the value of a link's revenue to our node is calculated.
-    #[arg(long, default_value = DEFAULT_REVENUE_WINDOW_SECONDS)]
-    pub revenue_window_seconds: u64,
-
-    /// The multiplier applied to revenue_window_seconds to get the duration over which reputation is bootstrapped.
-    #[arg(long, default_value = DEFAULT_REPUTATION_MULTIPLIER)]
-    pub reputation_multiplier: u8,
+    #[command(flatten)]
+    pub reputation_params: ReputationParams,
 
     /// The directory to write output files to.
     #[arg(long, default_value = DEFAULT_RESULTS_DIR)]
@@ -145,7 +159,7 @@ pub struct Cli {
 }
 
 impl Cli {
-    pub fn validate(&self) -> Result<(), BoxError> {
+    pub fn validate(&self) -> Result<ForwardManagerParams, BoxError> {
         if self.target_reputation_percent == 0 || self.target_reputation_percent > 100 {
             return Err(format!(
                 "target reputation percent {} must be in (0;100]",
@@ -162,22 +176,19 @@ impl Cli {
             .into());
         }
 
-        if self.reputation_window() < self.attacker_bootstrap.1 {
+        let forward_params: ForwardManagerParams = self.reputation_params.clone().into();
+        if forward_params.reputation_params.reputation_window() < self.attacker_bootstrap.1 {
             return Err(format!(
-                "attacker_bootstrap {:?} < reputation window {:?} ({} * {})))",
-                self.attacker_bootstrap,
-                self.reputation_window(),
-                self.revenue_window_seconds,
-                self.reputation_multiplier,
+                "attacker_bootstrap {:?} < reputation window {:?} ({:?} * {})))",
+                self.attacker_bootstrap.1,
+                forward_params.reputation_params.reputation_window(),
+                forward_params.reputation_params.revenue_window,
+                forward_params.reputation_params.reputation_multiplier,
             )
             .into());
         }
 
-        Ok(())
-    }
-
-    pub fn reputation_window(&self) -> Duration {
-        Duration::from_secs(self.revenue_window_seconds * self.reputation_multiplier as u64)
+        Ok(forward_params)
     }
 }
 

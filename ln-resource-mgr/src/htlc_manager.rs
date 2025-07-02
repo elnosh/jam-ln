@@ -67,6 +67,11 @@ impl ReputationParams {
 
         Ok(effective_fees)
     }
+
+    /// Returns the window over which reputation is assessed.
+    pub fn reputation_window(&self) -> Duration {
+        self.revenue_window * self.reputation_multiplier.into()
+    }
 }
 
 pub enum ChannelFilter {
