@@ -414,7 +414,7 @@ impl ReputationManager for ForwardManager {
         let allocation_check = inner_lock.get_allocation_snapshot(forward)?;
 
         let fwd_outcome = allocation_check.inner_forwarding_outcome(
-            forward.amount_out_msat,
+            forward.amount_in_msat,
             forward.incoming_accountable,
             forward.upgradable_accountability,
         );
