@@ -277,14 +277,14 @@ async fn main() -> Result<(), BoxError> {
         nodes: vec![],
         sim_network,
         activity: vec![],
-        exclude: vec![],
+        exclude: vec![attacker_pubkey, target_pubkey],
     };
 
     let sim_cfg = SimulationCfg::new(None, 3_800_000, 2.0, None, Some(13995354354227336701));
     let (simulation, validated_activities, sim_nodes) = create_simulation_with_network(
         sim_cfg,
         &sim_params,
-        cli.clock_speedup,
+        clock.clone(),
         tasks,
         interceptors,
         custom_records,

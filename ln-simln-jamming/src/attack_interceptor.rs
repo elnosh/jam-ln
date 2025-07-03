@@ -54,14 +54,13 @@ where
         &self,
         req: InterceptRequest,
     ) -> Result<Result<CustomRecords, ForwardingError>, CriticalError> {
-        // Intercept payments on the attacking node. If they're incoming from the target, jam them. Otherwise just
-        // fail other htlcs, they're not that interesting to us.
         if req.forwarding_node == self.attacker_pubkey {
-            return self
-                .attack
-                .intercept_attacker_htlc(req)
-                .await
-                .map_err(|e| CriticalError::InterceptorError(e.to_string()));
+            return match req.outgoing_channel_id {
+                Some(_) => self.attack.intercept_attacker_htlc(req),
+                None => self.attack.intercept_attacker_receive(req),
+            }
+            .await
+            .map_err(|e| CriticalError::InterceptorError(e.to_string()));
         }
 
         // If attacker is not involved, use jamming interceptor to implement reputation and
@@ -121,6 +120,7 @@ mod tests {
         impl JammingAttack for Attack {
             fn setup_for_network(&self) -> Result<crate::attacks::NetworkSetup, BoxError>;
             async fn intercept_attacker_htlc(&self, req: InterceptRequest) -> Result<Result<CustomRecords, ForwardingError>, BoxError>;
+            async fn intercept_attacker_receive(&self,_req: InterceptRequest) -> Result<Result<CustomRecords, ForwardingError>, BoxError>;
             async fn run_custom_actions(&self, attacker_nodes: HashMap<String, Arc<tokio::sync::Mutex<SimNode<SimGraph>>>>, shutdown_listener: Listener) -> Result<(), BoxError>;
             async fn simulation_completed(&self, _start_reputation: NetworkReputation) -> Result<bool, BoxError>;
         }
@@ -194,6 +194,39 @@ mod tests {
         );
         interceptor
             .intercept_htlc(attacker_to_target)
+            .await
+            .unwrap()
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_attacker_receive() {
+        let attacker_pubkey = get_random_keypair().1;
+        let mut mock_attack = MockAttack::new();
+
+        mock_attack
+            .expect_intercept_attacker_receive()
+            .with(function(move |args: &InterceptRequest| {
+                args.outgoing_channel_id.is_none()
+            }))
+            .return_once(|_| Ok(Ok(CustomRecords::new())));
+
+        let interceptor = AttackInterceptor::new(
+            attacker_pubkey,
+            Arc::new(Mutex::new(MockReputationInterceptor::new())),
+            Arc::new(mock_attack),
+        );
+
+        let mut attacker_receive = setup_test_request(
+            interceptor.attacker_pubkey,
+            5,
+            1,
+            AccountableSignal::Accountable,
+        );
+        attacker_receive.outgoing_channel_id = None;
+
+        interceptor
+            .intercept_htlc(attacker_receive)
             .await
             .unwrap()
             .unwrap();
