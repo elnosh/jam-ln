@@ -105,7 +105,6 @@ pub async fn build_reputation<C: Clock + InstantClock, R: ReputationMonitor>(
     let htlc_amounts: u64 = htlcs.iter().sum();
     for path in route.paths.iter_mut() {
         total_fees_paid += path.hops.iter().map(|hop| hop.fee_msat).sum::<u64>();
-
         let target_hop = match path
             .hops
             .iter_mut()
@@ -121,7 +120,7 @@ pub async fn build_reputation<C: Clock + InstantClock, R: ReputationMonitor>(
             0
         };
 
-        let fee_to_bump_reputation = threshold as u64 + htlc_amounts + risk_margin;
+        let fee_to_bump_reputation = threshold as u64 + htlc_amounts + risk_margin * 2;
 
         // Make a single payment with an inflated fee at the hop we are building reputation with
         target_hop.fee_msat += fee_to_bump_reputation;
