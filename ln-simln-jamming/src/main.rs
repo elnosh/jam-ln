@@ -3,12 +3,11 @@ use clap::Parser;
 use core::panic;
 use ln_simln_jamming::analysis::BatchForwardWriter;
 use ln_simln_jamming::attack_interceptor::AttackInterceptor;
-use ln_simln_jamming::attacks::JammingAttack;
 use ln_simln_jamming::clock::InstantClock;
 use ln_simln_jamming::parsing::{
     reputation_snapshot_from_file, setup_attack, Cli, SimulationFiles, TrafficType,
 };
-use ln_simln_jamming::reputation_interceptor::{GeneralChannelJammer, ReputationInterceptor};
+use ln_simln_jamming::reputation_interceptor::{ChannelJammer, ReputationInterceptor};
 use ln_simln_jamming::revenue_interceptor::{
     PeacetimeRevenueMonitor, RevenueInterceptor, RevenueSnapshot,
 };
@@ -27,6 +26,7 @@ use std::collections::{HashMap, HashSet};
 use std::fs::OpenOptions;
 use std::io::{BufWriter, Write};
 use std::path::PathBuf;
+use std::str::FromStr;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::select;
@@ -179,14 +179,16 @@ async fn main() -> Result<(), BoxError> {
     );
 
     // Next, setup the attack interceptor to use our custom attack.
-    let attack = Arc::new(setup_attack(
+    let attack = setup_attack(
         &cli,
         &network_dir,
         Arc::clone(&clock),
         Arc::clone(&reputation_interceptor),
         Arc::clone(&revenue_interceptor),
+        risk_margin,
+        Arc::clone(&reputation_interceptor),
         listener.clone(),
-    )?);
+    )?;
 
     // Do some preliminary checks on our reputation state - there isn't much point in running if we haven't built up
     // some reputation.
@@ -215,32 +217,6 @@ async fn main() -> Result<(), BoxError> {
 
     let attack_interceptor = Arc::new(attack_interceptor);
 
-    let attack_simulation_completed = Arc::clone(&attack);
-    // Spawn a task that will trigger shutdown of the simulation if the attacker loses reputation provided that the
-    // target is at similar reputation to the start of the simulation. This is a somewhat crude check, because we're
-    // only looking at the count of peers with reputation not the actual pairs.
-    let attack_clock = clock.clone();
-    let attack_listener = listener.clone();
-    let attack_shutdown = shutdown.clone();
-    let start_reputation_1 = start_reputation.clone();
-    tasks.spawn(async move {
-        let interval = Duration::from_secs(cli.attacker_poll_interval_seconds);
-        loop {
-            select! {
-                _ = attack_listener.clone() => return,
-                _ = attack_clock.sleep(interval) => {
-                    match attack_simulation_completed.simulation_completed(start_reputation_1.clone()).await {
-                        Ok(shutdown) => if shutdown {attack_shutdown.trigger()},
-                        Err(e) => {
-                            log::error!("Shutdown check failed: {e}");
-                            attack_shutdown.trigger();
-                        },
-                    }
-                }
-            }
-        }
-    });
-
     let interceptors = vec![
         latency_interceptor,
         attack_interceptor.clone(),
@@ -263,18 +239,31 @@ async fn main() -> Result<(), BoxError> {
         sim_cfg,
         &sim_params,
         clock.clone(),
-        tasks,
+        tasks.clone(),
         interceptors,
         custom_records,
     )
     .await?;
+    let simulation = Arc::new(simulation);
 
     let attacker_alias = network_dir.attacker.0;
+    let attacker_sender_pubkey =
+        PublicKey::from_str("033dbb3f4662640d4888918eeb986069b9b775c921b9ec6debcada1b3ac58a1b0b")
+            .unwrap();
+    let attacker_sender = ("25".to_string(), attacker_sender_pubkey);
     let attacker_nodes: HashMap<String, Arc<Mutex<SimNode<SimGraph>>>> = sim_nodes
         .into_iter()
         .filter_map(|(pk, node)| {
-            if pk == attacker_pubkey {
-                Some((attacker_alias.clone(), node))
+            //if pk == attacker_pubkey {
+            //TODO: need to change this when supporting multiple attackers.
+            if pk == attacker_pubkey || pk == attacker_sender_pubkey {
+                let alias = if pk == attacker_pubkey {
+                    attacker_alias.clone()
+                } else {
+                    attacker_sender.0.clone()
+                };
+                //Some((attacker_alias.clone(), node))
+                Some((alias, node))
             } else {
                 None
             }
@@ -287,9 +276,40 @@ async fn main() -> Result<(), BoxError> {
         reputation_interceptor
             .lock()
             .await
-            .jam_channel(pubkey, *channel)
+            .jam_general_resources(pubkey, *channel)
             .await?;
     }
+
+    let attack_simulation_completed = Arc::clone(&attack);
+    // Spawn a task that will trigger shutdown of the simulation if the attacker loses reputation provided that the
+    // target is at similar reputation to the start of the simulation. This is a somewhat crude check, because we're
+    // only looking at the count of peers with reputation not the actual pairs.
+    let attack_clock = clock.clone();
+    let attack_listener = listener.clone();
+    let attack_shutdown = shutdown.clone();
+    let start_reputation_1 = start_reputation.clone();
+    let simulation_shutdown_check = Arc::clone(&simulation);
+    tasks.spawn(async move {
+        let interval = Duration::from_secs(cli.attacker_poll_interval_seconds);
+        loop {
+            select! {
+                _ = attack_listener.clone() => return,
+                _ = attack_clock.sleep(interval) => {
+                    match attack_simulation_completed.simulation_completed(start_reputation_1.clone()).await {
+                        Ok(shutdown) => if shutdown {
+                            attack_shutdown.trigger();
+                            simulation_shutdown_check.shutdown();
+                        },
+                        Err(e) => {
+                            log::error!("Shutdown check failed: {e}");
+                            attack_shutdown.trigger();
+                            simulation_shutdown_check.shutdown();
+                        },
+                    }
+                }
+            }
+        }
+    });
 
     let attacker_actions_shutdown = shutdown.clone();
     let attack_custom_actions = Arc::clone(&attack);
@@ -304,7 +324,7 @@ async fn main() -> Result<(), BoxError> {
     });
 
     let ctrlc_shutdown = shutdown.clone();
-    let simulation_shutdown = simulation.clone();
+    let simulation_shutdown = Arc::clone(&simulation);
     ctrlc::set_handler(move || {
         ctrlc_shutdown.trigger();
         simulation_shutdown.shutdown();

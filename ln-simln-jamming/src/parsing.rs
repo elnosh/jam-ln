@@ -1,20 +1,24 @@
 use crate::attacks::sink::SinkAttack;
-use crate::attacks::{JammingAttack, NetworkSetup};
+use crate::attacks::slow_jam::SlowJam;
+use crate::attacks::JammingAttack;
 use crate::clock::InstantClock;
-use crate::reputation_interceptor::{BootstrapForward, BootstrapRecords, ReputationMonitor};
+use crate::reputation_interceptor::{
+    BootstrapForward, BootstrapRecords, ChannelJammer, ReputationMonitor,
+};
 use crate::revenue_interceptor::{PeacetimeRevenueMonitor, RevenueEvent};
-use crate::{BoxError, NetworkReputation};
-use async_trait::async_trait;
+use crate::BoxError;
 use bitcoin::secp256k1::PublicKey;
 use clap::{Parser, ValueEnum};
 use csv::{ReaderBuilder, StringRecord};
 use humantime::Duration as HumanDuration;
+use lightning::routing::gossip::NetworkGraph;
 use ln_resource_mgr::forward_manager::ForwardManagerParams;
 use ln_resource_mgr::ChannelSnapshot;
 use serde::{Deserialize, Serialize};
 use sim_cli::parsing::NetworkParser;
-use simln_lib::clock::Clock;
-use simln_lib::sim_node::{CustomRecords, ForwardingError, InterceptRequest, SimGraph, SimNode};
+use simln_lib::clock::{Clock, SimulationClock};
+use simln_lib::sim_node::{populate_network_graph, SimulatedChannel, WrappedLog};
+use simln_lib::SimulationError;
 use std::collections::{BinaryHeap, HashMap, HashSet};
 use std::fs::{self, File};
 use std::io::{BufReader, Read, Seek};
@@ -26,7 +30,6 @@ use std::time::Duration;
 use tokio::runtime::Handle;
 use tokio::sync::Mutex as TokioMutex;
 use tokio::task::{self, JoinSet};
-use triggered::Listener;
 
 /// Default percent of good reputation pairs the target requires.
 pub const DEFAULT_TARGET_REP_PERCENT: &str = "50";
@@ -335,101 +338,29 @@ pub struct Cli {
 #[derive(Debug, Clone, ValueEnum)]
 pub enum AttackType {
     Sink,
+    SlowJam,
 }
 
-pub enum AttackImpl<C, R, M>
-where
-    C: Clock + InstantClock,
-    R: ReputationMonitor + Send + Sync,
-    M: PeacetimeRevenueMonitor + Send + Sync,
-{
-    SinkImpl(Arc<SinkAttack<C, R, M>>),
-    // NOTE: add your attack implementation here.
-}
-
-#[async_trait]
-impl<C, R, M> JammingAttack for AttackImpl<C, R, M>
-where
-    C: Clock + InstantClock,
-    R: ReputationMonitor + Send + Sync,
-    M: PeacetimeRevenueMonitor + Send + Sync,
-{
-    async fn setup_for_attack(
-        &self,
-        attacker_nodes: &HashMap<String, Arc<TokioMutex<SimNode<SimGraph>>>>,
-    ) -> Result<NetworkSetup, BoxError> {
-        match self {
-            AttackImpl::SinkImpl(sink_attack) => sink_attack.setup_for_attack(attacker_nodes).await,
-        }
-    }
-
-    async fn intercept_attacker_htlc(
-        &self,
-        req: InterceptRequest,
-    ) -> Result<Result<CustomRecords, ForwardingError>, BoxError> {
-        match self {
-            AttackImpl::SinkImpl(sink_attack) => sink_attack.intercept_attacker_htlc(req).await,
-        }
-    }
-
-    async fn intercept_attacker_receive(
-        &self,
-
-        req: InterceptRequest,
-    ) -> Result<Result<CustomRecords, ForwardingError>, BoxError> {
-        match self {
-            AttackImpl::SinkImpl(sink_attack) => sink_attack.intercept_attacker_receive(req).await,
-        }
-    }
-
-    async fn run_custom_actions(
-        &self,
-        attacker_nodes: HashMap<String, Arc<TokioMutex<SimNode<SimGraph>>>>,
-        shutdown_listener: Listener,
-    ) -> Result<(), BoxError> {
-        match self {
-            AttackImpl::SinkImpl(sink_attack) => {
-                sink_attack
-                    .run_custom_actions(attacker_nodes, shutdown_listener)
-                    .await
-            }
-        }
-    }
-
-    async fn simulation_completed(
-        &self,
-        start_reputation: NetworkReputation,
-    ) -> Result<bool, BoxError> {
-        match self {
-            AttackImpl::SinkImpl(sink_attack) => {
-                sink_attack.simulation_completed(start_reputation).await
-            }
-        }
-    }
-}
-
-pub fn setup_attack<C, R, M>(
+pub fn setup_attack<C, R, M, J>(
     cli: &Cli,
     simulation: &SimulationFiles,
     clock: Arc<C>,
     reputation_monitor: Arc<TokioMutex<R>>,
     revenue_monitor: Arc<M>,
+    risk_margin: u64,
+    general_jammer: Arc<TokioMutex<J>>,
     listener: triggered::Listener,
-) -> Result<AttackImpl<C, R, M>, BoxError>
+) -> Result<Arc<dyn JammingAttack + Send + Sync>, BoxError>
 where
     C: Clock + InstantClock + 'static,
     R: ReputationMonitor + Send + Sync + 'static,
-    M: PeacetimeRevenueMonitor + Send + Sync,
+    M: PeacetimeRevenueMonitor + Send + Sync + 'static,
+    J: ChannelJammer + Send + Sync + 'static,
 {
-    let forward_params = cli.validate()?;
-    let risk_margin = forward_params.htlc_opportunity_cost(
-        1000 + (0.0001 * cli.reputation_margin_msat as f64) as u64,
-        cli.reputation_margin_expiry_blocks,
-    );
     let sim_network = simulation.sim_network.clone();
 
-    let target_pubkey = simulation.target.1;
-    let attacker_pubkey = simulation.attacker.1;
+    let target = simulation.target.clone();
+    let attacker = simulation.attacker.clone();
 
     // NOTE: If you are implementing your own attack and have added the variant to AttackImpl, you can
     // then do any setup specific to your attack here and return.
@@ -438,22 +369,70 @@ where
             let attack = Arc::new(SinkAttack::new(
                 Arc::clone(&clock),
                 &sim_network,
-                target_pubkey,
-                attacker_pubkey,
+                target.1,
+                attacker.1,
                 risk_margin,
                 Arc::clone(&reputation_monitor),
                 Arc::clone(&revenue_monitor),
                 listener.clone(),
             ));
 
-            Ok(AttackImpl::SinkImpl(attack))
+            Ok(attack)
+        }
+        AttackType::SlowJam => {
+            let attacker_sender_pubkey = PublicKey::from_str(
+                "033dbb3f4662640d4888918eeb986069b9b775c921b9ec6debcada1b3ac58a1b0b",
+            )
+            .unwrap();
+            let attacker_sender = ("25".to_string(), attacker_sender_pubkey);
+
+            let target_peer_pubkey = PublicKey::from_str(
+                "03864ef025fde8fb587d989186ce6a4a186895ee44a926bfc370e2c366597a3f8f",
+            )
+            .unwrap();
+            let channel_to_jam = (target_peer_pubkey, 348545186070528);
+
+            let network_graph = network_graph(sim_network.clone())?;
+
+            let attack = Arc::new(SlowJam::new(
+                Arc::clone(&clock),
+                &sim_network,
+                target.1,
+                attacker_sender,
+                attacker,
+                channel_to_jam,
+                Arc::clone(&reputation_monitor),
+                Arc::clone(&revenue_monitor),
+                Arc::clone(&general_jammer),
+                network_graph,
+                risk_margin,
+            ));
+
+            Ok(attack)
         }
     }
 }
 
+fn network_graph(
+    network: Vec<NetworkParser>,
+) -> Result<Arc<NetworkGraph<Arc<WrappedLog>>>, BoxError> {
+    let channels = network
+        .clone()
+        .into_iter()
+        .map(SimulatedChannel::from)
+        .collect::<Vec<SimulatedChannel>>();
+
+    let clock = Arc::new(SimulationClock::new(1)?);
+    Ok(Arc::new(
+        populate_network_graph(channels, clock.clone())
+            .map_err(|e| SimulationError::SimulatedNetworkError(format!("{:?}", e)))?,
+    ))
+}
+
 impl Cli {
     pub fn validate(&self) -> Result<ForwardManagerParams, BoxError> {
-        if self.target_reputation_percent == 0 || self.target_reputation_percent > 100 {
+        //if self.target_reputation_percent == 0 || self.target_reputation_percent > 100 {
+        if self.target_reputation_percent > 100 {
             return Err(format!(
                 "target reputation percent {} must be in (0;100]",
                 self.target_reputation_percent
