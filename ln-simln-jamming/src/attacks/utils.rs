@@ -1,4 +1,5 @@
-use std::sync::Arc;
+use std::thread;
+use std::{sync::Arc, time::Duration};
 
 use bitcoin::secp256k1::PublicKey;
 use lightning::{
@@ -22,7 +23,7 @@ pub fn build_custom_route(
     sender: &PublicKey,
     amount_msat: u64,
     hops: &[PublicKey],
-    network_graph: &NetworkGraph<&WrappedLog>,
+    network_graph: &NetworkGraph<Arc<WrappedLog>>,
 ) -> Result<Route, LightningError> {
     let route_params = &RouteParameters {
         payment_params: PaymentParameters::from_node_id(hops[hops.len() - 1], 0)
@@ -58,23 +59,23 @@ pub fn build_custom_route(
 pub async fn build_reputation<C: Clock + InstantClock, R: ReputationMonitor>(
     attacker_node: Arc<Mutex<SimNode<SimGraph>>>,
     hops: &[PublicKey],
-    network_graph: &NetworkGraph<&WrappedLog>,
+    network_graph: &NetworkGraph<Arc<WrappedLog>>,
     htlcs: Vec<u64>,
     target_channel: (PublicKey, u64),
-    reputation_monitor: Arc<R>,
+    reputation_monitor: Arc<Mutex<R>>,
     clock: Arc<C>,
 ) -> Result<u64, BoxError> {
     let mut total_fees_paid = 0;
 
     let mut attacker = attacker_node.lock().await;
     let current_target_revenue = reputation_monitor
+        .lock()
+        .await
         .list_channels(target_channel.0, InstantClock::now(&*clock))
         .await?
         .get(&target_channel.1)
         .ok_or("target channel not found")?
         .bidirectional_revenue as u64;
-
-    println!("target revenue before payment {}", current_target_revenue);
 
     let attacker_pubkey = attacker.get_info().pubkey;
     let mut route =
@@ -82,12 +83,15 @@ pub async fn build_reputation<C: Clock + InstantClock, R: ReputationMonitor>(
 
     let last_hop_channel = route.paths[0].hops.last().unwrap().short_channel_id;
     let current_attacker_reputation = reputation_monitor
+        .lock()
+        .await
         .list_channels(target_channel.0, InstantClock::now(&*clock))
         .await?
         .get(&last_hop_channel)
         .unwrap()
         .outgoing_reputation as u64;
 
+    println!("target revenue before payment {}", current_target_revenue);
     println!(
         "attacker reputation before payment {}",
         current_attacker_reputation
@@ -96,7 +100,6 @@ pub async fn build_reputation<C: Clock + InstantClock, R: ReputationMonitor>(
     let htlc_amounts: u64 = htlcs.iter().sum();
     for path in route.paths.iter_mut() {
         total_fees_paid += path.hops.iter().map(|hop| hop.fee_msat).sum::<u64>();
-
         let target_hop = match path
             .hops
             .iter_mut()
@@ -106,7 +109,11 @@ pub async fn build_reputation<C: Clock + InstantClock, R: ReputationMonitor>(
             None => continue,
         };
 
-        target_hop.fee_msat = current_target_revenue - current_attacker_reputation + htlc_amounts;
+        let fee_to_bump_reputation =
+            current_target_revenue - current_attacker_reputation + htlc_amounts + 2666000;
+
+        target_hop.fee_msat += fee_to_bump_reputation;
+        total_fees_paid += fee_to_bump_reputation;
     }
 
     let payment_hash = PaymentHash(get_random_bytes());
@@ -116,8 +123,11 @@ pub async fn build_reputation<C: Clock + InstantClock, R: ReputationMonitor>(
     {
         return Err(e.to_string().into());
     }
+    thread::sleep(Duration::from_millis(400));
 
     let target_revenue = reputation_monitor
+        .lock()
+        .await
         .list_channels(target_channel.0, InstantClock::now(&*clock))
         .await?
         .get(&target_channel.1)
@@ -128,6 +138,8 @@ pub async fn build_reputation<C: Clock + InstantClock, R: ReputationMonitor>(
 
     let last_hop_channel = route.paths[0].hops.last().unwrap().short_channel_id;
     let attacker_reputation = reputation_monitor
+        .lock()
+        .await
         .list_channels(target_channel.0, InstantClock::now(&*clock))
         .await?
         .get(&last_hop_channel)

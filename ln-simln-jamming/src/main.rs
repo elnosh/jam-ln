@@ -1,11 +1,13 @@
 use bitcoin::secp256k1::PublicKey;
 use clap::Parser;
 use core::panic;
+use lightning::routing::gossip::NetworkGraph;
 use ln_resource_mgr::forward_manager::ForwardManagerParams;
 use ln_resource_mgr::ReputationParams;
 use ln_simln_jamming::analysis::BatchForwardWriter;
 use ln_simln_jamming::attack_interceptor::AttackInterceptor;
 use ln_simln_jamming::attacks::sink::SinkAttack;
+use ln_simln_jamming::attacks::slow_jam::SlowJam;
 use ln_simln_jamming::attacks::JammingAttack;
 use ln_simln_jamming::clock::InstantClock;
 use ln_simln_jamming::parsing::{
@@ -18,17 +20,21 @@ use ln_simln_jamming::{
     get_network_reputation, BoxError, NetworkReputation, ACCOUNTABLE_TYPE, UPGRADABLE_TYPE,
 };
 use log::LevelFilter;
-use sim_cli::parsing::{create_simulation_with_network, SimParams};
+use sim_cli::parsing::{create_simulation_with_network, NetworkParser, SimParams};
 use simln_lib::clock::Clock;
 use simln_lib::clock::SimulationClock;
 use simln_lib::latency_interceptor::LatencyIntercepor;
-use simln_lib::sim_node::{CustomRecords, Interceptor, SimGraph, SimNode};
-use simln_lib::SimulationCfg;
+use simln_lib::sim_node::{
+    populate_network_graph, CustomRecords, Interceptor, SimGraph, SimNode, SimulatedChannel,
+    WrappedLog,
+};
+use simln_lib::{SimulationCfg, SimulationError};
 use simple_logger::SimpleLogger;
 use std::collections::HashMap;
 use std::fs::{self, OpenOptions};
 use std::io::{BufWriter, Write};
 use std::path::PathBuf;
+use std::str::FromStr;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::select;
@@ -156,14 +162,25 @@ async fn main() -> Result<(), BoxError> {
     );
 
     // Next, setup the attack interceptor to use our custom attack.
-    let attack = Arc::new(SinkAttack::new(
-        clock.clone(),
+    // let attack = Arc::new(SinkAttack::new(
+    //     clock.clone(),
+    //     &sim_network,
+    //     target_pubkey,
+    //     attacker_pubkey,
+    //     risk_margin,
+    //     reputation_interceptor.clone(),
+    //     listener.clone(),
+    // ));
+
+    let network_graph = network_graph(sim_network.clone())?;
+    let attack = Arc::new(SlowJam::new(
+        Arc::clone(&clock),
         &sim_network,
         target_pubkey,
-        attacker_pubkey,
-        risk_margin,
-        reputation_interceptor.clone(),
-        listener.clone(),
+        (cli.attacker_alias, attacker_pubkey),
+        Arc::clone(&reputation_interceptor),
+        Arc::clone(&reputation_interceptor),
+        network_graph,
     ));
 
     let attack_setup = attack.setup_for_network()?;
@@ -194,7 +211,7 @@ async fn main() -> Result<(), BoxError> {
     )
     .await?;
 
-    check_reputation_status(&cli, &start_reputation)?;
+    //check_reputation_status(&cli, &start_reputation)?;
 
     let attack_interceptor = AttackInterceptor::new(
         attacker_pubkey,
@@ -229,44 +246,44 @@ async fn main() -> Result<(), BoxError> {
         }
     });
 
-    let revenue_interceptor = Arc::new(
-        RevenueInterceptor::new_with_bootstrap(
-            clock.clone(),
-            target_pubkey,
-            bootstrap_revenue,
-            cli.attacker_bootstrap.1,
-            cli.peacetime_file,
-            listener.clone(),
-            shutdown.clone(),
-        )
-        .await?,
-    );
-
-    let revenue_interceptor_1 = revenue_interceptor.clone();
-    let revenue_shutdown = shutdown.clone();
-    tasks.spawn(async move {
-        if let Err(e) = revenue_interceptor_1.process_peacetime_fwds().await {
-            log::error!("Error processing peacetime forwards: {e}");
-            revenue_shutdown.trigger();
-        }
-    });
-
-    let revenue_interceptor_2 = revenue_interceptor.clone();
-    let revenue_shutdown = shutdown.clone();
-    tasks.spawn(async move {
-        if let Err(e) = revenue_interceptor_2
-            .poll_revenue_difference(Duration::from_secs(5))
-            .await
-        {
-            log::error!("Error polling revenue difference: {e}");
-            revenue_shutdown.trigger();
-        }
-    });
+    // let revenue_interceptor = Arc::new(
+    //     RevenueInterceptor::new_with_bootstrap(
+    //         clock.clone(),
+    //         target_pubkey,
+    //         bootstrap_revenue,
+    //         cli.attacker_bootstrap.1,
+    //         cli.peacetime_file,
+    //         listener.clone(),
+    //         shutdown.clone(),
+    //     )
+    //     .await?,
+    // );
+    //
+    // let revenue_interceptor_1 = revenue_interceptor.clone();
+    // let revenue_shutdown = shutdown.clone();
+    // tasks.spawn(async move {
+    //     if let Err(e) = revenue_interceptor_1.process_peacetime_fwds().await {
+    //         log::error!("Error processing peacetime forwards: {e}");
+    //         revenue_shutdown.trigger();
+    //     }
+    // });
+    //
+    // let revenue_interceptor_2 = revenue_interceptor.clone();
+    // let revenue_shutdown = shutdown.clone();
+    // tasks.spawn(async move {
+    //     if let Err(e) = revenue_interceptor_2
+    //         .poll_revenue_difference(Duration::from_secs(5))
+    //         .await
+    //     {
+    //         log::error!("Error polling revenue difference: {e}");
+    //         revenue_shutdown.trigger();
+    //     }
+    // });
 
     let interceptors = vec![
         latency_interceptor,
         attack_interceptor.clone(),
-        revenue_interceptor.clone(),
+        //revenue_interceptor.clone(),
     ];
 
     let custom_records =
@@ -291,10 +308,13 @@ async fn main() -> Result<(), BoxError> {
     )
     .await?;
 
+    let attacker_2 =
+        PublicKey::from_str("033dbb3f4662640d4888918eeb986069b9b775c921b9ec6debcada1b3ac58a1b0b")
+            .unwrap();
     let attacker_nodes: HashMap<String, Arc<Mutex<SimNode<SimGraph>>>> = sim_nodes
         .into_iter()
         .filter_map(|(pk, node)| {
-            if pk == attacker_pubkey {
+            if pk == attacker_pubkey || pk == attacker_2 {
                 let alias = match find_alias_by_pubkey(&pk, &sim_params.sim_network) {
                     Ok(alias) => alias,
                     Err(e) => panic!("Attacker pubkey not found {}", e),
@@ -308,18 +328,27 @@ async fn main() -> Result<(), BoxError> {
         .collect();
 
     let attacker_actions_shutdown = shutdown.clone();
-    tokio::spawn(async move {
-        if let Err(e) = attack_custom_actions
-            .run_custom_actions(attacker_nodes, listener.clone())
-            .await
-        {
-            log::error!("Error running custom attacker actions: {e}");
-            attacker_actions_shutdown.trigger();
-        }
-    });
+
+    if let Err(e) = attack_custom_actions
+        .run_custom_actions(attacker_nodes, listener.clone())
+        .await
+    {
+        log::error!("Error running custom attacker actions: {e}");
+        attacker_actions_shutdown.trigger();
+    }
+
+    // tokio::spawn(async move {
+    //     if let Err(e) = attack_custom_actions
+    //         .run_custom_actions(attacker_nodes, listener.clone())
+    //         .await
+    //     {
+    //         log::error!("Error running custom attacker actions: {e}");
+    //         attacker_actions_shutdown.trigger();
+    //     }
+    // });
 
     // Run simulation until it shuts down, then wait for the graph to exit.
-    simulation.run(&validated_activities).await?;
+    // simulation.run(&validated_activities).await?;
 
     // Write start and end state to a summary file.
     let end_reputation = get_network_reputation(
@@ -332,14 +361,14 @@ async fn main() -> Result<(), BoxError> {
     )
     .await?;
 
-    let snapshot = revenue_interceptor.get_revenue_difference().await;
-    write_simulation_summary(
-        cli.results_dir,
-        &snapshot,
-        &start_reputation,
-        &end_reputation,
-        attack_setup.general_jammed_nodes.len(),
-    )?;
+    // let snapshot = revenue_interceptor.get_revenue_difference().await;
+    // write_simulation_summary(
+    //     cli.results_dir,
+    //     &snapshot,
+    //     &start_reputation,
+    //     &end_reputation,
+    //     attack_setup.general_jammed_nodes.len(),
+    // )?;
 
     Ok(())
 }
@@ -378,6 +407,22 @@ fn check_reputation_status(cli: &Cli, status: &NetworkReputation) -> Result<(), 
     }
 
     Ok(())
+}
+
+fn network_graph(
+    network: Vec<NetworkParser>,
+) -> Result<Arc<NetworkGraph<Arc<WrappedLog>>>, BoxError> {
+    let channels = network
+        .clone()
+        .into_iter()
+        .map(SimulatedChannel::from)
+        .collect::<Vec<SimulatedChannel>>();
+
+    let clock = Arc::new(SimulationClock::new(1)?);
+    Ok(Arc::new(
+        populate_network_graph(channels, clock.clone())
+            .map_err(|e| SimulationError::SimulatedNetworkError(format!("{:?}", e)))?,
+    ))
 }
 
 #[allow(clippy::too_many_arguments)]
