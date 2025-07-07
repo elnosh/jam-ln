@@ -22,7 +22,7 @@ pub fn build_custom_route(
     sender: &PublicKey,
     amount_msat: u64,
     hops: &[PublicKey],
-    network_graph: &NetworkGraph<&WrappedLog>,
+    network_graph: &NetworkGraph<Arc<WrappedLog>>,
 ) -> Result<Route, LightningError> {
     let route_params = &RouteParameters {
         payment_params: PaymentParameters::from_node_id(hops[hops.len() - 1], 0)
@@ -64,7 +64,7 @@ pub fn build_custom_route(
 pub async fn build_reputation<C: Clock + InstantClock, R: ReputationMonitor>(
     attacker_node: Arc<Mutex<SimNode<SimGraph>>>,
     hops: &[PublicKey],
-    network_graph: &NetworkGraph<&WrappedLog>,
+    network_graph: &NetworkGraph<Arc<WrappedLog>>,
     htlcs: Vec<u64>,
     risk_margin: u64,
     target_channel: (PublicKey, u64),
@@ -105,7 +105,6 @@ pub async fn build_reputation<C: Clock + InstantClock, R: ReputationMonitor>(
     let htlc_amounts: u64 = htlcs.iter().sum();
     for path in route.paths.iter_mut() {
         total_fees_paid += path.hops.iter().map(|hop| hop.fee_msat).sum::<u64>();
-
         let target_hop = match path
             .hops
             .iter_mut()
