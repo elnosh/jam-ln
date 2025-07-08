@@ -1,8 +1,6 @@
 use bitcoin::secp256k1::PublicKey;
 use clap::Parser;
 use core::panic;
-use ln_resource_mgr::forward_manager::ForwardManagerParams;
-use ln_resource_mgr::ReputationParams;
 use ln_simln_jamming::analysis::BatchForwardWriter;
 use ln_simln_jamming::attack_interceptor::AttackInterceptor;
 use ln_simln_jamming::attacks::sink::SinkAttack;
@@ -48,7 +46,7 @@ async fn main() -> Result<(), BoxError> {
         .unwrap();
 
     let cli = Cli::parse();
-    cli.validate()?;
+    let forward_params = cli.validate()?;
 
     let SimNetwork { sim_network } =
         serde_json::from_str(&fs::read_to_string(cli.sim_file.as_path())?)?;
@@ -87,18 +85,6 @@ async fn main() -> Result<(), BoxError> {
         Arc::new(LatencyIntercepor::new_poisson(150.0)?);
 
     let now = InstantClock::now(&*clock);
-    let forward_params = ForwardManagerParams {
-        reputation_params: ReputationParams {
-            revenue_window: Duration::from_secs(cli.revenue_window_seconds),
-            reputation_multiplier: cli.reputation_multiplier,
-            resolution_period: Duration::from_secs(90),
-            expected_block_speed: Some(Duration::from_secs(10 * 60)),
-        },
-        general_slot_portion: 30,
-        general_liquidity_portion: 30,
-        congestion_slot_portion: 20,
-        congestion_liquidity_portion: 20,
-    };
 
     // Create a writer to store results for nodes that we care about.
     let monitor_channels: Vec<(PublicKey, String)> = target_channels.values().cloned().collect();
