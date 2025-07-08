@@ -2,11 +2,8 @@ use bitcoin::secp256k1::PublicKey;
 use clap::Parser;
 use core::panic;
 use lightning::routing::gossip::NetworkGraph;
-use ln_resource_mgr::forward_manager::ForwardManagerParams;
-use ln_resource_mgr::ReputationParams;
 use ln_simln_jamming::analysis::BatchForwardWriter;
 use ln_simln_jamming::attack_interceptor::AttackInterceptor;
-use ln_simln_jamming::attacks::sink::SinkAttack;
 use ln_simln_jamming::attacks::slow_jam::SlowJam;
 use ln_simln_jamming::attacks::JammingAttack;
 use ln_simln_jamming::clock::InstantClock;
@@ -160,12 +157,25 @@ async fn main() -> Result<(), BoxError> {
     //     listener.clone(),
     // ));
 
+    let attacker_sender_pubkey =
+        PublicKey::from_str("033dbb3f4662640d4888918eeb986069b9b775c921b9ec6debcada1b3ac58a1b0b")
+            .unwrap();
+    let attacker_sender = ("25".to_string(), attacker_sender_pubkey);
+
+    let target_peer_pubkey =
+        PublicKey::from_str("0353325e099c2b657ca5c4bb975a20b0c3de1d2391dabe73f40484aac255628d22")
+            .unwrap();
+    let channel_to_jam = (target_peer_pubkey, 348545186070528);
+
     let network_graph = network_graph(sim_network.clone())?;
     let attack = Arc::new(SlowJam::new(
         Arc::clone(&clock),
         &sim_network,
         target_pubkey,
-        (cli.attacker_alias, attacker_pubkey),
+        attacker_sender,
+        (cli.attacker_alias.clone(), attacker_pubkey),
+        channel_to_jam,
+        risk_margin,
         Arc::clone(&reputation_interceptor),
         Arc::clone(&reputation_interceptor),
         network_graph,
@@ -182,25 +192,6 @@ async fn main() -> Result<(), BoxError> {
 
     let attack_custom_actions = Arc::clone(&attack);
 
-    // Do some preliminary checks on our reputation state - there isn't much point in running if we haven't built up
-    // some reputation.
-    let target_pubkey_map: HashMap<u64, PublicKey> =
-        target_channels.iter().map(|(k, v)| (*k, v.0)).collect();
-
-    let start_reputation = get_network_reputation(
-        reputation_interceptor.clone(),
-        target_pubkey,
-        attacker_pubkey,
-        &target_pubkey_map,
-        risk_margin,
-        // The reputation_interceptor clock has been set on decaying averages so we use the clock
-        // to provide a new instant rather than the previous fixed point.
-        InstantClock::now(&*clock),
-    )
-    .await?;
-
-    //check_reputation_status(&cli, &start_reputation)?;
-
     let attack_interceptor = AttackInterceptor::new(
         attacker_pubkey,
         reputation_interceptor.clone(),
@@ -209,69 +200,44 @@ async fn main() -> Result<(), BoxError> {
 
     let attack_interceptor = Arc::new(attack_interceptor);
 
-    // Spawn a task that will trigger shutdown of the simulation if the attacker loses reputation provided that the
-    // target is at similar reputation to the start of the simulation. This is a somewhat crude check, because we're
-    // only looking at the count of peers with reputation not the actual pairs.
-    let attack_clock = clock.clone();
-    let attack_listener = listener.clone();
-    let attack_shutdown = shutdown.clone();
-    let start_reputation_1 = start_reputation.clone();
+    let revenue_interceptor = Arc::new(
+        RevenueInterceptor::new_with_bootstrap(
+            clock.clone(),
+            target_pubkey,
+            bootstrap_revenue,
+            cli.attacker_bootstrap.1,
+            cli.peacetime_file.clone(),
+            listener.clone(),
+            shutdown.clone(),
+        )
+        .await?,
+    );
+
+    let revenue_interceptor_1 = revenue_interceptor.clone();
+    let revenue_shutdown = shutdown.clone();
     tasks.spawn(async move {
-        let interval = Duration::from_secs(cli.attacker_poll_interval_seconds);
-        loop {
-            select! {
-                _ = attack_listener.clone() => return,
-                _ = attack_clock.sleep(interval) => {
-                    match attack.simulation_completed(start_reputation_1.clone()).await {
-                        Ok(shutdown) => if shutdown {attack_shutdown.trigger()},
-                        Err(e) => {
-                            log::error!("Shutdown check failed: {e}");
-                            attack_shutdown.trigger();
-                        },
-                    }
-                }
-            }
+        if let Err(e) = revenue_interceptor_1.process_peacetime_fwds().await {
+            log::error!("Error processing peacetime forwards: {e}");
+            revenue_shutdown.trigger();
         }
     });
 
-    // let revenue_interceptor = Arc::new(
-    //     RevenueInterceptor::new_with_bootstrap(
-    //         clock.clone(),
-    //         target_pubkey,
-    //         bootstrap_revenue,
-    //         cli.attacker_bootstrap.1,
-    //         cli.peacetime_file,
-    //         listener.clone(),
-    //         shutdown.clone(),
-    //     )
-    //     .await?,
-    // );
-    //
-    // let revenue_interceptor_1 = revenue_interceptor.clone();
-    // let revenue_shutdown = shutdown.clone();
-    // tasks.spawn(async move {
-    //     if let Err(e) = revenue_interceptor_1.process_peacetime_fwds().await {
-    //         log::error!("Error processing peacetime forwards: {e}");
-    //         revenue_shutdown.trigger();
-    //     }
-    // });
-    //
-    // let revenue_interceptor_2 = revenue_interceptor.clone();
-    // let revenue_shutdown = shutdown.clone();
-    // tasks.spawn(async move {
-    //     if let Err(e) = revenue_interceptor_2
-    //         .poll_revenue_difference(Duration::from_secs(5))
-    //         .await
-    //     {
-    //         log::error!("Error polling revenue difference: {e}");
-    //         revenue_shutdown.trigger();
-    //     }
-    // });
+    let revenue_interceptor_2 = revenue_interceptor.clone();
+    let revenue_shutdown = shutdown.clone();
+    tasks.spawn(async move {
+        if let Err(e) = revenue_interceptor_2
+            .poll_revenue_difference(Duration::from_secs(5))
+            .await
+        {
+            log::error!("Error polling revenue difference: {e}");
+            revenue_shutdown.trigger();
+        }
+    });
 
     let interceptors = vec![
         latency_interceptor,
         attack_interceptor.clone(),
-        //revenue_interceptor.clone(),
+        revenue_interceptor.clone(),
     ];
 
     let custom_records =
@@ -296,13 +262,10 @@ async fn main() -> Result<(), BoxError> {
     )
     .await?;
 
-    let attacker_2 =
-        PublicKey::from_str("033dbb3f4662640d4888918eeb986069b9b775c921b9ec6debcada1b3ac58a1b0b")
-            .unwrap();
     let attacker_nodes: HashMap<String, Arc<Mutex<SimNode<SimGraph>>>> = sim_nodes
         .into_iter()
         .filter_map(|(pk, node)| {
-            if pk == attacker_pubkey || pk == attacker_2 {
+            if pk == attacker_pubkey || pk == attacker_sender_pubkey {
                 let alias = match find_alias_by_pubkey(&pk, &sim_params.sim_network) {
                     Ok(alias) => alias,
                     Err(e) => panic!("Attacker pubkey not found {}", e),
@@ -317,26 +280,82 @@ async fn main() -> Result<(), BoxError> {
 
     let attacker_actions_shutdown = shutdown.clone();
 
-    if let Err(e) = attack_custom_actions
-        .run_custom_actions(attacker_nodes, listener.clone())
+    let target_peer_pubkey =
+        PublicKey::from_str("0353325e099c2b657ca5c4bb975a20b0c3de1d2391dabe73f40484aac255628d22")
+            .unwrap();
+    attack
+        .build_reputation(
+            attacker_nodes.clone(),
+            (target_peer_pubkey, 348545186070528),
+        )
         .await
-    {
-        log::error!("Error running custom attacker actions: {e}");
-        attacker_actions_shutdown.trigger();
-    }
+        .unwrap();
 
-    // tokio::spawn(async move {
-    //     if let Err(e) = attack_custom_actions
-    //         .run_custom_actions(attacker_nodes, listener.clone())
-    //         .await
-    //     {
-    //         log::error!("Error running custom attacker actions: {e}");
-    //         attacker_actions_shutdown.trigger();
-    //     }
-    // });
+    // Do some preliminary checks on our reputation state - there isn't much point in running if we haven't built up
+    // some reputation.
+    let target_pubkey_map: HashMap<u64, PublicKey> =
+        target_channels.iter().map(|(k, v)| (*k, v.0)).collect();
+
+    let start_reputation = get_network_reputation(
+        reputation_interceptor.clone(),
+        target_pubkey,
+        attacker_pubkey,
+        &target_pubkey_map,
+        risk_margin,
+        // The reputation_interceptor clock has been set on decaying averages so we use the clock
+        // to provide a new instant rather than the previous fixed point.
+        InstantClock::now(&*clock),
+    )
+    .await?;
+
+    check_reputation_status(&cli, &start_reputation)?;
+
+    // Spawn a task that will trigger shutdown of the simulation if the attacker loses reputation provided that the
+    // target is at similar reputation to the start of the simulation. This is a somewhat crude check, because we're
+    // only looking at the count of peers with reputation not the actual pairs.
+    let attack_clock = clock.clone();
+    let attack_listener = listener.clone();
+    let attack_shutdown = shutdown.clone();
+    let start_reputation_1 = start_reputation.clone();
+    let tasks = TaskTracker::new();
+    tasks.spawn(async move {
+        let interval = Duration::from_secs(cli.attacker_poll_interval_seconds);
+        loop {
+            select! {
+                _ = attack_listener.clone() => return,
+                _ = attack_clock.sleep(interval) => {
+                    match attack.simulation_completed(start_reputation_1.clone()).await {
+                        Ok(shutdown) => if shutdown {attack_shutdown.trigger()},
+                        Err(e) => {
+                            log::error!("Shutdown check failed: {e}");
+                            attack_shutdown.trigger();
+                        },
+                    }
+                }
+            }
+        }
+    });
+
+    // if let Err(e) = attack_custom_actions
+    //     .run_custom_actions(attacker_nodes, listener.clone())
+    //     .await
+    // {
+    //     log::error!("Error running custom attacker actions: {e}");
+    //     attacker_actions_shutdown.trigger();
+    // }
+
+    tokio::spawn(async move {
+        if let Err(e) = attack_custom_actions
+            .run_custom_actions(attacker_nodes, listener.clone())
+            .await
+        {
+            log::error!("Error running custom attacker actions: {e}");
+            attacker_actions_shutdown.trigger();
+        }
+    });
 
     // Run simulation until it shuts down, then wait for the graph to exit.
-    // simulation.run(&validated_activities).await?;
+    simulation.run(&validated_activities).await?;
 
     // Write start and end state to a summary file.
     let end_reputation = get_network_reputation(
@@ -349,14 +368,14 @@ async fn main() -> Result<(), BoxError> {
     )
     .await?;
 
-    // let snapshot = revenue_interceptor.get_revenue_difference().await;
-    // write_simulation_summary(
-    //     cli.results_dir,
-    //     &snapshot,
-    //     &start_reputation,
-    //     &end_reputation,
-    //     attack_setup.general_jammed_nodes.len(),
-    // )?;
+    let snapshot = revenue_interceptor.get_revenue_difference().await;
+    write_simulation_summary(
+        cli.results_dir,
+        &snapshot,
+        &start_reputation,
+        &end_reputation,
+        attack_setup.general_jammed_nodes.len(),
+    )?;
 
     Ok(())
 }

@@ -120,8 +120,11 @@ pub async fn build_reputation<C: Clock + InstantClock, R: ReputationMonitor>(
             0
         };
 
+        let fee_to_bump_reputation = threshold as u64 + htlc_amounts + risk_margin * 3;
+
         // Make a single payment with an inflated fee at the hop we are building reputation with
-        target_hop.fee_msat = threshold as u64 + htlc_amounts + risk_margin;
+        target_hop.fee_msat += fee_to_bump_reputation;
+        total_fees_paid += fee_to_bump_reputation;
     }
 
     let payment_hash = PaymentHash(get_random_bytes());
