@@ -1,26 +1,23 @@
 use crate::{
-    accountable_from_records,
     attacks::JammingAttack,
     clock::InstantClock,
-    records_from_signal,
     reputation_interceptor::{GeneralChannelJammer, ReputationMonitor},
     BoxError,
 };
 
 use async_trait::async_trait;
 use bitcoin::secp256k1::PublicKey;
-use lightning::routing::gossip::NetworkGraph;
-use rand::Rng;
+use lightning::{ln::PaymentHash, routing::gossip::NetworkGraph};
 use sim_cli::parsing::NetworkParser;
 use simln_lib::{
     clock::Clock,
     sim_node::{CustomRecords, ForwardingError, InterceptRequest, SimGraph, SimNode, WrappedLog},
 };
-use std::{collections::HashMap, sync::Arc};
+use std::{collections::HashMap, sync::Arc, thread, time::Duration};
 use tokio::sync::Mutex;
 use triggered::Listener;
 
-use super::utils::build_reputation;
+use super::utils::{build_custom_route, build_reputation, get_random_bytes};
 
 // idea: attacker1 -> peer1 -> target -> attacker2
 // build reputation on attacker2 and jam channel peer1 <-> target
@@ -87,7 +84,7 @@ where
 
     pub async fn build_reputation(
         &self,
-        attacker_nodes: HashMap<String, Arc<Mutex<SimNode<SimGraph>>>>,
+        attacker_nodes: &HashMap<String, Arc<Mutex<SimNode<SimGraph>>>>,
         target_channel: (PublicKey, u64),
     ) -> Result<u64, BoxError> {
         let hops = vec![self.target_pubkey, self.attacker.1];
@@ -137,22 +134,56 @@ where
         if to_attacker_channel_snapshot.outgoing_reputation
             >= peer_target_channel.bidirectional_revenue + self.risk_margin as i64
         {
-            println!(
-                "Finished building reputation. It cost {} in fees",
-                fees_paid
-            );
             return Ok(fees_paid);
         }
 
         Err("could not build reputation".into())
     }
-}
 
-pub fn get_random_bytes() -> [u8; 32] {
-    let mut rng = rand::rng();
-    let mut bytes = [0u8; 32];
-    rng.fill(&mut bytes[..]);
-    bytes
+    // Checks if the attacker has sufficient reputation on its channel with the target node to keep
+    // jamming it
+    fn sufficient_reputation(&self) -> bool {
+        unimplemented!()
+    }
+
+    async fn fast_jam_channel(
+        &self,
+        attacker_nodes: HashMap<String, Arc<Mutex<SimNode<SimGraph>>>>,
+        channel_to_jam: (PublicKey, u64),
+    ) -> Result<(), BoxError> {
+        // at this point, we should already have built reputation and have access to protected
+        // resources. Attack channel peer1 <-> target through attacker1 -> peer1 -> target -> attacker2
+
+        let attacker_node_sender = attacker_nodes.get(&self.attacker_sender.0).ok_or(format!(
+            "node {} not found in attacker nodes list",
+            self.attacker_sender.0
+        ))?;
+
+        let hops = vec![channel_to_jam.0, self.target_pubkey, self.attacker.1];
+        let route = build_custom_route(&self.attacker_sender.1, 1_000, &hops, &self.network_graph)
+            .map_err(|e| e.err)?;
+
+        loop {
+            let payment_hash = PaymentHash(get_random_bytes());
+            if let Err(e) = attacker_node_sender
+                .lock()
+                .await
+                .send_to_route(route.clone(), payment_hash, None)
+                .await
+            {
+                return Err(e.to_string().into());
+            }
+
+            thread::sleep(Duration::from_millis(400));
+
+            // do this until no more reputation
+            if !self.sufficient_reputation() {
+                break;
+            }
+        }
+
+        Ok(())
+    }
 }
 
 #[async_trait]
@@ -162,13 +193,16 @@ where
     R: ReputationMonitor + Send + Sync,
     J: GeneralChannelJammer + Send + Sync,
 {
-    async fn intercept_attacker_htlc(
+    /// Payments where we are the receiver are most likely the ones initiated by us from [`Self::fast_jam_channel`]. Fast-jamming
+    /// here so fail them immediately while trying to continuously take up protected resources on
+    /// the channel we are trying to jam.
+    async fn intercept_attacker_receive(
         &self,
-        req: InterceptRequest,
+        _req: InterceptRequest,
     ) -> Result<Result<CustomRecords, ForwardingError>, BoxError> {
-        return Ok(Ok(records_from_signal(accountable_from_records(
-            &req.incoming_custom_records,
-        ))));
+        Ok(Err(ForwardingError::InterceptorError(
+            "failing from slow jam interceptor".into(),
+        )))
     }
 
     async fn run_custom_actions(
@@ -183,8 +217,13 @@ where
         //  resolving payments that don't slash reputation.
 
         let fees_paid = self
-            .build_reputation(attacker_nodes, self.channel_to_jam)
+            .build_reputation(&attacker_nodes, self.channel_to_jam)
             .await?;
+
+        println!(
+            "Finished building reputation. It cost {} in fees",
+            fees_paid
+        );
 
         // after building reputation, jam general resources.
         self.general_jammer
@@ -197,6 +236,9 @@ where
 
         // with reputation, jam protected resources by sending 80s resolving payments continuously.
         // NOTE: prob better to occupy protected slots with low-value htlcs.
+        self.fast_jam_channel(attacker_nodes, self.channel_to_jam)
+            .await?;
+
         Ok(())
     }
 }

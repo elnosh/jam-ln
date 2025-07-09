@@ -163,7 +163,7 @@ async fn main() -> Result<(), BoxError> {
     let attacker_sender = ("25".to_string(), attacker_sender_pubkey);
 
     let target_peer_pubkey =
-        PublicKey::from_str("0353325e099c2b657ca5c4bb975a20b0c3de1d2391dabe73f40484aac255628d22")
+        PublicKey::from_str("03864ef025fde8fb587d989186ce6a4a186895ee44a926bfc370e2c366597a3f8f")
             .unwrap();
     let channel_to_jam = (target_peer_pubkey, 348545186070528);
 
@@ -189,8 +189,6 @@ async fn main() -> Result<(), BoxError> {
             .jam_channel(pubkey, *channel)
             .await?;
     }
-
-    let attack_custom_actions = Arc::clone(&attack);
 
     let attack_interceptor = AttackInterceptor::new(
         attacker_pubkey,
@@ -279,17 +277,9 @@ async fn main() -> Result<(), BoxError> {
         .collect();
 
     let attacker_actions_shutdown = shutdown.clone();
-
-    let target_peer_pubkey =
-        PublicKey::from_str("0353325e099c2b657ca5c4bb975a20b0c3de1d2391dabe73f40484aac255628d22")
-            .unwrap();
     attack
-        .build_reputation(
-            attacker_nodes.clone(),
-            (target_peer_pubkey, 348545186070528),
-        )
-        .await
-        .unwrap();
+        .build_reputation(&attacker_nodes, channel_to_jam)
+        .await?;
 
     // Do some preliminary checks on our reputation state - there isn't much point in running if we haven't built up
     // some reputation.
@@ -318,13 +308,14 @@ async fn main() -> Result<(), BoxError> {
     let attack_shutdown = shutdown.clone();
     let start_reputation_1 = start_reputation.clone();
     let tasks = TaskTracker::new();
+    let attack_clone = Arc::clone(&attack);
     tasks.spawn(async move {
         let interval = Duration::from_secs(cli.attacker_poll_interval_seconds);
         loop {
             select! {
                 _ = attack_listener.clone() => return,
                 _ = attack_clock.sleep(interval) => {
-                    match attack.simulation_completed(start_reputation_1.clone()).await {
+                    match attack_clone.simulation_completed(start_reputation_1.clone()).await {
                         Ok(shutdown) => if shutdown {attack_shutdown.trigger()},
                         Err(e) => {
                             log::error!("Shutdown check failed: {e}");
@@ -336,14 +327,7 @@ async fn main() -> Result<(), BoxError> {
         }
     });
 
-    // if let Err(e) = attack_custom_actions
-    //     .run_custom_actions(attacker_nodes, listener.clone())
-    //     .await
-    // {
-    //     log::error!("Error running custom attacker actions: {e}");
-    //     attacker_actions_shutdown.trigger();
-    // }
-
+    let attack_custom_actions = Arc::clone(&attack);
     tokio::spawn(async move {
         if let Err(e) = attack_custom_actions
             .run_custom_actions(attacker_nodes, listener.clone())
