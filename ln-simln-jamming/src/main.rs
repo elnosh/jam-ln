@@ -277,9 +277,7 @@ async fn main() -> Result<(), BoxError> {
         .collect();
 
     let attacker_actions_shutdown = shutdown.clone();
-    attack
-        .build_reputation(&attacker_nodes, channel_to_jam)
-        .await?;
+    attack.build_reputation(&attacker_nodes).await?;
 
     // Do some preliminary checks on our reputation state - there isn't much point in running if we haven't built up
     // some reputation.

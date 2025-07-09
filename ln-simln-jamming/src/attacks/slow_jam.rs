@@ -85,9 +85,9 @@ where
     pub async fn build_reputation(
         &self,
         attacker_nodes: &HashMap<String, Arc<Mutex<SimNode<SimGraph>>>>,
-        target_channel: (PublicKey, u64),
     ) -> Result<u64, BoxError> {
         let hops = vec![self.target_pubkey, self.attacker.1];
+        let target_channel = self.channel_to_jam;
 
         let attacker_node_sender = attacker_nodes.get(&self.attacker_sender.0).ok_or(format!(
             "node {} not found in attacker nodes list",
@@ -106,6 +106,16 @@ where
         )
         .await?;
 
+        if self.sufficient_reputation().await? {
+            return Ok(fees_paid);
+        } else {
+            Err("could not build reputation".into())
+        }
+    }
+
+    // Checks if the attacker has sufficient reputation on its channel with the target node to keep
+    // jamming it
+    async fn sufficient_reputation(&self) -> Result<bool, BoxError> {
         let to_attacker_channel = self
             .target_channels
             .iter()
@@ -128,22 +138,13 @@ where
             .ok_or(format!("Channel {} not found", to_attacker_channel))?; // this shouldn't happen
 
         let peer_target_channel = target_channel_snapshots
-            .get(&target_channel.1)
-            .ok_or(format!("Channel {} not found", target_channel.1))?;
+            .get(&self.channel_to_jam.1)
+            .ok_or(format!("Channel {} not found", self.channel_to_jam.1))?;
 
-        if to_attacker_channel_snapshot.outgoing_reputation
-            >= peer_target_channel.bidirectional_revenue + self.risk_margin as i64
-        {
-            return Ok(fees_paid);
-        }
+        let sufficient_reputation = to_attacker_channel_snapshot.outgoing_reputation
+            >= peer_target_channel.bidirectional_revenue + self.risk_margin as i64;
 
-        Err("could not build reputation".into())
-    }
-
-    // Checks if the attacker has sufficient reputation on its channel with the target node to keep
-    // jamming it
-    fn sufficient_reputation(&self) -> bool {
-        unimplemented!()
+        return Ok(sufficient_reputation);
     }
 
     async fn fast_jam_channel(
@@ -177,7 +178,7 @@ where
             thread::sleep(Duration::from_millis(400));
 
             // do this until no more reputation
-            if !self.sufficient_reputation() {
+            if !self.sufficient_reputation().await? {
                 break;
             }
         }
@@ -216,10 +217,7 @@ where
         // - with sufficient reputation, continuously jam protected resources by sending slow (80s)
         //  resolving payments that don't slash reputation.
 
-        let fees_paid = self
-            .build_reputation(&attacker_nodes, self.channel_to_jam)
-            .await?;
-
+        let fees_paid = self.build_reputation(&attacker_nodes).await?;
         println!(
             "Finished building reputation. It cost {} in fees",
             fees_paid
