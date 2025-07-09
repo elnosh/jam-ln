@@ -1,23 +1,34 @@
-use crate::reputation_interceptor::{BootstrapForward, BootstrapRecords};
+use crate::attacks::sink::SinkAttack;
+use crate::attacks::slow_jam::SlowJam;
+use crate::attacks::JammingAttack;
+use crate::clock::InstantClock;
+use crate::reputation_interceptor::{
+    BootstrapForward, BootstrapRecords, GeneralChannelJammer, ReputationMonitor,
+};
 use crate::revenue_interceptor::RevenueEvent;
 use crate::BoxError;
 use bitcoin::secp256k1::PublicKey;
 use clap::Parser;
 use csv::{ReaderBuilder, StringRecord};
 use humantime::Duration as HumanDuration;
+use lightning::routing::gossip::NetworkGraph;
 use ln_resource_mgr::forward_manager::ForwardManagerParams;
 use ln_resource_mgr::ChannelSnapshot;
 use serde::{Deserialize, Serialize};
 use sim_cli::parsing::NetworkParser;
+use simln_lib::clock::{Clock, SimulationClock};
+use simln_lib::sim_node::{populate_network_graph, SimulatedChannel, WrappedLog};
+use simln_lib::SimulationError;
 use std::collections::{BinaryHeap, HashMap, HashSet};
 use std::fs::File;
 use std::io::{BufReader, Read, Seek};
 use std::ops::Add;
 use std::path::PathBuf;
 use std::str::FromStr;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::Duration;
 use tokio::runtime::Handle;
+use tokio::sync::Mutex;
 use tokio::task::{self, JoinSet};
 
 /// Default file used to describe the network being simulated.
@@ -156,6 +167,10 @@ pub struct Cli {
     /// The alias of the attacking node.
     #[arg(long)]
     pub attacker_alias: String,
+
+    /// The attack that will be run on the simulation.
+    #[arg(long, value_enum, default_value = "sink")]
+    pub attack: AttackType,
 }
 
 impl Cli {
@@ -235,6 +250,97 @@ pub fn parse_duration(s: &str) -> Result<(String, Duration), String> {
     HumanDuration::from_str(s)
         .map(|hd| (s.to_string(), hd.into()))
         .map_err(|e| format!("Invalid duration '{}': {}", s, e))
+}
+
+#[derive(Clone, Debug, clap::ValueEnum)]
+pub enum AttackType {
+    Sink,
+    SlowJam,
+    // NOTE: [add your new attack here]
+}
+
+pub fn setup_attack<C, R, J>(
+    cli: &Cli,
+    clock: Arc<C>,
+    sim_network: &[NetworkParser],
+    reputation_monitor: Arc<Mutex<R>>,
+    general_jammer: Arc<Mutex<J>>,
+    listener: triggered::Listener,
+) -> Result<Arc<dyn JammingAttack + Send + Sync>, BoxError>
+where
+    C: Clock + InstantClock + 'static,
+    R: ReputationMonitor + Send + Sync + 'static,
+    J: GeneralChannelJammer + Send + Sync + 'static,
+{
+    let forward_params = cli.validate()?;
+    let risk_margin = forward_params.htlc_opportunity_cost(
+        1000 + (0.0001 * cli.reputation_margin_msat as f64) as u64,
+        cli.reputation_margin_expiry_blocks,
+    );
+
+    let target_pubkey = find_pubkey_by_alias(&cli.target_alias, &sim_network)?;
+    let attacker_pubkey = find_pubkey_by_alias(&cli.attacker_alias, &sim_network)?;
+
+    let network_graph = network_graph(sim_network.to_vec())?;
+
+    match cli.attack {
+        AttackType::Sink => {
+            let attack = Arc::new(SinkAttack::new(
+                Arc::clone(&clock),
+                &sim_network,
+                target_pubkey,
+                attacker_pubkey,
+                risk_margin,
+                Arc::clone(&reputation_monitor),
+                listener.clone(),
+            ));
+            return Ok(attack);
+        }
+        AttackType::SlowJam => {
+            let attacker_sender_pubkey = PublicKey::from_str(
+                "033dbb3f4662640d4888918eeb986069b9b775c921b9ec6debcada1b3ac58a1b0b",
+            )
+            .unwrap();
+            let attacker_sender = ("25".to_string(), attacker_sender_pubkey);
+
+            let target_peer_pubkey = PublicKey::from_str(
+                "03864ef025fde8fb587d989186ce6a4a186895ee44a926bfc370e2c366597a3f8f",
+            )
+            .unwrap();
+            let channel_to_jam = (target_peer_pubkey, 348545186070528);
+
+            let attack = Arc::new(SlowJam::new(
+                Arc::clone(&clock),
+                &sim_network,
+                target_pubkey,
+                attacker_sender,
+                (cli.attacker_alias.clone(), attacker_pubkey),
+                channel_to_jam,
+                risk_margin,
+                Arc::clone(&reputation_monitor),
+                Arc::clone(&general_jammer),
+                network_graph,
+            ));
+
+            return Ok(attack);
+        }
+    }
+}
+
+fn network_graph(
+    network: Vec<NetworkParser>,
+) -> Result<Arc<NetworkGraph<Arc<WrappedLog>>>, BoxError> {
+    let channels = network
+        .clone()
+        .into_iter()
+        .map(SimulatedChannel::from)
+        .collect::<Vec<SimulatedChannel>>();
+
+    let clock = Arc::new(SimulationClock::new(1)?);
+    Ok(Arc::new(
+        populate_network_graph(channels, clock.clone())
+            .map_err(|e| SimulationError::SimulatedNetworkError(format!("{:?}", e)))?,
+    ))
 }
 
 fn find_next_newline(file: &mut BufReader<File>, start: u64) -> Result<u64, BoxError> {
@@ -393,7 +499,7 @@ pub async fn peacetime_from_file(
     let file_size = file.metadata()?.len();
 
     let mut tasks: JoinSet<Result<(), BoxError>> = JoinSet::new();
-    let heap = Arc::new(Mutex::new(BinaryHeap::new()));
+    let heap = Arc::new(std::sync::Mutex::new(BinaryHeap::new()));
 
     for i in 0..num_chunks {
         let start = breakpoints[i];

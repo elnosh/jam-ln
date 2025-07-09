@@ -12,28 +12,30 @@ use tokio::sync::Mutex;
 /// Wraps an innner reputation interceptor (which is responsible for implementing a mitigation to
 /// channel jamming) in an outer interceptor which can be used to take custom actions for attacks.
 #[derive(Clone)]
-pub struct AttackInterceptor<R, A>
+//pub struct AttackInterceptor<R, A>
+pub struct AttackInterceptor<R>
 where
     R: Interceptor + ReputationMonitor,
-    A: JammingAttack,
+    // A: JammingAttack,
 {
     attacker_pubkey: PublicKey,
     /// Inner reputation monitor that implements jamming mitigation.
     reputation_interceptor: Arc<Mutex<R>>,
     /// The attack that will be launched.
-    attack: Arc<A>,
+    attack: Arc<dyn JammingAttack + Send + Sync>,
 }
 
-impl<R, A> AttackInterceptor<R, A>
+//impl<R, A> AttackInterceptor<R, A>
+impl<R> AttackInterceptor<R>
 where
     R: Interceptor + ReputationMonitor,
-    A: JammingAttack + Sync + Send,
+    // A: JammingAttack + Sync + Send,
 {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         attacker_pubkey: PublicKey,
         reputation_interceptor: Arc<Mutex<R>>,
-        attack: Arc<A>,
+        attack: Arc<dyn JammingAttack + Send + Sync>,
     ) -> Self {
         Self {
             attacker_pubkey,
@@ -44,10 +46,11 @@ where
 }
 
 #[async_trait]
-impl<R, A> Interceptor for AttackInterceptor<R, A>
+//impl<R, A> Interceptor for AttackInterceptor<R, A>
+impl<R> Interceptor for AttackInterceptor<R>
 where
     R: Interceptor + ReputationMonitor,
-    A: JammingAttack + Send + Sync,
+    // A: JammingAttack + Send + Sync,
 {
     /// Implemented by HTLC interceptors that provide input on the resolution of HTLCs forwarded in the simulation.
     async fn intercept_htlc(
@@ -126,7 +129,8 @@ mod tests {
         }
     }
 
-    fn setup_interceptor_test() -> AttackInterceptor<MockReputationInterceptor, MockAttack> {
+    //fn setup_interceptor_test() -> AttackInterceptor<MockReputationInterceptor, MockAttack> {
+    fn setup_interceptor_test() -> AttackInterceptor<MockReputationInterceptor> {
         let attacker_pubkey = get_random_keypair().1;
 
         let mock = MockReputationInterceptor::new();

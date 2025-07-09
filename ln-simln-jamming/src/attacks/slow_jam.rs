@@ -20,7 +20,7 @@ use std::{collections::HashMap, sync::Arc};
 use tokio::sync::Mutex;
 use triggered::Listener;
 
-use super::utils::build_reputation;
+use super::{utils::build_reputation, NetworkSetup};
 
 // idea: attacker1 -> peer1 -> target -> attacker2
 // build reputation on attacker2 and jam channel peer1 <-> target
@@ -146,6 +146,15 @@ where
 
         Err("could not build reputation".into())
     }
+
+    // Jam protected resources by continuously sending fast resolving payments.
+    async fn fast_jam_channel(
+        &self,
+        attacker_nodes: HashMap<String, Arc<Mutex<SimNode<SimGraph>>>>,
+        channel_to_jam: (PublicKey, u64),
+    ) -> Result<(), BoxError> {
+        unimplemented!()
+    }
 }
 
 pub fn get_random_bytes() -> [u8; 32] {
@@ -182,8 +191,17 @@ where
         // - with sufficient reputation, continuously jam protected resources by sending slow (80s)
         //  resolving payments that don't slash reputation.
 
+        // let target_peer_pubkey = PublicKey::from_str(
+        //     "0353325e099c2b657ca5c4bb975a20b0c3de1d2391dabe73f40484aac255628d22",
+        // )
+        // .unwrap();
+
         let fees_paid = self
-            .build_reputation(attacker_nodes, self.channel_to_jam)
+            //.build_reputation(attacker_nodes, self.channel_to_jam)
+            .build_reputation(
+                attacker_nodes.clone(),
+                (self.target_pubkey, self.channel_to_jam.1),
+            )
             .await?;
 
         // after building reputation, jam general resources.
@@ -193,10 +211,32 @@ where
             .jam_channel(&self.target_pubkey, self.channel_to_jam.1)
             .await?;
 
-        //  send payments from multiple channels to use congestion resources.
+        // send payments from multiple channels to use congestion resources.
 
         // with reputation, jam protected resources by sending 80s resolving payments continuously.
         // NOTE: prob better to occupy protected slots with low-value htlcs.
+        self.fast_jam_channel(attacker_nodes, self.channel_to_jam)
+            .await?;
+
         Ok(())
     }
 }
+//
+//
+//
+//
+//
+//
+//
+//
+//
+//
+//
+//
+//
+//
+//
+//
+//
+//
+//

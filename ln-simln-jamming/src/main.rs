@@ -1,15 +1,12 @@
 use bitcoin::secp256k1::PublicKey;
 use clap::Parser;
 use core::panic;
-use lightning::routing::gossip::NetworkGraph;
 use ln_simln_jamming::analysis::BatchForwardWriter;
 use ln_simln_jamming::attack_interceptor::AttackInterceptor;
-use ln_simln_jamming::attacks::slow_jam::SlowJam;
-use ln_simln_jamming::attacks::JammingAttack;
 use ln_simln_jamming::clock::InstantClock;
 use ln_simln_jamming::parsing::{
-    find_alias_by_pubkey, find_pubkey_by_alias, reputation_snapshot_from_file, Cli, SimNetwork,
-    DEFAULT_REPUTATION_FILENAME, DEFAULT_REVENUE_FILENAME,
+    find_alias_by_pubkey, find_pubkey_by_alias, reputation_snapshot_from_file, setup_attack, Cli,
+    SimNetwork, DEFAULT_REPUTATION_FILENAME, DEFAULT_REVENUE_FILENAME,
 };
 use ln_simln_jamming::reputation_interceptor::{GeneralChannelJammer, ReputationInterceptor};
 use ln_simln_jamming::revenue_interceptor::{RevenueInterceptor, RevenueSnapshot};
@@ -17,20 +14,18 @@ use ln_simln_jamming::{
     get_network_reputation, BoxError, NetworkReputation, ACCOUNTABLE_TYPE, UPGRADABLE_TYPE,
 };
 use log::LevelFilter;
-use sim_cli::parsing::{create_simulation_with_network, NetworkParser, SimParams};
+use sim_cli::parsing::{create_simulation_with_network, SimParams};
 use simln_lib::clock::Clock;
 use simln_lib::clock::SimulationClock;
 use simln_lib::latency_interceptor::LatencyIntercepor;
-use simln_lib::sim_node::{
-    populate_network_graph, CustomRecords, Interceptor, SimGraph, SimNode, SimulatedChannel,
-    WrappedLog,
-};
-use simln_lib::{SimulationCfg, SimulationError};
+use simln_lib::sim_node::{CustomRecords, Interceptor, SimGraph, SimNode};
+use simln_lib::SimulationCfg;
 use simple_logger::SimpleLogger;
 use std::collections::HashMap;
 use std::fs::{self, OpenOptions};
 use std::io::{BufWriter, Write};
 use std::path::PathBuf;
+use std::process;
 use std::str::FromStr;
 use std::sync::Arc;
 use std::time::Duration;
@@ -147,39 +142,14 @@ async fn main() -> Result<(), BoxError> {
     );
 
     // Next, setup the attack interceptor to use our custom attack.
-    // let attack = Arc::new(SinkAttack::new(
-    //     clock.clone(),
-    //     &sim_network,
-    //     target_pubkey,
-    //     attacker_pubkey,
-    //     risk_margin,
-    //     reputation_interceptor.clone(),
-    //     listener.clone(),
-    // ));
-
-    let attacker_sender_pubkey =
-        PublicKey::from_str("033dbb3f4662640d4888918eeb986069b9b775c921b9ec6debcada1b3ac58a1b0b")
-            .unwrap();
-    let attacker_sender = ("25".to_string(), attacker_sender_pubkey);
-
-    let target_peer_pubkey =
-        PublicKey::from_str("0353325e099c2b657ca5c4bb975a20b0c3de1d2391dabe73f40484aac255628d22")
-            .unwrap();
-    let channel_to_jam = (target_peer_pubkey, 348545186070528);
-
-    let network_graph = network_graph(sim_network.clone())?;
-    let attack = Arc::new(SlowJam::new(
+    let attack = setup_attack(
+        &cli,
         Arc::clone(&clock),
         &sim_network,
-        target_pubkey,
-        attacker_sender,
-        (cli.attacker_alias.clone(), attacker_pubkey),
-        channel_to_jam,
-        risk_margin,
         Arc::clone(&reputation_interceptor),
         Arc::clone(&reputation_interceptor),
-        network_graph,
-    ));
+        listener.clone(),
+    )?;
 
     let attack_setup = attack.setup_for_network()?;
     for (channel, pubkey) in attack_setup.general_jammed_nodes.iter() {
@@ -189,7 +159,6 @@ async fn main() -> Result<(), BoxError> {
             .jam_channel(pubkey, *channel)
             .await?;
     }
-
     let attack_custom_actions = Arc::clone(&attack);
 
     let attack_interceptor = AttackInterceptor::new(
@@ -202,7 +171,7 @@ async fn main() -> Result<(), BoxError> {
 
     let revenue_interceptor = Arc::new(
         RevenueInterceptor::new_with_bootstrap(
-            clock.clone(),
+            Arc::clone(&clock),
             target_pubkey,
             bootstrap_revenue,
             cli.attacker_bootstrap.1,
@@ -262,6 +231,9 @@ async fn main() -> Result<(), BoxError> {
     )
     .await?;
 
+    let attacker_sender_pubkey =
+        PublicKey::from_str("033dbb3f4662640d4888918eeb986069b9b775c921b9ec6debcada1b3ac58a1b0b")
+            .unwrap();
     let attacker_nodes: HashMap<String, Arc<Mutex<SimNode<SimGraph>>>> = sim_nodes
         .into_iter()
         .filter_map(|(pk, node)| {
@@ -277,19 +249,6 @@ async fn main() -> Result<(), BoxError> {
             }
         })
         .collect();
-
-    let attacker_actions_shutdown = shutdown.clone();
-
-    let target_peer_pubkey =
-        PublicKey::from_str("0353325e099c2b657ca5c4bb975a20b0c3de1d2391dabe73f40484aac255628d22")
-            .unwrap();
-    attack
-        .build_reputation(
-            attacker_nodes.clone(),
-            (target_peer_pubkey, 348545186070528),
-        )
-        .await
-        .unwrap();
 
     // Do some preliminary checks on our reputation state - there isn't much point in running if we haven't built up
     // some reputation.
@@ -307,8 +266,6 @@ async fn main() -> Result<(), BoxError> {
         InstantClock::now(&*clock),
     )
     .await?;
-
-    check_reputation_status(&cli, &start_reputation)?;
 
     // Spawn a task that will trigger shutdown of the simulation if the attacker loses reputation provided that the
     // target is at similar reputation to the start of the simulation. This is a somewhat crude check, because we're
@@ -336,23 +293,28 @@ async fn main() -> Result<(), BoxError> {
         }
     });
 
-    // if let Err(e) = attack_custom_actions
-    //     .run_custom_actions(attacker_nodes, listener.clone())
-    //     .await
-    // {
-    //     log::error!("Error running custom attacker actions: {e}");
-    //     attacker_actions_shutdown.trigger();
-    // }
+    let attacker_actions_shutdown = shutdown.clone();
+    if let Err(e) = attack_custom_actions
+        .run_custom_actions(attacker_nodes, listener.clone())
+        .await
+    {
+        log::error!("Error running custom attacker actions: {e}");
+        attacker_actions_shutdown.trigger();
+        process::exit(1);
+    }
 
-    tokio::spawn(async move {
-        if let Err(e) = attack_custom_actions
-            .run_custom_actions(attacker_nodes, listener.clone())
-            .await
-        {
-            log::error!("Error running custom attacker actions: {e}");
-            attacker_actions_shutdown.trigger();
-        }
-    });
+    // tokio::spawn(async move {
+    //     if let Err(e) = attack_custom_actions
+    //         .run_custom_actions(attacker_nodes, listener.clone())
+    //         .await
+    //     {
+    //         log::error!("Error running custom attacker actions: {e}");
+    //         attacker_actions_shutdown.trigger();
+    //     }
+    // });
+
+    // Communicate through channel when reputation has been built to continue here
+    check_reputation_status(&cli, &start_reputation)?;
 
     // Run simulation until it shuts down, then wait for the graph to exit.
     simulation.run(&validated_activities).await?;
@@ -414,22 +376,6 @@ fn check_reputation_status(cli: &Cli, status: &NetworkReputation) -> Result<(), 
     }
 
     Ok(())
-}
-
-fn network_graph(
-    network: Vec<NetworkParser>,
-) -> Result<Arc<NetworkGraph<Arc<WrappedLog>>>, BoxError> {
-    let channels = network
-        .clone()
-        .into_iter()
-        .map(SimulatedChannel::from)
-        .collect::<Vec<SimulatedChannel>>();
-
-    let clock = Arc::new(SimulationClock::new(1)?);
-    Ok(Arc::new(
-        populate_network_graph(channels, clock.clone())
-            .map_err(|e| SimulationError::SimulatedNetworkError(format!("{:?}", e)))?,
-    ))
 }
 
 #[allow(clippy::too_many_arguments)]
