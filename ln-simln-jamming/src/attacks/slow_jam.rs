@@ -2,7 +2,7 @@ use crate::{
     attacks::JammingAttack,
     clock::InstantClock,
     reputation_interceptor::{GeneralChannelJammer, ReputationMonitor},
-    BoxError,
+    BoxError, NetworkReputation,
 };
 
 use async_trait::async_trait;
@@ -160,6 +160,8 @@ where
             self.attacker_sender.0
         ))?;
 
+        // Jam resources with low-value htlcs to occupy as many slots as possible while trying not
+        // to affect reputation negatively?
         let hops = vec![channel_to_jam.0, self.target_pubkey, self.attacker.1];
         let route = build_custom_route(&self.attacker_sender.1, 1_000, &hops, &self.network_graph)
             .map_err(|e| e.err)?;
@@ -230,13 +232,27 @@ where
             .jam_channel(&self.target_pubkey, self.channel_to_jam.1)
             .await?;
 
-        //  send payments from multiple channels to use congestion resources.
+        // TODO: to jam congestion, would need many channels where each will occupy one slot in
+        // congestion bucket until full.
 
-        // with reputation, jam protected resources by sending 80s resolving payments continuously.
+        // after building reputation and jamming general resources, jam protected resources with
+        // continuous fast-failing payments.
         // NOTE: prob better to occupy protected slots with low-value htlcs.
         self.fast_jam_channel(attacker_nodes, self.channel_to_jam)
             .await?;
 
         Ok(())
+    }
+
+    async fn simulation_completed(
+        &self,
+        _start_reputation: NetworkReputation,
+    ) -> Result<bool, BoxError> {
+        // If attacker has no more reputation with the target, end simulation.
+        if !self.sufficient_reputation().await? {
+            return Ok(true);
+        }
+
+        Ok(false)
     }
 }
