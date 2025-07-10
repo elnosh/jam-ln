@@ -65,11 +65,13 @@ pub(super) struct GeneralBucket {
     htlc_slots: Vec<bool>,
     /// Tracks the amount of liquidity allocated to each slot in the bucket.
     slot_size_msat: u64,
-    /// Maps short channel IDs to the slot indexes that a candidate channel is granted access to.
+    /// Maps short channel IDs to an array of the slots that the channel is allowed to use, and their
+    /// current usage state. This information is required to track exactly which slots to remove
+    /// liquidity from.
     //
     // A u16 is used so that we can account for the possiblity that we assign our protocol max of
     // 483 slots, this can be changed to a u8 when only dealing with V3 channels.
-    candidate_slots: HashMap<u64, [u16; ASSIGNED_SLOTS]>,
+    candidate_slots: HashMap<u64, [(u16, bool); ASSIGNED_SLOTS]>,
 }
 
 impl GeneralBucket {
@@ -119,13 +121,13 @@ impl GeneralBucket {
         }
 
         match self.candidate_slots.entry(candidate_scid) {
-            Entry::Occupied(entry) => Ok(*entry.get()),
+            Entry::Occupied(entry) => Ok(entry.get().map(|slot| slot.0)),
             Entry::Vacant(entry) => {
                 let mut rng = rand::rng();
                 let mut salt = [0u8; 32];
                 rng.fill(&mut salt);
 
-                let mut result = [0u16; ASSIGNED_SLOTS];
+                let mut result = [(0u16, false); ASSIGNED_SLOTS];
                 let mut assigned_count = 0;
 
                 // We hash the channel pair along with salt and an index to get our slots. We'll
@@ -153,7 +155,8 @@ impl GeneralBucket {
                             "hash could not be converted to u64".to_string(),
                         )
                     })?);
-                    let candidate_slot = (hash_num as usize % self.htlc_slots.len())
+
+                    let htlc_slot = (hash_num as usize % self.htlc_slots.len())
                         .try_into()
                         .map_err(|_| {
                             ReputationError::ErrUnrecoverable(format!(
@@ -162,8 +165,9 @@ impl GeneralBucket {
                                 self.htlc_slots.len()
                             ))
                         })?;
+                    let candidate_slot = (htlc_slot, false);
 
-                    assert!((candidate_slot as usize) < self.htlc_slots.len());
+                    assert!((candidate_slot.0 as usize) < self.htlc_slots.len());
 
                     let mut is_duplicate = false;
                     for res in result.iter().take(assigned_count) {
@@ -187,7 +191,7 @@ impl GeneralBucket {
                 }
 
                 entry.insert(result);
-                Ok(result)
+                Ok(result.map(|slot| slot.0))
             }
         }
     }
@@ -239,7 +243,7 @@ impl GeneralBucket {
             .is_some())
     }
 
-    /// Adds a HTLC to the bucket, returning a boolean indicating whether then HTLC was sucessfully
+    /// Adds a HTLC to the bucket, returning a boolean indicating whether the HTLC was sucessfully
     /// added.
     ///
     /// Requires a mutable reference because it may need to opportunistically allocate slots to the
@@ -256,10 +260,29 @@ impl GeneralBucket {
             None => return Ok(false),
         };
 
+        // When we add htlcs to a channel, we also need to track on the channel exactly which slots
+        // we're going to use for this channel.
+        let channel_slots = self
+            .candidate_slots
+            .get_mut(&candidate_scid)
+            .ok_or(ReputationError::ErrChannelNotFound(candidate_scid))?;
+
         // Once we know there's enough liquidity available for the HTLC, we can go ahead and
-        // reserve the slots we need.
+        // reserve the specific channel slots we need.
         for index in available_slots.iter() {
+            assert!(
+                !self.htlc_slots[*index as usize],
+                "assigning slot already taken"
+            );
             self.htlc_slots[*index as usize] = true;
+
+            let slot = channel_slots.iter_mut().find(|s| s.0 == *index).ok_or(
+                ReputationError::ErrUnrecoverable(
+                    "inconsistent slots assigned in general bucket".to_string(),
+                ),
+            )?;
+            assert!(!slot.1, "assigning slot already taken");
+            slot.1 = true;
         }
 
         Ok(true)
@@ -272,23 +295,33 @@ impl GeneralBucket {
         amount_msat: u64,
     ) -> Result<(), ReputationError> {
         let required_slot_count = self.required_slot_count(amount_msat);
-        let slots = self.get_candidate_slots(candidate_scid)?;
-        let occupied_slots: Vec<u16> = slots
-            .into_iter()
-            .filter(|&index| self.htlc_slots[index as usize])
-            .collect();
+
+        let channel_slots = self
+            .candidate_slots
+            .get_mut(&candidate_scid)
+            .ok_or(ReputationError::ErrChannelNotFound(candidate_scid))?;
+
+        let occupied_slots: Vec<(u16, bool)> =
+            channel_slots.iter().copied().filter(|s| s.1).collect();
 
         if (occupied_slots.len() as u64) < required_slot_count {
             return Err(ReputationError::ErrBucketTooEmpty(amount_msat));
         }
 
-        // Note that it doesn't matter which slots we clear out, we can just clear enough for our
-        // required liquidity then we've sufficiently cleared space.
         for i in occupied_slots
             .into_iter()
             .take(required_slot_count as usize)
         {
-            self.htlc_slots[i as usize] = false
+            assert!(self.htlc_slots[i.0 as usize], "removing unassigned slot");
+            self.htlc_slots[i.0 as usize] = false;
+
+            let slot = channel_slots.iter_mut().find(|slot| slot.0 == i.0).ok_or(
+                ReputationError::ErrUnrecoverable(
+                    "inconsistent slots assigned in general bucket".to_string(),
+                ),
+            )?;
+            assert!(slot.1, "removing unassigned slot");
+            slot.1 = false;
         }
 
         Ok(())
@@ -339,7 +372,9 @@ mod tests {
         let mut bucket = GeneralBucket::new(123, TEST_BUCKET_PARAMS).unwrap();
         let scid = 456;
         let slots = [1, 2, 3, 4, 5];
-        bucket.candidate_slots.insert(scid, slots);
+        bucket
+            .candidate_slots
+            .insert(scid, slots.map(|slot| (slot, false)));
         assert_eq!(slots, bucket.get_candidate_slots(scid).unwrap())
     }
 
@@ -436,5 +471,24 @@ mod tests {
         let htlc_too_big = bucket.slot_size_msat * ASSIGNED_SLOTS as u64 * 2;
 
         assert!(!bucket.add_htlc(scid, htlc_too_big).unwrap());
+    }
+
+    #[test]
+    fn test_duplicate_remove_bug_addressed() {
+        let mut bucket = GeneralBucket::new(123, TEST_BUCKET_PARAMS).unwrap();
+        let scid_1 = 345;
+        let scid_2 = 678;
+
+        let scid_1_slots: [(u16, bool); 5] = [0, 3, 4, 5, 7].map(|slot| (slot, false));
+        let scid_2_slots: [(u16, bool); 5] = [0, 1, 2, 6, 7].map(|slot| (slot, false));
+        bucket.candidate_slots.insert(scid_1, scid_1_slots);
+        bucket.candidate_slots.insert(scid_2, scid_2_slots);
+
+        let htlc_amt = bucket.slot_size_msat * 2;
+        assert!(bucket.add_htlc(scid_1, htlc_amt).unwrap());
+        assert!(bucket.add_htlc(scid_2, htlc_amt).unwrap());
+
+        bucket.remove_htlc(scid_2, htlc_amt).unwrap();
+        bucket.remove_htlc(scid_1, htlc_amt).unwrap();
     }
 }
