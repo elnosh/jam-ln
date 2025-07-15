@@ -111,8 +111,7 @@ async fn main() -> Result<(), BoxError> {
         }
     });
 
-    let (reputation_state, target_revenue) =
-        network_dir.reputation_summary(Some(cli.attacker_bootstrap));
+    let (reputation_state, target_revenue) = network_dir.reputation_summary(cli.attacker_bootstrap);
     let reputation_snapshot = reputation_snapshot_from_file(&reputation_state).map_err(|e| {
         format!(
             "could not find reputation snapshot {:?}, try generating one with reputation-builder: {:?}",
@@ -126,7 +125,13 @@ async fn main() -> Result<(), BoxError> {
             forward_params,
             &network_dir.sim_network,
             reputation_snapshot,
-            HashSet::new(),
+            // If bootstrapping the attacker's reputation, we expect them to be in our snapshot
+            // of starting reputation values. Otherwise, they can be omitted.
+            if cli.attacker_bootstrap.is_some() {
+                HashSet::new()
+            } else {
+                HashSet::from([network_dir.attacker.1])
+            },
             clock.clone(),
             Some(results_writer),
         )
@@ -340,14 +345,15 @@ fn check_reputation_status(cli: &Cli, status: &NetworkReputation) -> Result<(), 
         status.target_pair_count,
     );
 
-    let attacker_threshold =
-        status.attacker_pair_count * cli.attacker_reputation_percent as usize / 100;
-    if status.attacker_reputation < attacker_threshold {
-        return Err(format!(
-            "attacker has {}/{} good reputation pairs which does not meet threshold {}",
-            status.attacker_reputation, status.attacker_pair_count, attacker_threshold,
-        )
-        .into());
+    if let Some(attacker_percentage) = cli.attacker_reputation_percent {
+        let attacker_threshold = status.attacker_pair_count * attacker_percentage as usize / 100;
+        if status.attacker_reputation < attacker_threshold {
+            return Err(format!(
+                "attacker has {}/{} good reputation pairs which does not meet threshold {}",
+                status.attacker_reputation, status.attacker_pair_count, attacker_threshold,
+            )
+            .into());
+        }
     }
 
     let target_threshold = status.target_pair_count * cli.target_reputation_percent as usize / 100;

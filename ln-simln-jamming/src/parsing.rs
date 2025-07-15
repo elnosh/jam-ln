@@ -280,7 +280,7 @@ pub struct Cli {
     /// for, expressed as human readable values (eg: 1w, 3d). Requires that a reputation bootstrap
     /// file has been created in advance for this duration.
     #[arg(long, value_parser = parse_duration)]
-    pub attacker_bootstrap: Duration,
+    pub attacker_bootstrap: Option<Duration>,
 
     /// The minimum percentage of channel pairs between the target and its honest peers that the target needs to have
     /// good reputation on for the simulation to run.
@@ -289,8 +289,8 @@ pub struct Cli {
 
     /// The minimum percentage of pairs with between the target and the attacker that the attacker needs to have good
     /// reputation on for the simulation to run.
-    #[arg(long, default_value = DEFAULT_ATTACKER_REP_PERCENT)]
-    pub attacker_reputation_percent: u8,
+    #[arg(long)]
+    pub attacker_reputation_percent: Option<u8>,
 
     /// Speed up multiplier to add to the wall clock to run the simulation faster.
     #[arg(long, default_value = DEFAULT_CLOCK_SPEEDUP)]
@@ -329,24 +329,28 @@ impl Cli {
             .into());
         }
 
-        if self.attacker_reputation_percent == 0 || self.attacker_reputation_percent > 100 {
-            return Err(format!(
-                "attacker reputation percent {} must be in (0;100]",
-                self.attacker_reputation_percent
-            )
-            .into());
+        if let Some(attacker_target) = self.attacker_reputation_percent {
+            if attacker_target == 0 || attacker_target > 100 {
+                return Err(format!(
+                    "attacker reputation percent {} must be in (0;100]",
+                    attacker_target,
+                )
+                .into());
+            }
         }
 
         let forward_params: ForwardManagerParams = self.reputation_params.clone().into();
-        if forward_params.reputation_params.reputation_window() < self.attacker_bootstrap {
-            return Err(format!(
-                "attacker_bootstrap {:?} < reputation window {:?} ({:?} * {})))",
-                self.attacker_bootstrap,
-                forward_params.reputation_params.reputation_window(),
-                forward_params.reputation_params.revenue_window,
-                forward_params.reputation_params.reputation_multiplier,
-            )
-            .into());
+        if let Some(bootstrap) = self.attacker_bootstrap {
+            if forward_params.reputation_params.reputation_window() < bootstrap {
+                return Err(format!(
+                    "attacker_bootstrap {:?} > reputation window {:?} ({:?} * {})))",
+                    bootstrap,
+                    forward_params.reputation_params.reputation_window(),
+                    forward_params.reputation_params.revenue_window,
+                    forward_params.reputation_params.reputation_multiplier,
+                )
+                .into());
+            }
         }
 
         Ok(forward_params)

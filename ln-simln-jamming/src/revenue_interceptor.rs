@@ -86,7 +86,7 @@ impl PeacetimeRevenue {
     async fn new_with_bootstrap(
         target_pubkey: PublicKey,
         revenue_file: PathBuf,
-        bootstrap_duration: Duration,
+        bootstrap_duration: Option<Duration>,
     ) -> Result<Self, BoxError> {
         let mut peacetime_activity = peacetime_from_file(&revenue_file, target_pubkey).await?;
 
@@ -95,9 +95,18 @@ impl PeacetimeRevenue {
             .peek()
             .ok_or("should have at least one forward for target node".to_string())?;
 
-        let cutoff_ns = first_event
-            .timestamp_ns
-            .add(bootstrap_duration.as_nanos() as u64);
+        let bootstrap = match bootstrap_duration {
+            Some(bootstrap) => bootstrap,
+            None => {
+                // If the attacker did not bootstrap any reputation, we don't need to "catch up"
+                // our peacetime projections with any period of time - we can just start fresh.
+                return Ok(PeacetimeRevenue {
+                    peacetime_revenue: 0,
+                    revenue_events: peacetime_activity,
+                });
+            }
+        };
+        let cutoff_ns = first_event.timestamp_ns.add(bootstrap.as_nanos() as u64);
 
         // Accumulate the starting peacetime revenue, defined by the period of time that we bootstrapped the simulation
         // from, so that we're on the same starting point.
@@ -123,7 +132,7 @@ impl<C: InstantClock + Clock> RevenueInterceptor<C> {
         clock: Arc<C>,
         target_pubkey: PublicKey,
         bootstrap_revenue: u64,
-        bootstrap_duration: Duration,
+        bootstrap_duration: Option<Duration>,
         revenue_file: PathBuf,
         listener: Listener,
         shutdown: Trigger,
