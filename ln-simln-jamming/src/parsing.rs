@@ -578,16 +578,16 @@ pub async fn peacetime_from_file(
             for result in csv_reader.records() {
                 let record: StringRecord = result?;
 
-                let forwarding_node = PublicKey::from_slice(&hex::decode(&record[8])?)?;
+                let forwarding_node = PublicKey::from_slice(&hex::decode(&record[6])?)?;
                 if forwarding_node != target_pubkey {
                     continue;
                 }
 
                 let incoming_amt: u64 = record[0].parse()?;
-                let outgoing_amt: u64 = record[4].parse()?;
+                let outgoing_amt: u64 = record[1].parse()?;
 
                 heap_clone.lock().unwrap().push(RevenueEvent {
-                    timestamp_ns: record[3].parse()?,
+                    timestamp_ns: record[5].parse()?,
                     fee_msat: incoming_amt - outgoing_amt,
                 })
             }

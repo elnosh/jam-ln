@@ -93,7 +93,9 @@ impl PeacetimeRevenue {
         revenue_file: PathBuf,
         bootstrap_duration: Option<Duration>,
     ) -> Result<Self, BoxError> {
-        let mut peacetime_activity = peacetime_from_file(&revenue_file, target_pubkey).await?;
+        let mut peacetime_activity = peacetime_from_file(&revenue_file, target_pubkey)
+            .await
+            .map_err(|e| format!("could not read peacetime projections: {}", e))?;
 
         // Grab the first event to get our starting timestamp, push the event back on so that we can process it.
         let first_event = peacetime_activity
