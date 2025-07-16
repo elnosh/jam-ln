@@ -119,6 +119,11 @@ impl SimulationFiles {
             )
         })?;
         let attacker_aliases: Vec<&str> = attacker_list.trim().split(',').collect();
+        diff_peacetime_attacktime(
+            &peacetime_network.sim_network,
+            &attacktime_network.sim_network,
+            &attacker_aliases,
+        )?;
 
         if attacker_aliases.len() != 1 {
             return Err(format!(
@@ -192,6 +197,77 @@ impl SimulationFiles {
     pub fn attacktime_traffic(&self) -> PathBuf {
         self.dir.join("attacktime_traffic.csv")
     }
+}
+
+/// Checks that the only difference in the peacetime and attack time channel graphs are attacker
+/// owned channels.
+fn diff_peacetime_attacktime(
+    peacetime: &[NetworkParser],
+    attacktime: &[NetworkParser],
+    attacker_aliases: &[&str],
+) -> Result<(), BoxError> {
+    let peacetime_map: HashMap<u64, (String, String)> = peacetime
+        .iter()
+        .map(|channel| {
+            (
+                channel.scid.into(),
+                (channel.node_1.alias.clone(), channel.node_2.alias.clone()),
+            )
+        })
+        .collect();
+
+    let mut attacktime_map: HashMap<u64, (String, String)> = attacktime
+        .iter()
+        .map(|channel| {
+            (
+                channel.scid.into(),
+                (channel.node_1.alias.clone(), channel.node_2.alias.clone()),
+            )
+        })
+        .collect();
+
+    let attacker_aliases: HashSet<String> =
+        HashSet::from_iter(attacker_aliases.iter().map(|s| s.to_string()));
+
+    for (scid, (peacetime_1, peacetime_2)) in peacetime_map.iter() {
+        if attacker_aliases.contains(peacetime_1) || attacker_aliases.contains(peacetime_2) {
+            return Err(format!(
+                "peacetime map contains channel: {} belonging to attacker: ({}, {})",
+                scid, peacetime_1, peacetime_2
+            )
+            .into());
+        }
+
+        match attacktime_map.remove(scid) {
+            Some((attack_1, attack_2)) => {
+                if (attack_1 != *peacetime_1 || attack_2 != *peacetime_2)
+                    && (attack_2 != *peacetime_1 || attack_1 != *peacetime_2)
+                {
+                    return Err(format!(
+                        "channel: {} has mismatched aliases - peacetime ({}, {}), attacktime: ({}, {})",
+                        scid, peacetime_1, peacetime_2, attack_1, attack_2,
+                    ).into());
+                }
+            }
+            None => {
+                return Err(
+                    format!("channel: {} found in peacetime map but not attacker", scid).into(),
+                )
+            }
+        }
+    }
+
+    // Once we've removed all the matching channels, only attacker channels should remain.
+    for (scid, (node_1, node_2)) in attacktime_map {
+        if !(attacker_aliases.contains(&node_1) || attacker_aliases.contains(&node_2)) {
+            return Err(format!(
+                "attacker graph contains channel: {} which is not in peacetime graph and does not belong to attacker: ({}, {})",
+                 scid, node_1, node_2,
+            ).into());
+        }
+    }
+
+    Ok(())
 }
 
 #[derive(Parser)]
