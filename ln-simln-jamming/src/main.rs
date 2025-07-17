@@ -20,7 +20,7 @@ use simln_lib::latency_interceptor::LatencyIntercepor;
 use simln_lib::sim_node::{CustomRecords, Interceptor, SimGraph, SimNode};
 use simln_lib::SimulationCfg;
 use simple_logger::SimpleLogger;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs::OpenOptions;
 use std::io::{BufWriter, Write};
 use std::path::PathBuf;
@@ -126,6 +126,7 @@ async fn main() -> Result<(), BoxError> {
             forward_params,
             &network_dir.sim_network,
             reputation_snapshot,
+            HashSet::new(),
             clock.clone(),
             Some(results_writer),
         )
