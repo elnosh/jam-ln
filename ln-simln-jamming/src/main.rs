@@ -8,7 +8,9 @@ use ln_simln_jamming::attacks::JammingAttack;
 use ln_simln_jamming::clock::InstantClock;
 use ln_simln_jamming::parsing::{reputation_snapshot_from_file, Cli, SimulationFiles, TrafficType};
 use ln_simln_jamming::reputation_interceptor::{GeneralChannelJammer, ReputationInterceptor};
-use ln_simln_jamming::revenue_interceptor::{RevenueInterceptor, RevenueSnapshot};
+use ln_simln_jamming::revenue_interceptor::{
+    PeacetimeRevenueMonitor, RevenueInterceptor, RevenueSnapshot,
+};
 use ln_simln_jamming::{
     get_network_reputation, BoxError, NetworkReputation, ACCOUNTABLE_TYPE, UPGRADABLE_TYPE,
 };
@@ -138,6 +140,28 @@ async fn main() -> Result<(), BoxError> {
         .await?,
     ));
 
+    // While we run the simulation, replay projected peacetime revenue to serve as a comparison.
+    let revenue_interceptor = Arc::new(
+        RevenueInterceptor::new_with_bootstrap(
+            clock.clone(),
+            target_pubkey,
+            bootstrap_revenue,
+            cli.attacker_bootstrap,
+            network_dir.peacetime_traffic(),
+            listener.clone(),
+        )
+        .await?,
+    );
+
+    let revenue_interceptor_1 = revenue_interceptor.clone();
+    let revenue_shutdown = shutdown.clone();
+    tasks.spawn(async move {
+        if let Err(e) = revenue_interceptor_1.process_peacetime_fwds().await {
+            log::error!("Error processing peacetime forwards: {e}");
+            revenue_shutdown.trigger();
+        }
+    });
+
     // Reputation is assessed for a channel pair and a specific HTLC that's being proposed. To assess whether pairs
     // have reputation, we'll use LND's default fee policy to get the HTLC risk for our configured htlc size and hold
     // time.
@@ -154,6 +178,7 @@ async fn main() -> Result<(), BoxError> {
         attacker_pubkey,
         risk_margin,
         reputation_interceptor.clone(),
+        revenue_interceptor.clone(),
         listener.clone(),
     ));
 
@@ -217,40 +242,6 @@ async fn main() -> Result<(), BoxError> {
                     }
                 }
             }
-        }
-    });
-
-    let revenue_interceptor = Arc::new(
-        RevenueInterceptor::new_with_bootstrap(
-            clock.clone(),
-            target_pubkey,
-            bootstrap_revenue,
-            cli.attacker_bootstrap,
-            network_dir.peacetime_traffic(),
-            listener.clone(),
-            shutdown.clone(),
-        )
-        .await?,
-    );
-
-    let revenue_interceptor_1 = revenue_interceptor.clone();
-    let revenue_shutdown = shutdown.clone();
-    tasks.spawn(async move {
-        if let Err(e) = revenue_interceptor_1.process_peacetime_fwds().await {
-            log::error!("Error processing peacetime forwards: {e}");
-            revenue_shutdown.trigger();
-        }
-    });
-
-    let revenue_interceptor_2 = revenue_interceptor.clone();
-    let revenue_shutdown = shutdown.clone();
-    tasks.spawn(async move {
-        if let Err(e) = revenue_interceptor_2
-            .poll_revenue_difference(Duration::from_secs(5))
-            .await
-        {
-            log::error!("Error polling revenue difference: {e}");
-            revenue_shutdown.trigger();
         }
     });
 
