@@ -47,7 +47,6 @@ pub struct BuildReputationParams<'a, C: Clock + InstantClock, R: ReputationMonit
     pub hops: &'a [PublicKey],
     pub network_graph: &'a NetworkGraph<Arc<WrappedLog>>,
     pub htlcs: Vec<u64>,
-    pub risk_margin: u64,
     pub target_channel: (PublicKey, u64),
     pub reputation_monitor: Arc<Mutex<R>>,
     pub clock: Arc<C>,
@@ -109,7 +108,7 @@ pub async fn build_reputation<C: Clock + InstantClock, R: ReputationMonitor>(
         .outgoing_reputation;
 
     let htlc_amounts: u64 = params.htlcs.iter().sum();
-    let risk_margin = params.risk_margin;
+    let risk_margin = 2666000;
     for path in route.paths.iter_mut() {
         total_fees_paid += path.hops.iter().map(|hop| hop.fee_msat).sum::<u64>();
 
