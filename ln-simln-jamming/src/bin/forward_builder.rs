@@ -58,7 +58,6 @@ async fn main() -> Result<(), BoxError> {
     let cli = Cli::parse();
 
     let network_dir = SimulationFiles::new(cli.network.network_dir.clone(), cli.traffic_type)?;
-    let (attacker_pubkey, target_pubkey) = (network_dir.attacker.1, network_dir.target.1);
 
     let clock = Arc::new(SimulationClock::new(500)?);
     let tasks = TaskTracker::new();
@@ -97,6 +96,11 @@ async fn main() -> Result<(), BoxError> {
         Some(13995354354227336701),
     );
 
+    let mut exclude_pubkeys = vec![network_dir.target.1];
+    for attacker in network_dir.attackers {
+        exclude_pubkeys.push(attacker.1);
+    }
+
     let custom_records =
         CustomRecords::from([(UPGRADABLE_TYPE, vec![1]), (ACCOUNTABLE_TYPE, vec![0])]);
 
@@ -104,7 +108,7 @@ async fn main() -> Result<(), BoxError> {
         nodes: vec![],
         sim_network: network_dir.sim_network,
         activity: vec![],
-        exclude: vec![attacker_pubkey, target_pubkey],
+        exclude: exclude_pubkeys,
     };
 
     let (simulation, validated_activities, _sim_nodes) = create_simulation_with_network(

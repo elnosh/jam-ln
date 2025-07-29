@@ -55,16 +55,19 @@ impl<
         clock: Arc<C>,
         network: &[NetworkParser],
         target_pubkey: PublicKey,
-        attacker_pubkey: PublicKey,
+        attacker_pubkeys: Vec<PublicKey>,
         risk_margin: u64,
         reputation_monitor: Arc<Mutex<R>>,
         peacetime_revenue: Arc<M>,
         listener: Listener,
     ) -> Self {
+        // For sink attack we only use one attacker node.
+        assert!(attacker_pubkeys.len() == 1);
+
         Self {
             clock,
             target_pubkey,
-            attacker_pubkey,
+            attacker_pubkey: attacker_pubkeys[0],
             target_channels: HashMap::from_iter(network.iter().filter_map(|channel| {
                 if channel.node_1.pubkey == target_pubkey {
                     Some((
@@ -273,7 +276,7 @@ where
         let current_reputation = get_network_reputation(
             self.reputation_monitor.clone(),
             self.target_pubkey,
-            self.attacker_pubkey,
+            &[self.attacker_pubkey],
             &self
                 .target_channels
                 .iter()
@@ -320,7 +323,7 @@ mod tests {
             Arc::new(SimulationClock::new(1).unwrap()),
             network,
             target,
-            attacker,
+            vec![attacker],
             0,
             Arc::new(Mutex::new(MockReputationInterceptor::new())),
             Arc::new(MockPeacetimeMonitor::new()),

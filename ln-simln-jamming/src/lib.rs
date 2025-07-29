@@ -77,7 +77,7 @@ pub struct NetworkReputation {
 pub async fn get_network_reputation<R: ReputationMonitor>(
     reputation_monitor: Arc<Mutex<R>>,
     target_pubkey: PublicKey,
-    attacker_pubkey: PublicKey,
+    attacker_pubkeys: &[PublicKey],
     target_channels: &HashMap<u64, PublicKey>,
     risk_margin: u64,
     access_ins: Instant,
@@ -97,7 +97,7 @@ pub async fn get_network_reputation<R: ReputationMonitor>(
     for (scid, pubkey) in target_channels {
         // If we've got a chanel with the attacker, we want to get a snapshot of what its reputation is with the
         // target node. Otherwise, we'll get a snapshot of what the target node's reputation is with its peers.
-        let (channels, is_attacker) = if *pubkey == attacker_pubkey {
+        let (channels, is_attacker) = if attacker_pubkeys.contains(pubkey) {
             (&target_channels_snapshot, true)
         } else {
             (
@@ -244,15 +244,19 @@ mod tests {
         let now = Instant::now();
 
         let target_pubkey = get_random_keypair().1;
-        let attacker_pubkey = get_random_keypair().1;
+        let attacker_pubkey = vec![get_random_keypair().1];
 
         let peer_1 = get_random_keypair().1;
         let peer_2 = get_random_keypair().1;
         let peer_3 = get_random_keypair().1;
-        let target_channels: HashMap<u64, PublicKey> =
-            vec![(0, attacker_pubkey), (1, peer_1), (2, peer_2), (3, peer_3)]
-                .into_iter()
-                .collect();
+        let target_channels: HashMap<u64, PublicKey> = vec![
+            (0, attacker_pubkey[0]),
+            (1, peer_1),
+            (2, peer_2),
+            (3, peer_3),
+        ]
+        .into_iter()
+        .collect();
 
         mock_monitor
             .expect_list_channels()
@@ -363,7 +367,7 @@ mod tests {
         let network_reputation = get_network_reputation(
             Arc::new(Mutex::new(mock_monitor)),
             target_pubkey,
-            attacker_pubkey,
+            &attacker_pubkey,
             &target_channels,
             0,
             now,

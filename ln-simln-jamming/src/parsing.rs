@@ -88,8 +88,8 @@ pub struct SimulationFiles {
     /// The graph that the simulation will run on.
     pub sim_network: Vec<NetworkParser>,
 
-    /// The details of the attacking node.
-    pub attacker: (String, PublicKey),
+    /// Attacker nodes that will be used in the simulation.
+    pub attackers: Vec<(String, PublicKey)>,
 
     /// The details of the target node.
     pub target: (String, PublicKey),
@@ -110,32 +110,24 @@ impl SimulationFiles {
                 .map_err(|e| format!("could not find attacktime_network.json: {}", e))?,
         )?;
 
-        // In future commits, we'll allow multiple attacker aliases. For now, read a CSV and enforce
-        // that there's only one attacker present.
-        let attacker_list = fs::read_to_string(network_dir.join("attacker.csv")).map_err(|e| {
-            format!(
-                "attacker.csv file containing attacker alias not found: {}",
-                e
-            )
-        })?;
+        let attacker_list = fs::read_to_string(network_dir.join("attacker.csv"))
+            .map_err(|e| format!("attacker.csv file containing attacker alias not found: {e}"))?;
         let attacker_aliases: Vec<&str> = attacker_list.trim().split(',').collect();
+
+        if attacker_aliases.is_empty() {
+            return Err("could not read attackers from attacker.csv".into());
+        }
         diff_peacetime_attacktime(
             &peacetime_network.sim_network,
             &attacktime_network.sim_network,
             &attacker_aliases,
         )?;
 
-        if attacker_aliases.len() != 1 {
-            return Err(format!(
-                "expected one attacker alias, got: {}",
-                attacker_aliases.len()
-            )
-            .into());
+        let mut attackers = Vec::with_capacity(attacker_aliases.len());
+        for alias in attacker_aliases {
+            let attacker_pubkey = find_pubkey_by_alias(alias, &attacktime_network.sim_network)?;
+            attackers.push((alias.to_string(), attacker_pubkey));
         }
-
-        let attacker_alias = attacker_aliases
-            .first()
-            .ok_or("No attacker alias found in file")?;
 
         // We only allow one target node, but if there are multiple aliases in this file we'll
         // fail to find the pubkey by alias below.
@@ -144,10 +136,6 @@ impl SimulationFiles {
             .trim()
             .to_owned();
 
-        // The attacker is only present in the attacktime graph, so we just use it for both of
-        // our lookups.
-        let attacker_pubkey =
-            find_pubkey_by_alias(attacker_alias, &attacktime_network.sim_network)?;
         let target_pubkey = find_pubkey_by_alias(&target_alias, &attacktime_network.sim_network)?;
 
         // Create results + reputation directories if they're not present, they are part of our
@@ -161,7 +149,7 @@ impl SimulationFiles {
                 TrafficType::Attacktime => attacktime_network.sim_network,
                 TrafficType::Peacetime => peacetime_network.sim_network,
             },
-            attacker: (attacker_alias.to_string(), attacker_pubkey),
+            attackers,
             target: (target_alias, target_pubkey),
         })
     }
