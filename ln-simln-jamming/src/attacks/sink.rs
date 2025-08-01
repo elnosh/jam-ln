@@ -3,7 +3,7 @@ use bitcoin::secp256k1::PublicKey;
 use ln_resource_mgr::AccountableSignal;
 use sim_cli::parsing::NetworkParser;
 use simln_lib::clock::Clock;
-use simln_lib::sim_node::{CustomRecords, ForwardingError, InterceptRequest};
+use simln_lib::sim_node::{CustomRecords, ForwardingError, InterceptRequest, SimGraph, SimNode};
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
@@ -195,6 +195,13 @@ where
                 })
                 .collect(),
         })
+    }
+
+    async fn setup_for_attack(
+        &self,
+        _attacker_nodes: &HashMap<String, Arc<Mutex<SimNode<SimGraph>>>>,
+    ) -> Result<(), BoxError> {
+        Ok(())
     }
 
     /// Intercepts attacker forwads from the target node to jam them, otherwise forwards unrelated

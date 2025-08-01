@@ -37,6 +37,11 @@ pub trait JammingAttack {
         })
     }
 
+    async fn setup_for_attack(
+        &self,
+        _attacker_nodes: &HashMap<String, Arc<Mutex<SimNode<SimGraph>>>>,
+    ) -> Result<(), BoxError>;
+
     /// Called for every HTLC that is forwarded through an attacking nodes, to allow the attacker to take custom
     /// actions on HTLCs. This function may block, as it is spawned in a task, but *must* eventually return a result.
     /// [`InterceptRequest::outgoing_channel_id`] can safely be unwrapped because this intercept is exclusively used

@@ -23,14 +23,17 @@ use std::{
 use tokio::sync::Mutex;
 use triggered::{trigger, Listener};
 
-use super::utils::{build_custom_route, build_reputation, BuildReputationParams};
+use super::{
+    utils::{build_custom_route, build_reputation, BuildReputationParams},
+    NetworkSetup,
+};
 
 // idea: attacker1 -> peer1 -> target -> attacker2
 // build reputation on attacker2 and jam channel peer1 <-> target
 
 type LdkNetworkGraph = NetworkGraph<Arc<WrappedLog>>;
 
-pub struct SlowJam<C, J, R>
+pub struct SlowJam<C, R, J>
 where
     C: Clock + InstantClock,
     R: ReputationMonitor + Send + Sync,
@@ -50,7 +53,7 @@ where
     risk_margin: u64,
 }
 
-impl<C, J, R> SlowJam<C, J, R>
+impl<C, R, J> SlowJam<C, R, J>
 where
     C: Clock + InstantClock,
     R: ReputationMonitor + Send + Sync,
@@ -201,12 +204,34 @@ where
 }
 
 #[async_trait]
-impl<C, J, R> JammingAttack for SlowJam<C, J, R>
+impl<C, R, J> JammingAttack for SlowJam<C, R, J>
 where
     C: Clock + InstantClock,
     R: ReputationMonitor + Send + Sync,
     J: GeneralChannelJammer + Send + Sync,
 {
+    fn setup_for_network(&self) -> Result<NetworkSetup, BoxError> {
+        // self.build_reputation(self.at)
+        Ok(NetworkSetup {
+            general_jammed_nodes: vec![],
+        })
+    }
+
+    async fn setup_for_attack(
+        &self,
+        attacker_nodes: &HashMap<String, Arc<Mutex<SimNode<SimGraph>>>>,
+    ) -> Result<(), BoxError> {
+        self.build_reputation(&attacker_nodes).await?;
+        Ok(())
+    }
+
+    // async fn intercept_attacker_htlc(
+    //     &self,
+    //     req: InterceptRequest,
+    // ) -> Result<Result<CustomRecords, ForwardingError>, BoxError> {
+    //     Ok(Ok(CustomRecords::new()))
+    // }
+
     /// Payments where we are the receiver are most likely the ones initiated by us from [`Self::fast_jam_channel`]. Fast-jamming
     /// here so fail them immediately while trying to continuously take up protected resources on
     /// the channel we are trying to jam.

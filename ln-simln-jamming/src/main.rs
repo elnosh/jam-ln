@@ -4,10 +4,11 @@ use core::panic;
 use lightning::routing::gossip::NetworkGraph;
 use ln_simln_jamming::analysis::BatchForwardWriter;
 use ln_simln_jamming::attack_interceptor::AttackInterceptor;
-use ln_simln_jamming::attacks::slow_jam::SlowJam;
 use ln_simln_jamming::attacks::JammingAttack;
 use ln_simln_jamming::clock::InstantClock;
-use ln_simln_jamming::parsing::{reputation_snapshot_from_file, Cli, SimulationFiles, TrafficType};
+use ln_simln_jamming::parsing::{
+    reputation_snapshot_from_file, setup_attack, Cli, SimulationFiles, TrafficType,
+};
 use ln_simln_jamming::reputation_interceptor::{GeneralChannelJammer, ReputationInterceptor};
 use ln_simln_jamming::revenue_interceptor::{
     PeacetimeRevenueMonitor, RevenueInterceptor, RevenueSnapshot,
@@ -175,41 +176,56 @@ async fn main() -> Result<(), BoxError> {
         cli.reputation_margin_expiry_blocks,
     );
 
+    // Sink attack setup
     // Next, setup the attack interceptor to use our custom attack.
     // let attack = Arc::new(SinkAttack::new(
     //     clock.clone(),
-    //     &sim_network,
+    //     &network_dir.sim_network,
     //     target_pubkey,
     //     attacker_pubkey,
     //     risk_margin,
     //     reputation_interceptor.clone(),
+    //     revenue_interceptor.clone(),
     //     listener.clone(),
     // ));
 
+    // Slow Jam setup
     let attacker_sender_pubkey =
         PublicKey::from_str("033dbb3f4662640d4888918eeb986069b9b775c921b9ec6debcada1b3ac58a1b0b")
             .unwrap();
     let attacker_sender = ("25".to_string(), attacker_sender_pubkey);
+    // let target_peer_pubkey =
+    //     PublicKey::from_str("03864ef025fde8fb587d989186ce6a4a186895ee44a926bfc370e2c366597a3f8f")
+    //         .unwrap();
+    // let channel_to_jam = (target_peer_pubkey, 348545186070528);
+    //
+    // let sim_network = network_dir.sim_network.clone();
+    // let network_graph = network_graph(sim_network.clone())?;
+    // let attack = Arc::new(SlowJam::new(
+    //     Arc::clone(&clock),
+    //     &sim_network,
+    //     target_pubkey,
+    //     attacker_sender.clone(),
+    //     (network_dir.attacker.0.clone(), attacker_pubkey),
+    //     channel_to_jam,
+    //     Arc::clone(&reputation_interceptor),
+    //     Arc::clone(&reputation_interceptor),
+    //     network_graph,
+    //     risk_margin,
+    // ));
 
-    let target_peer_pubkey =
-        PublicKey::from_str("03864ef025fde8fb587d989186ce6a4a186895ee44a926bfc370e2c366597a3f8f")
-            .unwrap();
-    let channel_to_jam = (target_peer_pubkey, 348545186070528);
-
-    let sim_network = network_dir.sim_network.clone();
-    let network_graph = network_graph(sim_network.clone())?;
-    let attack = Arc::new(SlowJam::new(
-        Arc::clone(&clock),
-        &sim_network,
-        target_pubkey,
-        attacker_sender.clone(),
-        (network_dir.attacker.0.clone(), attacker_pubkey),
-        channel_to_jam,
-        Arc::clone(&reputation_interceptor),
-        Arc::clone(&reputation_interceptor),
-        network_graph,
-        risk_margin,
-    ));
+    let attack = Arc::new(
+        setup_attack(
+            &cli,
+            &network_dir,
+            Arc::clone(&clock),
+            Arc::clone(&reputation_interceptor),
+            Some(Arc::clone(&revenue_interceptor)),
+            Arc::clone(&reputation_interceptor),
+            listener.clone(),
+        )
+        .await?,
+    );
 
     let attack_custom_actions = Arc::clone(&attack);
 
@@ -297,7 +313,9 @@ async fn main() -> Result<(), BoxError> {
         .collect();
 
     let attacker_actions_shutdown = shutdown.clone();
-    attack.build_reputation(&attacker_nodes).await?;
+    // Before running the simulation, run the setup for the attack which in slow jam attack is
+    // to build reputation.
+    attack.setup_for_attack(&attacker_nodes).await?;
 
     // Do some preliminary checks on our reputation state - there isn't much point in running if we haven't built up
     // some reputation.
