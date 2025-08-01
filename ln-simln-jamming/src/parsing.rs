@@ -378,7 +378,7 @@ where
         req: InterceptRequest,
     ) -> Result<Result<CustomRecords, ForwardingError>, BoxError> {
         match self {
-            Self::SinkImpl(sink_attack) => sink_attack.intercept_attacker_receive(req).await,
+            AttackImpl::SinkImpl(sink_attack) => sink_attack.intercept_attacker_receive(req).await,
         }
     }
 
@@ -388,7 +388,7 @@ where
         shutdown_listener: Listener,
     ) -> Result<(), BoxError> {
         match self {
-            Self::SinkImpl(sink_attack) => {
+            AttackImpl::SinkImpl(sink_attack) => {
                 sink_attack
                     .run_custom_actions(attacker_nodes, shutdown_listener)
                     .await
@@ -401,7 +401,9 @@ where
         start_reputation: NetworkReputation,
     ) -> Result<bool, BoxError> {
         match self {
-            Self::SinkImpl(sink_attack) => sink_attack.simulation_completed(start_reputation).await,
+            AttackImpl::SinkImpl(sink_attack) => {
+                sink_attack.simulation_completed(start_reputation).await
+            }
         }
     }
 }
@@ -426,8 +428,8 @@ where
     );
     let sim_network = simulation.sim_network.clone();
 
-    let target_pubkey = find_pubkey_by_alias(&simulation.target.0, &sim_network)?;
-    let attacker_pubkey = find_pubkey_by_alias(&simulation.attacker.0, &sim_network)?;
+    let target_pubkey = simulation.target.1;
+    let attacker_pubkey = simulation.attacker.1;
 
     // NOTE: If you are implementing your own attack and have added the variant to AttackImpl, you can
     // then do any setup specific to your attack here and return.

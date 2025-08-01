@@ -30,16 +30,10 @@ pub trait JammingAttack {
     /// returning network-specific setup instructions for the attack. Attack implementations can
     /// also do any setup needed before starting the simulation such as building reputation for any
     /// attacker nodes.
-    ///
-    /// The default implementation has no network setup and passes validation.
     async fn setup_for_attack(
         &self,
         _attacker_nodes: &HashMap<String, Arc<Mutex<SimNode<SimGraph>>>>,
-    ) -> Result<NetworkSetup, BoxError> {
-        Ok(NetworkSetup {
-            general_jammed_nodes: vec![],
-        })
-    }
+    ) -> Result<NetworkSetup, BoxError>;
 
     /// Called for every HTLC that is forwarded through an attacking nodes, to allow the attacker to take custom
     /// actions on HTLCs. This function may block, as it is spawned in a task, but *must* eventually return a result.
@@ -85,13 +79,8 @@ pub trait JammingAttack {
     }
 
     /// Returns a boolean that indicates whether a shutdown condition for the simulation has been reached.
-    ///
-    /// Should be used when there are shutdown conditions specific to the attack, the default implementation will
-    /// return `Ok(false)`.
     async fn simulation_completed(
         &self,
         _start_reputation: NetworkReputation,
-    ) -> Result<bool, BoxError> {
-        Ok(false)
-    }
+    ) -> Result<bool, BoxError>;
 }
