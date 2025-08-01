@@ -3,7 +3,7 @@ use std::{collections::HashMap, sync::Arc};
 use async_trait::async_trait;
 use bitcoin::secp256k1::PublicKey;
 use simln_lib::sim_node::{CustomRecords, ForwardingError, InterceptRequest, SimGraph, SimNode};
-use tokio::sync::Mutex;
+use tokio::sync::{oneshot::Sender, Mutex};
 use triggered::Listener;
 
 use crate::{accountable_from_records, records_from_signal, BoxError, NetworkReputation};
@@ -74,6 +74,7 @@ pub trait JammingAttack {
     async fn run_custom_actions(
         &self,
         _attacker_nodes: HashMap<String, Arc<Mutex<SimNode<SimGraph>>>>,
+        _simulation_completed_check: Sender<()>,
         _shutdown_listener: Listener,
     ) -> Result<(), BoxError> {
         Ok(())
