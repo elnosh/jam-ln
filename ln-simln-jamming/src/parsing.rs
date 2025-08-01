@@ -1,6 +1,10 @@
-use crate::reputation_interceptor::{BootstrapForward, BootstrapRecords};
-use crate::revenue_interceptor::RevenueEvent;
-use crate::BoxError;
+use crate::attacks::sink::SinkAttack;
+use crate::attacks::{JammingAttack, NetworkSetup};
+use crate::clock::InstantClock;
+use crate::reputation_interceptor::{BootstrapForward, BootstrapRecords, ReputationMonitor};
+use crate::revenue_interceptor::{PeacetimeRevenueMonitor, RevenueEvent};
+use crate::{BoxError, NetworkReputation};
+use async_trait::async_trait;
 use bitcoin::secp256k1::PublicKey;
 use clap::{Parser, ValueEnum};
 use csv::{ReaderBuilder, StringRecord};
@@ -9,6 +13,8 @@ use ln_resource_mgr::forward_manager::ForwardManagerParams;
 use ln_resource_mgr::ChannelSnapshot;
 use serde::{Deserialize, Serialize};
 use sim_cli::parsing::NetworkParser;
+use simln_lib::clock::Clock;
+use simln_lib::sim_node::{CustomRecords, ForwardingError, InterceptRequest, SimGraph, SimNode};
 use std::collections::{BinaryHeap, HashMap, HashSet};
 use std::fs::{self, File};
 use std::io::{BufReader, Read, Seek};
@@ -18,7 +24,9 @@ use std::str::FromStr;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::runtime::Handle;
+use tokio::sync::Mutex as TokioMutex;
 use tokio::task::{self, JoinSet};
+use triggered::Listener;
 
 /// Default percent of good reputation pairs the target requires.
 pub const DEFAULT_TARGET_REP_PERCENT: &str = "50";
@@ -318,6 +326,127 @@ pub struct Cli {
 
     #[command(flatten)]
     pub reputation_params: ReputationParams,
+
+    /// The attack that will be run on the simulation.
+    #[arg(long, value_enum, default_value = "sink")]
+    pub attack: AttackType,
+}
+
+#[derive(Debug, Clone, ValueEnum)]
+pub enum AttackType {
+    Sink,
+}
+
+pub enum AttackImpl<C, R, M>
+where
+    C: Clock + InstantClock,
+    R: ReputationMonitor + Send + Sync,
+    M: PeacetimeRevenueMonitor + Send + Sync,
+{
+    SinkImpl(Arc<SinkAttack<C, R, M>>),
+    // NOTE: add your attack implementation here.
+}
+
+#[async_trait]
+impl<C, R, M> JammingAttack for AttackImpl<C, R, M>
+where
+    C: Clock + InstantClock,
+    R: ReputationMonitor + Send + Sync,
+    M: PeacetimeRevenueMonitor + Send + Sync,
+{
+    async fn setup_for_attack(
+        &self,
+        attacker_nodes: &HashMap<String, Arc<TokioMutex<SimNode<SimGraph>>>>,
+    ) -> Result<NetworkSetup, BoxError> {
+        match self {
+            AttackImpl::SinkImpl(sink_attack) => sink_attack.setup_for_attack(attacker_nodes).await,
+        }
+    }
+
+    async fn intercept_attacker_htlc(
+        &self,
+        req: InterceptRequest,
+    ) -> Result<Result<CustomRecords, ForwardingError>, BoxError> {
+        match self {
+            AttackImpl::SinkImpl(sink_attack) => sink_attack.intercept_attacker_htlc(req).await,
+        }
+    }
+
+    async fn intercept_attacker_receive(
+        &self,
+
+        req: InterceptRequest,
+    ) -> Result<Result<CustomRecords, ForwardingError>, BoxError> {
+        match self {
+            Self::SinkImpl(sink_attack) => sink_attack.intercept_attacker_receive(req).await,
+        }
+    }
+
+    async fn run_custom_actions(
+        &self,
+        attacker_nodes: HashMap<String, Arc<TokioMutex<SimNode<SimGraph>>>>,
+        shutdown_listener: Listener,
+    ) -> Result<(), BoxError> {
+        match self {
+            Self::SinkImpl(sink_attack) => {
+                sink_attack
+                    .run_custom_actions(attacker_nodes, shutdown_listener)
+                    .await
+            }
+        }
+    }
+
+    async fn simulation_completed(
+        &self,
+        start_reputation: NetworkReputation,
+    ) -> Result<bool, BoxError> {
+        match self {
+            Self::SinkImpl(sink_attack) => sink_attack.simulation_completed(start_reputation).await,
+        }
+    }
+}
+
+pub fn setup_attack<C, R, M>(
+    cli: &Cli,
+    simulation: &SimulationFiles,
+    clock: Arc<C>,
+    reputation_monitor: Arc<TokioMutex<R>>,
+    revenue_monitor: Arc<M>,
+    listener: triggered::Listener,
+) -> Result<AttackImpl<C, R, M>, BoxError>
+where
+    C: Clock + InstantClock + 'static,
+    R: ReputationMonitor + Send + Sync + 'static,
+    M: PeacetimeRevenueMonitor + Send + Sync,
+{
+    let forward_params = cli.validate()?;
+    let risk_margin = forward_params.htlc_opportunity_cost(
+        1000 + (0.0001 * cli.reputation_margin_msat as f64) as u64,
+        cli.reputation_margin_expiry_blocks,
+    );
+    let sim_network = simulation.sim_network.clone();
+
+    let target_pubkey = find_pubkey_by_alias(&simulation.target.0, &sim_network)?;
+    let attacker_pubkey = find_pubkey_by_alias(&simulation.attacker.0, &sim_network)?;
+
+    // NOTE: If you are implementing your own attack and have added the variant to AttackImpl, you can
+    // then do any setup specific to your attack here and return.
+    match cli.attack {
+        AttackType::Sink => {
+            let attack = Arc::new(SinkAttack::new(
+                Arc::clone(&clock),
+                &sim_network,
+                target_pubkey,
+                attacker_pubkey,
+                risk_margin,
+                Arc::clone(&reputation_monitor),
+                Arc::clone(&revenue_monitor),
+                listener.clone(),
+            ));
+
+            Ok(AttackImpl::SinkImpl(attack))
+        }
+    }
 }
 
 impl Cli {

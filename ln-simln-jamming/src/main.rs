@@ -3,10 +3,11 @@ use clap::Parser;
 use core::panic;
 use ln_simln_jamming::analysis::BatchForwardWriter;
 use ln_simln_jamming::attack_interceptor::AttackInterceptor;
-use ln_simln_jamming::attacks::sink::SinkAttack;
 use ln_simln_jamming::attacks::JammingAttack;
 use ln_simln_jamming::clock::InstantClock;
-use ln_simln_jamming::parsing::{reputation_snapshot_from_file, Cli, SimulationFiles, TrafficType};
+use ln_simln_jamming::parsing::{
+    reputation_snapshot_from_file, setup_attack, Cli, SimulationFiles, TrafficType,
+};
 use ln_simln_jamming::reputation_interceptor::{GeneralChannelJammer, ReputationInterceptor};
 use ln_simln_jamming::revenue_interceptor::{
     PeacetimeRevenueMonitor, RevenueInterceptor, RevenueSnapshot,
@@ -178,27 +179,14 @@ async fn main() -> Result<(), BoxError> {
     );
 
     // Next, setup the attack interceptor to use our custom attack.
-    let attack = Arc::new(SinkAttack::new(
-        clock.clone(),
-        &network_dir.sim_network,
-        target_pubkey,
-        attacker_pubkey,
-        risk_margin,
-        reputation_interceptor.clone(),
-        revenue_interceptor.clone(),
+    let attack = Arc::new(setup_attack(
+        &cli,
+        &network_dir,
+        Arc::clone(&clock),
+        Arc::clone(&reputation_interceptor),
+        Arc::clone(&revenue_interceptor),
         listener.clone(),
-    ));
-
-    let attack_setup = attack.setup_for_network()?;
-    for (channel, pubkey) in attack_setup.general_jammed_nodes.iter() {
-        reputation_interceptor
-            .lock()
-            .await
-            .jam_channel(pubkey, *channel)
-            .await?;
-    }
-
-    let attack_custom_actions = Arc::clone(&attack);
+    )?);
 
     // Do some preliminary checks on our reputation state - there isn't much point in running if we haven't built up
     // some reputation.
@@ -227,6 +215,7 @@ async fn main() -> Result<(), BoxError> {
 
     let attack_interceptor = Arc::new(attack_interceptor);
 
+    let attack_simulation_completed = Arc::clone(&attack);
     // Spawn a task that will trigger shutdown of the simulation if the attacker loses reputation provided that the
     // target is at similar reputation to the start of the simulation. This is a somewhat crude check, because we're
     // only looking at the count of peers with reputation not the actual pairs.
@@ -240,7 +229,7 @@ async fn main() -> Result<(), BoxError> {
             select! {
                 _ = attack_listener.clone() => return,
                 _ = attack_clock.sleep(interval) => {
-                    match attack.simulation_completed(start_reputation_1.clone()).await {
+                    match attack_simulation_completed.simulation_completed(start_reputation_1.clone()).await {
                         Ok(shutdown) => if shutdown {attack_shutdown.trigger()},
                         Err(e) => {
                             log::error!("Shutdown check failed: {e}");
@@ -292,7 +281,18 @@ async fn main() -> Result<(), BoxError> {
         })
         .collect();
 
+    // Before running the simulation, run any setup needed for the attack.
+    let attack_setup = attack.setup_for_attack(&attacker_nodes).await?;
+    for (channel, pubkey) in attack_setup.general_jammed_nodes.iter() {
+        reputation_interceptor
+            .lock()
+            .await
+            .jam_channel(pubkey, *channel)
+            .await?;
+    }
+
     let attacker_actions_shutdown = shutdown.clone();
+    let attack_custom_actions = Arc::clone(&attack);
     tokio::spawn(async move {
         if let Err(e) = attack_custom_actions
             .run_custom_actions(attacker_nodes, listener.clone())

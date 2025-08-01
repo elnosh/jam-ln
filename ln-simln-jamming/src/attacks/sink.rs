@@ -3,7 +3,7 @@ use bitcoin::secp256k1::PublicKey;
 use ln_resource_mgr::AccountableSignal;
 use sim_cli::parsing::NetworkParser;
 use simln_lib::clock::Clock;
-use simln_lib::sim_node::{CustomRecords, ForwardingError, InterceptRequest};
+use simln_lib::sim_node::{CustomRecords, ForwardingError, InterceptRequest, SimGraph, SimNode};
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
@@ -177,7 +177,10 @@ where
     R: ReputationMonitor + Send + Sync,
     M: PeacetimeRevenueMonitor + Send + Sync,
 {
-    fn setup_for_network(&self) -> Result<NetworkSetup, BoxError> {
+    async fn setup_for_attack(
+        &self,
+        _attacker_nodes: &HashMap<String, Arc<Mutex<SimNode<SimGraph>>>>,
+    ) -> Result<NetworkSetup, BoxError> {
         self.validate()?;
 
         Ok(NetworkSetup {
@@ -290,7 +293,7 @@ where
 
 #[cfg(test)]
 mod tests {
-    use std::collections::HashSet;
+    use std::collections::{HashMap, HashSet};
     use std::sync::Arc;
 
     use crate::attacks::sink::inner_simulation_completed;
@@ -368,8 +371,8 @@ mod tests {
         (setup_test_attack(target, attacker, &network), 2)
     }
 
-    #[test]
-    fn test_setup_network() {
+    #[tokio::test]
+    async fn test_setup_network() {
         let target = get_random_keypair().1;
         let attacker = get_random_keypair().1;
         let regular_1 = get_random_keypair().1;
@@ -410,15 +413,16 @@ mod tests {
 
         // Two target <--> attacker channels should fail.
         let attack = setup_test_attack(target, attacker, &network);
-        assert!(attack.setup_for_network().is_err());
+        let nodes = HashMap::new();
+        assert!(attack.setup_for_attack(&nodes).await.is_err());
 
         // No target <--> attacker should fail.
         let attack = setup_test_attack(target, attacker, &network[0..1]);
-        assert!(attack.setup_for_network().is_err());
+        assert!(attack.setup_for_attack(&nodes).await.is_err());
 
         // It's okay for the target to have multiple channels with other nodes.
         let attack = setup_test_attack(target, attacker, &network[0..3]);
-        let setup = attack.setup_for_network().unwrap();
+        let setup = attack.setup_for_attack(&nodes).await.unwrap();
 
         // Expect that all of the target's non-attacker channels are jammed, order doesn't matter.
         let general_jammed_nodes: HashSet<(u64, PublicKey)> =

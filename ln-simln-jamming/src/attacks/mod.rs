@@ -27,10 +27,15 @@ pub struct NetworkSetup {
 #[async_trait]
 pub trait JammingAttack {
     /// Responsible for validating that the network provided meets any topological expectations for the attack, and
-    /// returning network-specific setup instructions for the attack.
+    /// returning network-specific setup instructions for the attack. Attack implementations can
+    /// also do any setup needed before starting the simulation such as building reputation for any
+    /// attacker nodes.
     ///
     /// The default implementation has no network setup and passes validation.
-    fn setup_for_network(&self) -> Result<NetworkSetup, BoxError> {
+    async fn setup_for_attack(
+        &self,
+        _attacker_nodes: &HashMap<String, Arc<Mutex<SimNode<SimGraph>>>>,
+    ) -> Result<NetworkSetup, BoxError> {
         Ok(NetworkSetup {
             general_jammed_nodes: vec![],
         })
