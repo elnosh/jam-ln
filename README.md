@@ -22,8 +22,8 @@ summarized [here](https://gist.github.com/carlaKC/5139adf4fd12b4ecd53c660b5be11b
 
 The simulator will execute a channel jamming attack against a target
 node running the above proposed mitigation. It will exit when:
-- The target's projected revenue in times of peace is less than its
-  revenue under attack (in the simulation)
+- The target's revenue under attack (in the simulation) is less than
+  its projected revenue in times of peace.
 - The attack-specific shutdown condition has been met.
 - The simulator has run out of peacetime forward to replay to compare
   revenue.

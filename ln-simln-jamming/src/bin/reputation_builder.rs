@@ -70,7 +70,8 @@ async fn main() -> Result<(), BoxError> {
     .await?;
 
     // Filter bootstrap records if attacker alias and bootstrap provided.
-    let bootstrap = if let Some(bootstrap_dur) = cli.attacker_bootstrap {
+    // Only add up revenue if attacker bootstrap is specified.
+    let (bootstrap, bootstrap_revenue) = if let Some(bootstrap_dur) = cli.attacker_bootstrap {
         if bootstrap_dur.is_zero() {
             return Err("zero attacker_bootstrap is invalid, do not specify option".into());
         }
@@ -86,30 +87,35 @@ async fn main() -> Result<(), BoxError> {
             }
         };
 
-        get_history_for_bootstrap(
+        let bootstrap = get_history_for_bootstrap(
             bootstrap_dur,
             unfiltered_history,
             HashSet::from_iter(vec![target_to_attacker]),
-        )?
+        )?;
+
+        let revenue = bootstrap.forwards.iter().fold(0, |acc, item| {
+            if item.forwarding_node == target_pubkey {
+                acc + item.incoming_amt - item.outgoing_amt
+            } else {
+                acc
+            }
+        });
+
+        (bootstrap, revenue)
     } else {
         let last_timestamp_nanos = unfiltered_history
             .iter()
             .max_by(|x, y| x.settled_ns.cmp(&y.settled_ns))
             .ok_or("at least one entry required in bootstrap history")?
             .settled_ns;
-        BootstrapRecords {
+
+        let bootstrap_records = BootstrapRecords {
             forwards: unfiltered_history,
             last_timestamp_nanos,
-        }
-    };
+        };
 
-    let bootstrap_revenue = bootstrap.forwards.iter().fold(0, |acc, item| {
-        if item.forwarding_node == target_pubkey {
-            acc + item.incoming_amt - item.outgoing_amt
-        } else {
-            acc
-        }
-    });
+        (bootstrap_records, 0)
+    };
 
     let clock = Arc::new(SimulationClock::new(1)?);
     let reputation_clock = Arc::clone(&clock);
