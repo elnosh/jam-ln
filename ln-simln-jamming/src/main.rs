@@ -85,7 +85,9 @@ async fn main() -> Result<(), BoxError> {
 
     // Create a writer to store results for nodes that we care about.
     let results_dir = network_dir.results_dir();
-    let monitor_channels: Vec<(PublicKey, String)> = target_channels.values().cloned().collect();
+    let mut monitor_channels: Vec<(PublicKey, String)> =
+        target_channels.values().cloned().collect();
+    monitor_channels.push((target_pubkey, network_dir.target.0.clone()));
     let results_writer = Arc::new(Mutex::new(BatchForwardWriter::new(
         results_dir.clone(),
         &monitor_channels,

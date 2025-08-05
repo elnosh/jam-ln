@@ -140,14 +140,15 @@ impl SimulationFiles {
         // We only allow one target node, but if there are multiple aliases in this file we'll
         // fail to find the pubkey by alias below.
         let target_alias = fs::read_to_string(network_dir.join("target.txt"))
-            .map_err(|e| format!("target.txt file containing target alias not found: {}", e))?;
+            .map_err(|e| format!("target.txt file containing target alias not found: {}", e))?
+            .trim()
+            .to_owned();
 
         // The attacker is only present in the attacktime graph, so we just use it for both of
         // our lookups.
         let attacker_pubkey =
             find_pubkey_by_alias(attacker_alias, &attacktime_network.sim_network)?;
-        let target_pubkey =
-            find_pubkey_by_alias(target_alias.trim(), &attacktime_network.sim_network)?;
+        let target_pubkey = find_pubkey_by_alias(&target_alias, &attacktime_network.sim_network)?;
 
         // Create results + reputation directories if they're not present, they are part of our
         // expected structure for the network.
@@ -161,7 +162,7 @@ impl SimulationFiles {
                 TrafficType::Peacetime => peacetime_network.sim_network,
             },
             attacker: (attacker_alias.to_string(), attacker_pubkey),
-            target: (target_alias.to_string(), target_pubkey),
+            target: (target_alias, target_pubkey),
         })
     }
 
