@@ -120,8 +120,8 @@ impl BatchForwardWriter {
         }
     }
 
-    pub fn write(&mut self) -> Result<(), BoxError> {
-        if self.record_count < self.batch_size {
+    pub fn write(&mut self, force: bool) -> Result<(), BoxError> {
+        if self.record_count < self.batch_size && !force {
             return Ok(());
         }
 
@@ -261,7 +261,7 @@ mod tests {
         assert_eq!(writer.record_count, 1);
 
         // Writing with a single record shouldn't go to disk yet.
-        writer.write().unwrap();
+        writer.write(false).unwrap();
         assert!(!Path::new(&filename).exists());
 
         // Non-tracked node ignored and not written to disk.
@@ -273,7 +273,7 @@ mod tests {
             )
             .await
             .unwrap();
-        writer.write().unwrap();
+        writer.write(false).unwrap();
         assert!(!Path::new(&filename).exists());
 
         // Tracked record meets threshold is written to disk with a header line and our two records.
@@ -287,7 +287,7 @@ mod tests {
             .unwrap();
         assert_eq!(writer.record_count, 2);
 
-        writer.write().unwrap();
+        writer.write(false).unwrap();
         assert_eq!(read_to_string(&filename).unwrap().lines().count(), 3);
 
         // Write three more tracked forward and assert the file is updated.
@@ -316,7 +316,7 @@ mod tests {
             .await
             .unwrap();
 
-        writer.write().unwrap();
+        writer.write(false).unwrap();
         assert_eq!(read_to_string(&filename).unwrap().lines().count(), 6);
 
         std::fs::remove_file(filename).unwrap();

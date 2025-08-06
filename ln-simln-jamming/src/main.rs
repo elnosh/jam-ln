@@ -85,7 +85,9 @@ async fn main() -> Result<(), BoxError> {
 
     // Create a writer to store results for nodes that we care about.
     let results_dir = network_dir.results_dir();
-    let monitor_channels: Vec<(PublicKey, String)> = target_channels.values().cloned().collect();
+    let mut monitor_channels: Vec<(PublicKey, String)> =
+        target_channels.values().cloned().collect();
+    monitor_channels.push((target_pubkey, network_dir.target.0.clone()));
     let results_writer = Arc::new(Mutex::new(BatchForwardWriter::new(
         results_dir.clone(),
         &monitor_channels,
@@ -101,9 +103,14 @@ async fn main() -> Result<(), BoxError> {
         let interval = Duration::from_secs(60);
         loop {
             select! {
-                _ = results_listener.clone() => return,
+                _ = results_listener.clone() => {
+                    if let Err(e) = results_writer_1.lock().await.write(true) {
+                        log::error!("Error writing results on shutdown: {e}");
+                    }
+                    return
+                },
                 _ = results_clock.sleep(interval) => {
-                      if let Err(e) = results_writer_1.lock().await.write(){
+                      if let Err(e) = results_writer_1.lock().await.write(false) {
                         log::error!("Error writing results: {e}");
                         results_shutdown.trigger();
                         return
@@ -295,6 +302,13 @@ async fn main() -> Result<(), BoxError> {
             attacker_actions_shutdown.trigger();
         }
     });
+
+    let ctrlc_shutdown = shutdown.clone();
+    let simulation_shutdown = simulation.clone();
+    ctrlc::set_handler(move || {
+        ctrlc_shutdown.trigger();
+        simulation_shutdown.shutdown();
+    })?;
 
     // Run simulation until it shuts down, then wait for the graph to exit.
     simulation.run(&validated_activities).await?;
