@@ -234,23 +234,6 @@ async fn main() -> Result<(), BoxError> {
     let attack_listener = listener.clone();
     let attack_shutdown = shutdown.clone();
     let start_reputation_1 = start_reputation.clone();
-    tasks.spawn(async move {
-        let interval = Duration::from_secs(cli.attacker_poll_interval_seconds);
-        loop {
-            select! {
-                _ = attack_listener.clone() => return,
-                _ = attack_clock.sleep(interval) => {
-                    match attack.simulation_completed(start_reputation_1.clone()).await {
-                        Ok(shutdown) => if shutdown {attack_shutdown.trigger()},
-                        Err(e) => {
-                            log::error!("Shutdown check failed: {e}");
-                            attack_shutdown.trigger();
-                        },
-                    }
-                }
-            }
-        }
-    });
 
     let interceptors = vec![
         latency_interceptor,
@@ -274,11 +257,12 @@ async fn main() -> Result<(), BoxError> {
         sim_cfg,
         &sim_params,
         clock.clone(),
-        tasks,
+        tasks.clone(),
         interceptors,
         custom_records,
     )
     .await?;
+    let simulation = Arc::new(simulation);
 
     let attacker_alias = network_dir.attacker.0;
     let attacker_nodes: HashMap<String, Arc<Mutex<SimNode<SimGraph>>>> = sim_nodes
@@ -303,8 +287,31 @@ async fn main() -> Result<(), BoxError> {
         }
     });
 
+    let simulation_completed_check = Arc::clone(&simulation);
+    tasks.spawn(async move {
+        let interval = Duration::from_secs(cli.attacker_poll_interval_seconds);
+        loop {
+            select! {
+                _ = attack_listener.clone() => return,
+                _ = attack_clock.sleep(interval) => {
+                    match attack.simulation_completed(start_reputation_1.clone()).await {
+                        Ok(shutdown) => if shutdown {
+                            attack_shutdown.trigger();
+                            simulation_completed_check.shutdown();
+                        },
+                        Err(e) => {
+                            log::error!("Shutdown check failed: {e}");
+                            attack_shutdown.trigger();
+                            simulation_completed_check.shutdown();
+                        },
+                    }
+                }
+            }
+        }
+    });
+
     let ctrlc_shutdown = shutdown.clone();
-    let simulation_shutdown = simulation.clone();
+    let simulation_shutdown = Arc::clone(&simulation);
     ctrlc::set_handler(move || {
         ctrlc_shutdown.trigger();
         simulation_shutdown.shutdown();
