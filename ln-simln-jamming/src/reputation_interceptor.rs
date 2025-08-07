@@ -631,18 +631,19 @@ mod tests {
     use mockall::mock;
     use sim_cli::parsing::NetworkParser;
     use simln_lib::clock::SimulationClock;
-    use simln_lib::sim_node::{ChannelPolicy, CriticalError, InterceptResolution, Interceptor};
+    use simln_lib::sim_node::{CriticalError, InterceptResolution, Interceptor};
     use simln_lib::ShortChannelID;
     use std::collections::{HashMap, HashSet};
     use std::sync::Arc;
-    use std::time::Duration;
-    use std::time::Instant;
+    use std::time::{Duration, Instant};
     use tokio::sync::Mutex;
 
     use crate::analysis::BatchForwardWriter;
     use crate::clock::InstantClock;
     use crate::reputation_interceptor::{BootstrapForward, BootstrapRecords, ChannelJammer};
-    use crate::test_utils::{get_random_keypair, setup_test_request, test_allocation_check};
+    use crate::test_utils::{
+        get_random_keypair, setup_test_edge, setup_test_request, test_allocation_check,
+    };
     use crate::{accountable_from_records, BoxError};
 
     use super::{Node, ReputationInterceptor, ReputationMonitor};
@@ -911,33 +912,6 @@ mod tests {
             .forward_manager
             .expect_resolve_htlc()
             .return_once(|_, _, _, _| Ok(()));
-    }
-
-    fn setup_test_policy(node: PublicKey) -> ChannelPolicy {
-        ChannelPolicy {
-            pubkey: node,
-            alias: "".to_string(),
-            max_htlc_count: 483,
-            max_in_flight_msat: 100_000,
-            min_htlc_size_msat: 1,
-            max_htlc_size_msat: 100_000,
-            cltv_expiry_delta: 40,
-            base_fee: 1000,
-            fee_rate_prop: 2000,
-        }
-    }
-
-    fn setup_test_edge(
-        scid: ShortChannelID,
-        node_1: PublicKey,
-        node_2: PublicKey,
-    ) -> NetworkParser {
-        NetworkParser {
-            scid,
-            capacity_msat: 100_000,
-            node_1: setup_test_policy(node_1),
-            node_2: setup_test_policy(node_2),
-        }
     }
 
     type ReputationSnapshot = HashMap<PublicKey, HashMap<u64, ChannelSnapshot>>;
