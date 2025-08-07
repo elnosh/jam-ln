@@ -7,7 +7,7 @@ use ln_simln_jamming::clock::InstantClock;
 use ln_simln_jamming::parsing::{
     reputation_snapshot_from_file, setup_attack, Cli, SimulationFiles, TrafficType,
 };
-use ln_simln_jamming::reputation_interceptor::{GeneralChannelJammer, ReputationInterceptor};
+use ln_simln_jamming::reputation_interceptor::{ChannelJammer, ReputationInterceptor};
 use ln_simln_jamming::revenue_interceptor::{
     PeacetimeRevenueMonitor, RevenueInterceptor, RevenueSnapshot,
 };
@@ -194,7 +194,7 @@ async fn main() -> Result<(), BoxError> {
         reputation_interceptor
             .lock()
             .await
-            .jam_channel(pubkey, *channel)
+            .jam_general_resources(pubkey, *channel)
             .await?;
     }
 
