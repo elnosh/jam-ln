@@ -81,13 +81,8 @@ pub trait JammingAttack {
     }
 
     /// Returns a boolean that indicates whether a shutdown condition for the simulation has been reached.
-    ///
-    /// Should be used when there are shutdown conditions specific to the attack, the default implementation will
-    /// return `Ok(false)`.
     async fn simulation_completed(
         &self,
         _start_reputation: NetworkReputation,
-    ) -> Result<bool, BoxError> {
-        Ok(false)
-    }
+    ) -> Result<bool, BoxError>;
 }
