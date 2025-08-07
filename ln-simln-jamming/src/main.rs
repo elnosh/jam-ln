@@ -173,8 +173,13 @@ async fn main() -> Result<(), BoxError> {
     // Reputation is assessed for a channel pair and a specific HTLC that's being proposed. To assess whether pairs
     // have reputation, we'll use LND's default fee policy to get the HTLC risk for our configured htlc size and hold
     // time.
+    // let risk_margin = forward_params.htlc_opportunity_cost(
+    //     1000 + (0.0001 * cli.reputation_margin_msat as f64) as u64,
+    //     cli.reputation_margin_expiry_blocks,
+    // );
+
     let risk_margin = forward_params.htlc_opportunity_cost(
-        1000 + (0.0001 * cli.reputation_margin_msat as f64) as u64,
+        1 + (0.0001 * 1_000 as f64) as u64,
         cli.reputation_margin_expiry_blocks,
     );
 
@@ -214,7 +219,6 @@ async fn main() -> Result<(), BoxError> {
         reputation_interceptor.clone(),
         attack.clone(),
     );
-
     let attack_interceptor = Arc::new(attack_interceptor);
 
     let interceptors = vec![

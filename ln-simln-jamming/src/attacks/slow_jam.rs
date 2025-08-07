@@ -15,7 +15,6 @@ use sim_cli::parsing::NetworkParser;
 use simln_lib::{
     clock::Clock,
     sim_node::{CustomRecords, ForwardingError, InterceptRequest, SimGraph, SimNode, WrappedLog},
-    LightningNode,
 };
 use std::{
     collections::{HashMap, HashSet},
@@ -168,9 +167,8 @@ where
             .ok_or(format!("Channel {} not found", self.channel_to_jam.1))?
             .bidirectional_revenue;
 
-        let sufficient_reputation = attacker_reputation > target_revenue;
-        //let sufficient_reputation = attacker_reputation > (target_revenue + htlc_risk as i64);
-        // > (peer_target_channel.bidirectional_revenue + self.risk_margin as i64);
+        let sufficient_reputation =
+            attacker_reputation > (target_revenue + self.risk_margin as i64);
 
         Ok(sufficient_reputation)
     }
