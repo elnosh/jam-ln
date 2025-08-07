@@ -17,7 +17,7 @@ where
     R: Interceptor + ReputationMonitor,
     A: JammingAttack,
 {
-    attacker_pubkey: PublicKey,
+    attacker_pubkeys: Vec<PublicKey>,
     /// Inner reputation monitor that implements jamming mitigation.
     reputation_interceptor: Arc<Mutex<R>>,
     /// The attack that will be launched.
@@ -29,14 +29,13 @@ where
     R: Interceptor + ReputationMonitor,
     A: JammingAttack + Sync + Send,
 {
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
-        attacker_pubkey: PublicKey,
+        attacker_pubkeys: Vec<PublicKey>,
         reputation_interceptor: Arc<Mutex<R>>,
         attack: Arc<A>,
     ) -> Self {
         Self {
-            attacker_pubkey,
+            attacker_pubkeys,
             reputation_interceptor,
             attack,
         }
@@ -54,7 +53,7 @@ where
         &self,
         req: InterceptRequest,
     ) -> Result<Result<CustomRecords, ForwardingError>, CriticalError> {
-        if req.forwarding_node == self.attacker_pubkey {
+        if self.attacker_pubkeys.contains(&req.forwarding_node) {
             return match req.outgoing_channel_id {
                 Some(_) => self.attack.intercept_attacker_htlc(req),
                 None => self.attack.intercept_attacker_receive(req),
@@ -77,7 +76,7 @@ where
     async fn notify_resolution(&self, res: InterceptResolution) -> Result<(), CriticalError> {
         // If this was a payment forwarded through the attacker, it was not handled by the reputation interceptor
         // so we don't need to handle it (it hasn't seen the htlc add to begin with).
-        if res.forwarding_node == self.attacker_pubkey {
+        if self.attacker_pubkeys.contains(&res.forwarding_node) {
             return Ok(());
         }
 
@@ -131,7 +130,7 @@ mod tests {
 
         let mock = MockReputationInterceptor::new();
         AttackInterceptor::new(
-            attacker_pubkey,
+            vec![attacker_pubkey],
             Arc::new(Mutex::new(mock)),
             Arc::new(MockAttack::new()),
         )
@@ -167,14 +166,14 @@ mod tests {
             .times(2);
 
         let interceptor = AttackInterceptor::new(
-            attacker_pubkey,
+            vec![attacker_pubkey],
             Arc::new(Mutex::new(MockReputationInterceptor::new())),
             Arc::new(mock_attack),
         );
 
         // Intercepted on attacker: target -(0)-> attacker -(5)-> node.
         let target_to_attacker = setup_test_request(
-            interceptor.attacker_pubkey,
+            interceptor.attacker_pubkeys[0],
             0,
             5,
             AccountableSignal::Unaccountable,
@@ -187,7 +186,7 @@ mod tests {
 
         // Intercepted on attacker: node -(5)-> attacker -(0)-> target.
         let attacker_to_target = setup_test_request(
-            interceptor.attacker_pubkey,
+            interceptor.attacker_pubkeys[0],
             5,
             0,
             AccountableSignal::Unaccountable,
@@ -212,13 +211,13 @@ mod tests {
             .return_once(|_| Ok(Ok(CustomRecords::new())));
 
         let interceptor = AttackInterceptor::new(
-            attacker_pubkey,
+            vec![attacker_pubkey],
             Arc::new(Mutex::new(MockReputationInterceptor::new())),
             Arc::new(mock_attack),
         );
 
         let mut attacker_receive = setup_test_request(
-            interceptor.attacker_pubkey,
+            interceptor.attacker_pubkeys[0],
             5,
             1,
             AccountableSignal::Accountable,

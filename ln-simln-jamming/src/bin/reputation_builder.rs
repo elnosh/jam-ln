@@ -6,6 +6,7 @@ use std::{
     time::Duration,
 };
 
+use bitcoin::secp256k1::PublicKey;
 use clap::Parser;
 use csv::Writer;
 use ln_resource_mgr::forward_manager::{ForwardManager, ForwardManagerParams};
@@ -52,7 +53,7 @@ async fn main() -> Result<(), BoxError> {
         None => TrafficType::Peacetime,
     };
     let network_dir = SimulationFiles::new(cli.network.network_dir, network_type)?;
-    let (attacker_pubkey, target_pubkey) = (network_dir.attacker.1, network_dir.target.1);
+    let target_pubkey = network_dir.target.1;
 
     // If no attacker bootstrap period is specified, we can just use the traffic from peacetime
     // projections to bootstrap peaceful nodes in the network. This may provide a quicker start
@@ -76,21 +77,23 @@ async fn main() -> Result<(), BoxError> {
             return Err("zero attacker_bootstrap is invalid, do not specify option".into());
         }
 
-        let target_to_attacker = match network_dir.sim_network.iter().find(|&channel| {
-            (channel.node_1.pubkey == target_pubkey && channel.node_2.pubkey == attacker_pubkey)
-                || (channel.node_1.pubkey == attacker_pubkey
-                    && channel.node_2.pubkey == target_pubkey)
-        }) {
-            Some(channel) => u64::from(channel.scid),
-            None => {
-                return Err("no channel between target and attacker".to_string().into());
-            }
-        };
+        let attacker_pubkeys: Vec<PublicKey> = network_dir.attackers.iter().map(|a| a.1).collect();
+        let target_to_attacker_channels: HashSet<u64> = network_dir
+            .sim_network
+            .iter()
+            .filter(|&channel| {
+                (channel.node_1.pubkey == target_pubkey
+                    && attacker_pubkeys.contains(&channel.node_2.pubkey))
+                    || (attacker_pubkeys.contains(&channel.node_1.pubkey)
+                        && channel.node_2.pubkey == target_pubkey)
+            })
+            .map(|channel| u64::from(channel.scid))
+            .collect();
 
         let bootstrap = get_history_for_bootstrap(
             bootstrap_dur,
             unfiltered_history,
-            HashSet::from_iter(vec![target_to_attacker]),
+            target_to_attacker_channels,
         )?;
 
         let revenue = bootstrap.forwards.iter().fold(0, |acc, item| {

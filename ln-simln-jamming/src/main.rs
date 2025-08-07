@@ -50,7 +50,7 @@ async fn main() -> Result<(), BoxError> {
     // We always want to load the attack time graph when running the simulation.
     let network_dir =
         SimulationFiles::new(cli.network.network_dir.clone(), TrafficType::Attacktime)?;
-    let (attacker_pubkey, target_pubkey) = (network_dir.attacker.1, network_dir.target.1);
+    let target_pubkey = network_dir.target.1;
 
     let tasks = TaskTracker::new();
     let (shutdown, listener) = triggered::trigger();
@@ -129,6 +129,7 @@ async fn main() -> Result<(), BoxError> {
     })?;
     let bootstrap_revenue: u64 = std::fs::read_to_string(target_revenue)?.parse()?;
 
+    let attacker_pubkeys: Vec<PublicKey> = network_dir.attackers.iter().map(|a| a.1).collect();
     let reputation_interceptor = Arc::new(Mutex::new(
         ReputationInterceptor::new_from_snapshot(
             forward_params,
@@ -139,7 +140,7 @@ async fn main() -> Result<(), BoxError> {
             if cli.attacker_bootstrap.is_some() {
                 HashSet::new()
             } else {
-                HashSet::from([network_dir.attacker.1])
+                HashSet::from_iter(attacker_pubkeys.clone())
             },
             clock.clone(),
             Some(results_writer),
@@ -182,7 +183,7 @@ async fn main() -> Result<(), BoxError> {
         clock.clone(),
         &network_dir.sim_network,
         target_pubkey,
-        attacker_pubkey,
+        attacker_pubkeys.clone(),
         risk_margin,
         reputation_interceptor.clone(),
         revenue_interceptor.clone(),
@@ -208,7 +209,7 @@ async fn main() -> Result<(), BoxError> {
     let start_reputation = get_network_reputation(
         reputation_interceptor.clone(),
         target_pubkey,
-        attacker_pubkey,
+        &attacker_pubkeys,
         &target_pubkey_map,
         risk_margin,
         // The reputation_interceptor clock has been set on decaying averages so we use the clock
@@ -220,7 +221,7 @@ async fn main() -> Result<(), BoxError> {
     check_reputation_status(&cli, &start_reputation)?;
 
     let attack_interceptor = AttackInterceptor::new(
-        attacker_pubkey,
+        attacker_pubkeys.clone(),
         reputation_interceptor.clone(),
         attack.clone(),
     );
@@ -244,12 +245,15 @@ async fn main() -> Result<(), BoxError> {
     let custom_records =
         CustomRecords::from([(UPGRADABLE_TYPE, vec![1]), (ACCOUNTABLE_TYPE, vec![0])]);
 
+    let mut exclude = attacker_pubkeys.clone();
+    exclude.push(target_pubkey);
+
     // Setup the simulated network with our fake graph.
     let sim_params = SimParams {
         nodes: vec![],
         sim_network: network_dir.sim_network,
         activity: vec![],
-        exclude: vec![attacker_pubkey, target_pubkey],
+        exclude,
     };
 
     let sim_cfg = SimulationCfg::new(None, 3_800_000, 2.0, None, Some(13995354354227336701));
@@ -264,15 +268,14 @@ async fn main() -> Result<(), BoxError> {
     .await?;
     let simulation = Arc::new(simulation);
 
-    let attacker_alias = network_dir.attacker.0;
     let attacker_nodes: HashMap<String, Arc<Mutex<SimNode<SimGraph>>>> = sim_nodes
         .into_iter()
         .filter_map(|(pk, node)| {
-            if pk == attacker_pubkey {
-                Some((attacker_alias.clone(), node))
-            } else {
-                None
-            }
+            network_dir
+                .attackers
+                .iter()
+                .find(|attacker| attacker.1 == pk)
+                .map(|a| (a.0.clone(), node))
         })
         .collect();
 
@@ -324,7 +327,7 @@ async fn main() -> Result<(), BoxError> {
     let end_reputation = get_network_reputation(
         reputation_interceptor,
         network_dir.target.1,
-        network_dir.attacker.1,
+        &attacker_pubkeys,
         &target_pubkey_map,
         risk_margin,
         InstantClock::now(&*clock),
