@@ -96,7 +96,8 @@ mod tests {
 
     use crate::attacks::JammingAttack;
     use crate::test_utils::{get_random_keypair, setup_test_request, MockReputationInterceptor};
-    use crate::{records_from_signal, BoxError, NetworkReputation};
+    use crate::NetworkReputation;
+    use crate::{records_from_signal, BoxError};
     use async_trait::async_trait;
     use ln_resource_mgr::AccountableSignal;
     use mockall::mock;
@@ -116,8 +117,7 @@ mod tests {
             fn setup_for_network(&self) -> Result<crate::attacks::NetworkSetup, BoxError>;
             async fn intercept_attacker_htlc(&self, req: InterceptRequest) -> Result<Result<CustomRecords, ForwardingError>, BoxError>;
             async fn intercept_attacker_receive(&self,_req: InterceptRequest) -> Result<Result<CustomRecords, ForwardingError>, BoxError>;
-            async fn run_custom_actions(&self, attacker_nodes: HashMap<String, Arc<tokio::sync::Mutex<SimNode<SimGraph>>>>, simulation_completed_check: tokio::sync::oneshot::Sender<()>, shutdown_listener: Listener) -> Result<(), BoxError>;
-            async fn simulation_completed(&self, _start_reputation: NetworkReputation) -> Result<bool, BoxError>;
+            async fn run_attack(&self, _start_reputation: NetworkReputation, attacker_nodes: HashMap<String, Arc<tokio::sync::Mutex<SimNode<SimGraph>>>>, shutdown_listener: Listener) -> Result<(), BoxError>;
         }
     }
 

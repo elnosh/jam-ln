@@ -41,10 +41,6 @@ pub const DEFAULT_REPUTATION_MARGIN_MSAT: &str = "10000000";
 /// Default htlc expiry used for calculating reputation margin htlc's risk.
 pub const DEFAULT_REPUTATION_MARGIN_EXIPRY: &str = "200";
 
-/// The default interval used to poll whether the attacker still has reputation with the target, 5 minutes expresssed
-/// in seconds.
-pub const DEFAULT_ATTACKER_POLL_SECONDS: &str = "300";
-
 /// The default batch size for writing results to disk.
 pub const DEFAULT_RESULT_BATCH_SIZE: &str = "500";
 
@@ -301,10 +297,6 @@ pub struct Cli {
     #[arg(long, default_value = DEFAULT_REPUTATION_MARGIN_EXIPRY)]
     pub reputation_margin_expiry_blocks: u32,
 
-    /// The interval to poll whether the attacker still has reputation with the target node, expressed in seconds.
-    #[arg(long, default_value = DEFAULT_ATTACKER_POLL_SECONDS)]
-    pub attacker_poll_interval_seconds: u64,
-
     /// The size of results batches to write to disk.
     #[arg(long, default_value = DEFAULT_RESULT_BATCH_SIZE)]
     pub result_batch_size: u16,
@@ -330,7 +322,6 @@ pub fn setup_attack<C, R, M>(
     reputation_monitor: Arc<TokioMutex<R>>,
     revenue_monitor: Arc<M>,
     risk_margin: u64,
-    listener: triggered::Listener,
 ) -> Result<Arc<dyn JammingAttack + Send + Sync>, BoxError>
 where
     C: Clock + InstantClock + 'static,
@@ -353,7 +344,6 @@ where
                 risk_margin,
                 reputation_monitor,
                 revenue_monitor,
-                listener,
             ));
 
             Ok(attack)

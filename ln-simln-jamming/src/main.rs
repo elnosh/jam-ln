@@ -29,7 +29,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::select;
-use tokio::sync::{oneshot, Mutex};
+use tokio::sync::Mutex;
 use tokio_util::task::TaskTracker;
 
 #[tokio::main]
@@ -186,7 +186,6 @@ async fn main() -> Result<(), BoxError> {
         Arc::clone(&reputation_interceptor),
         Arc::clone(&revenue_interceptor),
         risk_margin,
-        listener.clone(),
     )?;
 
     let attack_setup = attack.setup_for_network()?;
@@ -267,58 +266,26 @@ async fn main() -> Result<(), BoxError> {
         })
         .collect();
 
-    let attacker_actions_shutdown = shutdown.clone();
-    let attack_custom_actions = Arc::clone(&attack);
-    let custom_actions_listener = listener.clone();
-    // Channel to signal when the attack is ready to start calling the `simulation_completed`
-    // check. Sender will be passed to `run_custom_actions` and signal from there that the check
-    // for the attack shutdown criteria can be started.
-    let (tx, mut rx) = oneshot::channel();
+    let main_attack = Arc::clone(&attack);
+    let attack_shutdown_listener = listener.clone();
+    let attack_shutdown_trigger = shutdown.clone();
+    let attack_start_reputation = start_reputation.clone();
+    let attack_simulation_shutdown = Arc::clone(&simulation);
     tokio::spawn(async move {
-        if let Err(e) = attack_custom_actions
-            .run_custom_actions(attacker_nodes, tx, custom_actions_listener)
+        // run_attack will block until the attack is done so trigger a simulation shutdown after
+        // it returns and log any errors.
+        if let Err(e) = main_attack
+            .run_attack(
+                attack_start_reputation,
+                attacker_nodes,
+                attack_shutdown_listener,
+            )
             .await
         {
             log::error!("Error running custom attacker actions: {e}");
-            attacker_actions_shutdown.trigger();
         }
-    });
-
-    // Spawn a task that will trigger shutdown of the simulation if the shutdown criteria for the
-    // attack is met.
-    let attack_clock = clock.clone();
-    let attack_listener = listener.clone();
-    let attack_shutdown = shutdown.clone();
-    let start_reputation_1 = start_reputation.clone();
-    let simulation_completed_check = Arc::clone(&simulation);
-    let attack_simulation_completed = Arc::clone(&attack);
-    tasks.spawn(async move {
-        let interval = Duration::from_secs(cli.attacker_poll_interval_seconds);
-        // Wait to receive signal from the channel that the attack is ready to start checking if
-        // the attack's shutdown criteria have been met and shutdown the simulation.
-        select! {
-            _ = attack_listener.clone() => (),
-            _ = &mut rx => {
-                loop {
-                    select! {
-                        _ = attack_listener.clone() => return,
-                        _ = attack_clock.sleep(interval) => {
-                            match attack_simulation_completed.simulation_completed(start_reputation_1.clone()).await {
-                                Ok(shutdown) => if shutdown {
-                                    attack_shutdown.trigger();
-                                    simulation_completed_check.shutdown();
-                                },
-                                Err(e) => {
-                                    log::error!("Shutdown check failed: {e}");
-                                    attack_shutdown.trigger();
-                                    simulation_completed_check.shutdown();
-                                },
-                            }
-                        }
-                    }
-                }
-            }
-        }
+        attack_shutdown_trigger.trigger();
+        attack_simulation_shutdown.shutdown();
     });
 
     let ctrlc_shutdown = shutdown.clone();
