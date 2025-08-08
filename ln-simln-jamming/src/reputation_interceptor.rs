@@ -34,7 +34,9 @@ struct HtlcResolve {
     forwarding_node: PublicKey,
     incoming_htlc: HtlcRef,
     forward_resolution: ForwardResolution,
-    resolved_ins: Instant,
+    /// Optional timestamp for the case where htlcs with existing timestamps are being replayed.
+    /// Should be None otherwise.
+    resolved_ins: Option<Instant>,
 }
 
 enum BootstrapEvent {
@@ -295,15 +297,17 @@ where
                 outgoing_channel_id: h.channel_out_id,
                 forwarding_node: h.forwarding_node,
                 incoming_htlc: incoming_ref,
-                resolved_ins: start_ins.sub(Duration::from_nanos(
-                    bootstrap
-                        .last_timestamp_nanos
-                        .checked_sub(h.settled_ns)
-                        .ok_or(format!(
-                            "settled ts: {} > last ts: {}",
-                            bootstrap.last_timestamp_nanos, h.settled_ns
-                        ))?,
-                )),
+                resolved_ins: Some(
+                    start_ins.sub(Duration::from_nanos(
+                        bootstrap
+                            .last_timestamp_nanos
+                            .checked_sub(h.settled_ns)
+                            .ok_or(format!(
+                                "settled ts: {} > last ts: {}",
+                                bootstrap.last_timestamp_nanos, h.settled_ns
+                            ))?,
+                    )),
+                ),
                 forward_resolution: ForwardResolution::Settled,
             }));
         }
@@ -313,8 +317,10 @@ where
         //
         // TODO: queue?
         bootstrap_events.sort_by_key(|event| match event {
+            // We know that the instants here must be Some, as we've just set it above so it's
+            // okay to unwrap here.
             BootstrapEvent::BootstrapAdd(htlc_add) => htlc_add.htlc.added_at,
-            BootstrapEvent::BootstrapResolve(htlc_resolve) => htlc_resolve.resolved_ins,
+            BootstrapEvent::BootstrapResolve(htlc_resolve) => htlc_resolve.resolved_ins.unwrap(),
         });
 
         // Data generation does not run the reputation algorithm, so it's possible that we'll hit a few htlcs that
@@ -457,7 +463,7 @@ where
                 resolved_htlc.outgoing_channel_id,
                 resolved_htlc.incoming_htlc,
                 resolved_htlc.forward_resolution,
-                resolved_htlc.resolved_ins,
+                resolved_htlc.resolved_ins.unwrap_or(self.clock.now()),
             )?),
             Entry::Vacant(_) => Err(ReputationError::ErrUnrecoverable(format!(
                 "Node: {} not found",
@@ -549,7 +555,8 @@ where
                 htlc_index: res.incoming_htlc.index,
             },
             forward_resolution: ForwardResolution::from(res.success),
-            resolved_ins: self.clock.now(),
+            // We want to use our live clock to set the timestamp on this resolution.
+            resolved_ins: None,
         })
         .await
         .map_err(|e| CriticalError::InterceptorError(e.to_string()))
