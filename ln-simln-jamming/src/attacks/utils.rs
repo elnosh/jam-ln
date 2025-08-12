@@ -50,7 +50,7 @@ pub struct BuildReputationParams<'a, C: Clock + InstantClock, R: ReputationMonit
     pub network_graph: &'a NetworkGraph<Arc<WrappedLog>>,
     pub htlcs: Vec<u64>,
     pub target_channel: (PublicKey, u64),
-    pub reputation_monitor: Arc<Mutex<R>>,
+    pub reputation_monitor: Arc<R>,
     pub payment_hash: PaymentHash,
     pub reputation_params: ForwardManagerParams,
     pub clock: Arc<C>,
@@ -98,8 +98,6 @@ pub async fn build_reputation<C: Clock + InstantClock, R: ReputationMonitor>(
         .short_channel_id;
 
     let channels = reputation_monitor
-        .lock()
-        .await
         .list_channels(target_channel.0, InstantClock::now(&*clock))
         .await?;
 
@@ -165,8 +163,6 @@ pub async fn build_reputation<C: Clock + InstantClock, R: ReputationMonitor>(
     // After making the payment with the inflated fee, check if reputation built over outgoing
     // channel is sufficient.
     let channels = reputation_monitor
-        .lock()
-        .await
         .list_channels(target_channel.0, InstantClock::now(&*clock))
         .await?;
 
