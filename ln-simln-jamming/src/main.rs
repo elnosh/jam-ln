@@ -34,8 +34,11 @@ use tokio_util::task::TaskTracker;
 
 #[tokio::main]
 async fn main() -> Result<(), BoxError> {
+    let cli = Cli::parse();
+    let forward_params = cli.validate()?;
+
     SimpleLogger::new()
-        .with_level(LevelFilter::Debug)
+        .with_level(cli.log_level)
         // Lower logging from sim-ln so that we can focus on our own logs.
         .with_module_level("simln_lib", LevelFilter::Info)
         .with_module_level("sim_cli", LevelFilter::Off)
@@ -43,9 +46,6 @@ async fn main() -> Result<(), BoxError> {
         .with_module_level("simln_lib::sim_node", LevelFilter::Debug)
         .init()
         .unwrap();
-
-    let cli = Cli::parse();
-    let forward_params = cli.validate()?;
 
     // We always want to load the attack time graph when running the simulation.
     let network_dir =
@@ -266,7 +266,6 @@ async fn main() -> Result<(), BoxError> {
         })
         .collect();
 
-    let main_attack = Arc::clone(&attack);
     let attack_shutdown_listener = listener.clone();
     let attack_shutdown_trigger = shutdown.clone();
     let attack_start_reputation = start_reputation.clone();
@@ -274,7 +273,7 @@ async fn main() -> Result<(), BoxError> {
     tokio::spawn(async move {
         // run_attack will block until the attack is done so trigger a simulation shutdown after
         // it returns and log any errors.
-        if let Err(e) = main_attack
+        if let Err(e) = attack
             .run_attack(
                 attack_start_reputation,
                 attacker_nodes,
