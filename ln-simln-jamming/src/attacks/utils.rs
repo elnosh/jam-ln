@@ -49,7 +49,7 @@ pub fn build_custom_route(
 }
 
 pub struct BuildReputationParams<'a, R: ReputationMonitor> {
-    pub attacker_node: Arc<Mutex<SimNode<SimGraph>>>,
+    pub attacker_node: Arc<Mutex<SimNode<SimGraph, SimulationClock>>>,
     pub hops: &'a [PublicKey],
     pub network_graph: &'a NetworkGraph<Arc<WrappedLog>>,
     pub htlcs: Vec<u64>,

@@ -245,7 +245,7 @@ where
     async fn run_attack(
         &self,
         start_reputation: NetworkReputation,
-        _attacker_nodes: HashMap<String, Arc<Mutex<SimNode<SimGraph>>>>,
+        _attacker_nodes: HashMap<String, Arc<Mutex<SimNode<SimGraph, SimulationClock>>>>,
         shutdown_listener: Listener,
     ) -> Result<(), BoxError> {
         // Poll every 5 minutes to check if the attack is done.
