@@ -10,6 +10,7 @@ use csv::{ReaderBuilder, StringRecord};
 use humantime::Duration as HumanDuration;
 use ln_resource_mgr::forward_manager::ForwardManagerParams;
 use ln_resource_mgr::ChannelSnapshot;
+use log::LevelFilter;
 use serde::{Deserialize, Serialize};
 use sim_cli::parsing::NetworkParser;
 use simln_lib::clock::Clock;
@@ -307,6 +308,9 @@ pub struct Cli {
     /// The attack that will be run on the simulation.
     #[arg(long, value_enum, default_value = "sink")]
     pub attack: AttackType,
+
+    #[clap(long, default_value = "debug")]
+    pub log_level: LevelFilter,
 }
 
 #[derive(Debug, Clone, ValueEnum)]
