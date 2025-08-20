@@ -2,7 +2,7 @@ use async_trait::async_trait;
 use bitcoin::secp256k1::PublicKey;
 use ln_resource_mgr::AccountableSignal;
 use sim_cli::parsing::NetworkParser;
-use simln_lib::clock::Clock;
+use simln_lib::clock::{Clock, SimulationClock};
 use simln_lib::sim_node::{CustomRecords, ForwardingError, InterceptRequest, SimGraph, SimNode};
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -28,13 +28,12 @@ pub enum TargetChannelType {
 }
 
 #[derive(Clone)]
-pub struct SinkAttack<C, R, M>
+pub struct SinkAttack<R, M>
 where
-    C: Clock + InstantClock,
     R: ReputationMonitor + Send + Sync,
     M: PeacetimeRevenueMonitor + Send + Sync,
 {
-    clock: Arc<C>,
+    clock: Arc<SimulationClock>,
     target_pubkey: PublicKey,
     attacker_pubkey: PublicKey,
     target_channels: HashMap<u64, (PublicKey, String)>,
@@ -43,15 +42,12 @@ where
     peacetime_revenue: Arc<M>,
 }
 
-impl<
-        C: Clock + InstantClock,
-        R: ReputationMonitor + Send + Sync,
-        M: PeacetimeRevenueMonitor + Send + Sync,
-    > SinkAttack<C, R, M>
+impl<R: ReputationMonitor + Send + Sync, M: PeacetimeRevenueMonitor + Send + Sync>
+    SinkAttack<R, M>
 {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
-        clock: Arc<C>,
+        clock: Arc<SimulationClock>,
         network: &[NetworkParser],
         target_pubkey: PublicKey,
         attacker_pubkeys: Vec<PublicKey>,
@@ -171,9 +167,8 @@ fn inner_simulation_completed(
 }
 
 #[async_trait]
-impl<C, R, M> JammingAttack for SinkAttack<C, R, M>
+impl<R, M> JammingAttack for SinkAttack<R, M>
 where
-    C: Clock + InstantClock,
     R: ReputationMonitor + Send + Sync,
     M: PeacetimeRevenueMonitor + Send + Sync,
 {
@@ -250,7 +245,7 @@ where
     async fn run_attack(
         &self,
         start_reputation: NetworkReputation,
-        _attacker_nodes: HashMap<String, Arc<Mutex<SimNode<SimGraph>>>>,
+        _attacker_nodes: HashMap<String, Arc<Mutex<SimNode<SimGraph, SimulationClock>>>>,
         shutdown_listener: Listener,
     ) -> Result<(), BoxError> {
         // Poll every 5 minutes to check if the attack is done.
@@ -327,7 +322,7 @@ mod tests {
         target: PublicKey,
         attacker: PublicKey,
         network: &[NetworkParser],
-    ) -> SinkAttack<SimulationClock, MockReputationInterceptor, MockPeacetimeMonitor> {
+    ) -> SinkAttack<MockReputationInterceptor, MockPeacetimeMonitor> {
         SinkAttack::new(
             Arc::new(SimulationClock::new(1).unwrap()),
             network,
@@ -347,7 +342,7 @@ mod tests {
     ///      |
     /// P2 --+
     fn setup_test_network() -> (
-        SinkAttack<SimulationClock, MockReputationInterceptor, MockPeacetimeMonitor>,
+        SinkAttack<MockReputationInterceptor, MockPeacetimeMonitor>,
         u64,
     ) {
         let target = get_random_keypair().1;

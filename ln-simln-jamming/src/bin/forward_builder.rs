@@ -127,16 +127,13 @@ async fn main() -> Result<(), BoxError> {
 }
 
 // Writes all forwards to disk in batches.
-struct BootstrapWriter<C> {
-    clock: Arc<C>,
+struct BootstrapWriter {
+    clock: Arc<SimulationClock>,
     batch_writer: Mutex<BatchedWriter>,
 }
 
-impl<C> BootstrapWriter<C>
-where
-    C: Clock + InstantClock + Send + Sync,
-{
-    fn new(clock: Arc<C>, dir: PathBuf, filename: String) -> Result<Self, BoxError> {
+impl BootstrapWriter {
+    fn new(clock: Arc<SimulationClock>, dir: PathBuf, filename: String) -> Result<Self, BoxError> {
         Ok(BootstrapWriter {
             clock,
             batch_writer: Mutex::new(BatchedWriter::new(dir, filename, 500)?),
@@ -145,10 +142,7 @@ where
 }
 
 #[async_trait]
-impl<C> ForwardReporter for BootstrapWriter<C>
-where
-    C: Clock + InstantClock + Send + Sync,
-{
+impl ForwardReporter for BootstrapWriter {
     async fn report_forward(
         &mut self,
         forwarding_node: PublicKey,

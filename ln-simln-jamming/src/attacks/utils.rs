@@ -10,7 +10,7 @@ use lightning::{
 };
 use ln_resource_mgr::forward_manager::ForwardManagerParams;
 use simln_lib::{
-    clock::Clock,
+    clock::SimulationClock,
     sim_node::{SimGraph, SimNode, WrappedLog},
     LightningNode, PaymentOutcome,
 };
@@ -48,8 +48,8 @@ pub fn build_custom_route(
     )
 }
 
-pub struct BuildReputationParams<'a, C: Clock + InstantClock, R: ReputationMonitor> {
-    pub attacker_node: Arc<Mutex<SimNode<SimGraph>>>,
+pub struct BuildReputationParams<'a, R: ReputationMonitor> {
+    pub attacker_node: Arc<Mutex<SimNode<SimGraph, SimulationClock>>>,
     pub hops: &'a [PublicKey],
     pub network_graph: &'a NetworkGraph<Arc<WrappedLog>>,
     pub htlcs: Vec<u64>,
@@ -57,7 +57,7 @@ pub struct BuildReputationParams<'a, C: Clock + InstantClock, R: ReputationMonit
     pub reputation_monitor: Arc<R>,
     pub payment_hash: PaymentHash,
     pub reputation_params: ForwardManagerParams,
-    pub clock: Arc<C>,
+    pub clock: Arc<SimulationClock>,
     pub shutdown_listener: Listener,
 }
 
@@ -81,8 +81,8 @@ pub struct BuildReputationParams<'a, C: Clock + InstantClock, R: ReputationMonit
 /// The `target_channel` is channel for which reputation is being built. So we will monitor the
 /// outgoing channel reputation (B <-> C) against the target_channel revenue.
 /// If successful, it returns the total fees paid to build reputation.
-pub async fn build_reputation<C: Clock + InstantClock, R: ReputationMonitor>(
-    params: BuildReputationParams<'_, C, R>,
+pub async fn build_reputation<R: ReputationMonitor>(
+    params: BuildReputationParams<'_, R>,
 ) -> Result<u64, BoxError> {
     let reputation_monitor = params.reputation_monitor;
     let target_channel = params.target_channel;
@@ -432,12 +432,9 @@ mod tests {
         let target_channel_id: u64 = edges[2].scid.into();
 
         let clock = Arc::new(SimulationClock::new(1).unwrap());
-        let reputation_interceptor: ReputationInterceptor<
-            BatchForwardWriter,
-            ForwardManager,
-            SimulationClock,
-        > = ReputationInterceptor::new_for_network(params, &edges, Arc::clone(&clock), None)
-            .unwrap();
+        let reputation_interceptor: ReputationInterceptor<BatchForwardWriter, ForwardManager> =
+            ReputationInterceptor::new_for_network(params, &edges, Arc::clone(&clock), None)
+                .unwrap();
 
         let network_graph = {
             let channels = edges
@@ -482,9 +479,8 @@ mod tests {
         let target_channel = (target_pubkey, target_channel_id);
         let hops = vec![target_pubkey, attacker_receiver_pubkey];
 
-        let reputation_monitor: Arc<
-            ReputationInterceptor<BatchForwardWriter, ForwardManager, SimulationClock>,
-        > = Arc::clone(&reputation_interceptor);
+        let reputation_monitor: Arc<ReputationInterceptor<BatchForwardWriter, ForwardManager>> =
+            Arc::clone(&reputation_interceptor);
 
         let hops_with_target_channel =
             vec![target_peer_pubkey, target_pubkey, attacker_receiver_pubkey];
