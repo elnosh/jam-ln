@@ -9,7 +9,7 @@ use std::time::{Duration, Instant};
 use async_trait::async_trait;
 use bitcoin::secp256k1::PublicKey;
 use ln_resource_mgr::HtlcRef;
-use simln_lib::clock::Clock;
+use simln_lib::clock::{Clock, SimulationClock};
 use simln_lib::sim_node::{
     CriticalError, CustomRecords, ForwardingError, InterceptRequest, InterceptResolution,
     Interceptor,
@@ -24,11 +24,8 @@ use crate::BoxError;
 
 /// Tracks revenue for a target node under attack and in peacetime, shutting down the simulation if the target node
 /// loses revenue under attack compared to peacetime.
-pub struct RevenueInterceptor<C>
-where
-    C: InstantClock + Clock,
-{
-    clock: Arc<C>,
+pub struct RevenueInterceptor {
+    clock: Arc<SimulationClock>,
     target_node: PublicKey,
     target_revenue: Mutex<NodeRevenue>,
     peacetime_revenue: Mutex<PeacetimeRevenue>,
@@ -134,9 +131,9 @@ impl PeacetimeRevenue {
     }
 }
 
-impl<C: InstantClock + Clock> RevenueInterceptor<C> {
+impl RevenueInterceptor {
     pub async fn new_with_bootstrap(
-        clock: Arc<C>,
+        clock: Arc<SimulationClock>,
         target_pubkey: PublicKey,
         bootstrap_revenue: u64,
         bootstrap_duration: Option<Duration>,
@@ -194,7 +191,7 @@ impl<C: InstantClock + Clock> RevenueInterceptor<C> {
 }
 
 #[async_trait]
-impl<C: InstantClock + Clock> PeacetimeRevenueMonitor for RevenueInterceptor<C> {
+impl PeacetimeRevenueMonitor for RevenueInterceptor {
     async fn get_revenue_difference(&self) -> RevenueSnapshot {
         RevenueSnapshot {
             simulation_revenue_msat: self.target_revenue.lock().await.revenue_total,
@@ -205,7 +202,7 @@ impl<C: InstantClock + Clock> PeacetimeRevenueMonitor for RevenueInterceptor<C> 
 }
 
 #[async_trait]
-impl<C: InstantClock + Clock> Interceptor for RevenueInterceptor<C> {
+impl Interceptor for RevenueInterceptor {
     /// RevenueInterceptor does not need to take any active action on incoming htlcs.
     async fn intercept_htlc(
         &self,

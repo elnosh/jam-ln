@@ -1,6 +1,5 @@
 use crate::attacks::sink::SinkAttack;
 use crate::attacks::JammingAttack;
-use crate::clock::InstantClock;
 use crate::reputation_interceptor::{BootstrapForward, BootstrapRecords, ReputationMonitor};
 use crate::revenue_interceptor::{PeacetimeRevenueMonitor, RevenueEvent};
 use crate::BoxError;
@@ -13,7 +12,7 @@ use ln_resource_mgr::ChannelSnapshot;
 use log::LevelFilter;
 use serde::{Deserialize, Serialize};
 use sim_cli::parsing::NetworkParser;
-use simln_lib::clock::Clock;
+use simln_lib::clock::SimulationClock;
 use std::collections::{BinaryHeap, HashMap, HashSet};
 use std::fs::{self, File};
 use std::io::{BufReader, Read, Seek};
@@ -318,16 +317,15 @@ pub enum AttackType {
     // NOTE: add your attack that you want to run here.
 }
 
-pub fn setup_attack<C, R, M>(
+pub fn setup_attack<R, M>(
     cli: &Cli,
     simulation: &SimulationFiles,
-    clock: Arc<C>,
+    clock: Arc<SimulationClock>,
     reputation_monitor: Arc<R>,
     revenue_monitor: Arc<M>,
     risk_margin: u64,
 ) -> Result<Arc<dyn JammingAttack + Send + Sync>, BoxError>
 where
-    C: Clock + InstantClock + 'static,
     R: ReputationMonitor + Send + Sync + 'static,
     M: PeacetimeRevenueMonitor + Send + Sync + 'static,
 {
