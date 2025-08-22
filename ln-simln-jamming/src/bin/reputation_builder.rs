@@ -158,7 +158,7 @@ async fn main() -> Result<(), BoxError> {
         "scid",
         "channel_capacity",
         "outgoing_reputation",
-        "bidirectional_revenue",
+        "incoming_revenue",
     ])?;
 
     for pubkey in node_pubkeys {
@@ -172,7 +172,7 @@ async fn main() -> Result<(), BoxError> {
                 channel.0,
                 channel.1.capacity_msat,
                 channel.1.outgoing_reputation,
-                channel.1.bidirectional_revenue,
+                channel.1.incoming_revenue,
             ))?;
         }
     }
