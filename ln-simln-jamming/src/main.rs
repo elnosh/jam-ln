@@ -364,8 +364,9 @@ fn write_simulation_summary(
     general_jammed: usize,
 ) -> Result<(), BoxError> {
     let file = OpenOptions::new()
-        .append(true)
+        .write(true)
         .create(true)
+        .truncate(true)
         .open(data_dir.join("summary.txt"))?;
 
     let mut writer = BufWriter::new(file);
