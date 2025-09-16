@@ -20,7 +20,7 @@ use std::ops::Add;
 use std::path::PathBuf;
 use std::str::FromStr;
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::runtime::Handle;
 use tokio::task::{self, JoinSet};
 
@@ -138,10 +138,8 @@ impl SimulationFiles {
 
         let target_pubkey = find_pubkey_by_alias(&target_alias, &attacktime_network.sim_network)?;
 
-        // Create results + reputation directories if they're not present, they are part of our
-        // expected structure for the network.
+        // Create reputation directory that is part of the expected structure for the network.
         std::fs::create_dir_all(network_dir.join("reputation"))?;
-        std::fs::create_dir_all(network_dir.join("results"))?;
 
         Ok(SimulationFiles {
             dir: network_dir,
@@ -154,9 +152,16 @@ impl SimulationFiles {
         })
     }
 
-    /// Returns a directory to write simulation results to.
-    pub fn results_dir(&self) -> PathBuf {
-        self.dir.join("results")
+    /// Creates and returns a directory to write simulation results to.
+    pub fn results_dir(&self, start_time: SystemTime) -> Result<PathBuf, BoxError> {
+        let sec_since_epoch = start_time
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        let results_dir = self.dir.join("results").join(sec_since_epoch.to_string());
+
+        std::fs::create_dir_all(results_dir.clone())?;
+        Ok(results_dir)
     }
 
     /// Returns the location of a reputation and target revenue summary for the period of time

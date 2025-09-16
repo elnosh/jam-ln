@@ -84,7 +84,7 @@ async fn main() -> Result<(), BoxError> {
     let now = InstantClock::now(&*clock);
 
     // Create a writer to store results for nodes that we care about.
-    let results_dir = network_dir.results_dir();
+    let results_dir = network_dir.results_dir(Clock::now(&*clock))?;
     let mut monitor_channels: Vec<(PublicKey, String)> =
         target_channels.values().cloned().collect();
     monitor_channels.push((target_pubkey, network_dir.target.0.clone()));
@@ -364,8 +364,9 @@ fn write_simulation_summary(
     general_jammed: usize,
 ) -> Result<(), BoxError> {
     let file = OpenOptions::new()
-        .append(true)
+        .write(true)
         .create(true)
+        .truncate(true)
         .open(data_dir.join("summary.txt"))?;
 
     let mut writer = BufWriter::new(file);
