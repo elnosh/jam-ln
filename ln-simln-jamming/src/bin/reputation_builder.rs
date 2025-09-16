@@ -140,9 +140,10 @@ async fn main() -> Result<(), BoxError> {
         node_pubkeys.insert(chan.node_2.pubkey);
     }
 
-    let (reputation_state, target_revenue) = network_dir.reputation_summary(cli.attacker_bootstrap);
+    let (reputation_state, target_revenue_path) =
+        network_dir.reputation_summary(cli.attacker_bootstrap);
 
-    let mut target_revenue = File::create(target_revenue)?;
+    let mut target_revenue = File::create(target_revenue_path.clone())?;
     write!(target_revenue, "{}", bootstrap_revenue)?;
 
     let snapshot_file = OpenOptions::new()
@@ -178,9 +179,9 @@ async fn main() -> Result<(), BoxError> {
     csv_writer.flush()?;
 
     log::info!(
-        "Finished writing reputation snapshot to {:?} and {:?}",
+        "Finished writing reputation snapshot to {:?} and revenue to {:?}",
         reputation_state,
-        target_revenue
+        target_revenue_path,
     );
 
     Ok(())
