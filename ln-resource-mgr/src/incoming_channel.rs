@@ -60,7 +60,8 @@ impl IncomingChannel {
 }
 
 /// Defines the number of slots each candidate channel is allowed in the general bucket.
-const ASSIGNED_SLOTS: usize = 5;
+/// This value assumes that we're operating with a protocol limit of 483 htlcs (not 120, as in V3).
+const ASSIGNED_SLOTS: usize = 20;
 
 #[derive(Debug)]
 pub(super) struct GeneralBucket {
@@ -378,7 +379,7 @@ mod tests {
     fn test_candidate_slots_existing() {
         let mut bucket = GeneralBucket::new(123, TEST_BUCKET_PARAMS).unwrap();
         let scid = 456;
-        let slots = [1, 2, 3, 4, 5];
+        let slots = [1, 2, 3, 4, 5, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
         bucket
             .candidate_slots
             .insert(scid, slots.map(|slot| (slot, false)));
@@ -456,18 +457,22 @@ mod tests {
         let mut bucket = GeneralBucket::new(123, TEST_BUCKET_PARAMS).unwrap();
         let scid = 345;
 
+        // Add a HTLC that uses just over half of the of our liquidity, partially filling a bucket.
         let half_allocation = bucket.slot_size_msat * ASSIGNED_SLOTS as u64 / 2;
-        assert!(bucket.add_htlc(scid, half_allocation).unwrap());
+        let just_over_half = half_allocation + bucket.slot_size_msat / 2;
+        assert!(bucket.add_htlc(scid, just_over_half).unwrap());
 
-        // Reject a HTLC that needs 2.5 slots worth of liquidity, because the previous htlc
-        // used up 3.
+        // Reject a HTLC that needs half our liquidity, because we've partially filled the 11th
+        // bucket our of our 20.
         assert!(!bucket.add_htlc(scid, half_allocation).unwrap());
 
-        // Accept a HTLC that only needs 2 slots worth of liquidity.
-        assert!(bucket.add_htlc(scid, bucket.slot_size_msat * 2).unwrap());
+        // Accept a HTLC that only needs a quarter of our liquidity.
+        assert!(bucket
+            .add_htlc(scid, bucket.slot_size_msat * ASSIGNED_SLOTS as u64 / 4)
+            .unwrap());
 
-        // Finally, remove one half-liquidity HTLC and assert we can add another in its place.
-        bucket.remove_htlc(scid, half_allocation).unwrap();
+        // Finally, remove our partial filling HTLC and assert we can add another in its place.
+        bucket.remove_htlc(scid, just_over_half).unwrap();
         assert!(bucket.add_htlc(scid, half_allocation).unwrap());
     }
 
@@ -486,8 +491,11 @@ mod tests {
         let scid_1 = 345;
         let scid_2 = 678;
 
-        let scid_1_slots: [(u16, bool); 5] = [0, 3, 4, 5, 7].map(|slot| (slot, false));
-        let scid_2_slots: [(u16, bool); 5] = [0, 1, 2, 6, 7].map(|slot| (slot, false));
+        let scid_1_slots: [(u16, bool); 20] =
+            [0, 3, 4, 5, 7, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0].map(|slot| (slot, false));
+        let scid_2_slots: [(u16, bool); 20] =
+            [0, 1, 2, 6, 7, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0].map(|slot| (slot, false));
+
         bucket.candidate_slots.insert(scid_1, scid_1_slots);
         bucket.candidate_slots.insert(scid_2, scid_2_slots);
 
