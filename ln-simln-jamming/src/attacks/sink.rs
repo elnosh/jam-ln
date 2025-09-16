@@ -287,6 +287,12 @@ where
                     )
                     .await?;
 
+                    log::debug!("Attacker has good reputation with target for: {}/{} pairs",
+                        current_reputation.attacker_reputation, current_reputation.attacker_pair_count);
+
+                    log::debug!("Target has good reputation with peers for: {}/{} pairs",
+                        current_reputation.target_reputation, current_reputation.target_pair_count);
+
                     if inner_simulation_completed(&start_reputation, &current_reputation)? {
                         return Ok(())
                     }
