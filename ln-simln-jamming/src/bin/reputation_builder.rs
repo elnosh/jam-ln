@@ -66,7 +66,7 @@ async fn main() -> Result<(), BoxError> {
 
     let unfiltered_history = history_from_file(
         traffic_file,
-        Some(forward_params.reputation_params.revenue_window),
+        Some(forward_params.reputation_params.reputation_window()),
     )
     .await?;
 
