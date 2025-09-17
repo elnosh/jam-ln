@@ -171,7 +171,7 @@ impl SimulationFiles {
         let reputation_dir = self
             .dir
             .join("reputation")
-            .join(HumanDuration::from(duration.unwrap_or(Duration::ZERO)).to_string());
+            .join(duration.unwrap_or(Duration::ZERO).as_secs().to_string());
 
         // Create the specific duration directory
         let _ = std::fs::create_dir_all(&reputation_dir);

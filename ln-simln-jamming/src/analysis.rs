@@ -36,7 +36,7 @@ impl Serialize for Record {
     where
         S: Serializer,
     {
-        let mut state = serializer.serialize_struct("Record", 15)?;
+        let mut state = serializer.serialize_struct("Record", 20)?;
         state.serialize_field(
             "ts_offset_ns",
             &self
@@ -82,15 +82,47 @@ impl Serialize for Record {
             &self.decision.reputation_check.in_flight_total_risk,
         )?;
         state.serialize_field(
-            "slots_available",
+            "general_slots_available",
             &self.decision.resource_check.general_bucket.slots_available,
         )?;
         state.serialize_field(
-            "liquidity_available",
+            "general_liquidity_available",
             &self
                 .decision
                 .resource_check
                 .general_bucket
+                .liquidity_available_msat,
+        )?;
+        state.serialize_field(
+            "congestion_slots_available",
+            &self
+                .decision
+                .resource_check
+                .congestion_bucket
+                .slots_available,
+        )?;
+        state.serialize_field(
+            "congestion_liquidity_available",
+            &self
+                .decision
+                .resource_check
+                .congestion_bucket
+                .liquidity_available_msat,
+        )?;
+        state.serialize_field(
+            "protected_slots_available",
+            &self
+                .decision
+                .resource_check
+                .protected_bucket
+                .slots_available,
+        )?;
+        state.serialize_field(
+            "protected_liquidity_available",
+            &self
+                .decision
+                .resource_check
+                .protected_bucket
                 .liquidity_available_msat,
         )?;
         state.end()
