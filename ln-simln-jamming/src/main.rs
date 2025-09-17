@@ -416,7 +416,7 @@ fn write_simulation_summary(
     writeln!(
         writer,
         "Target end reputation (pairs): {}/{}",
-        end_reputation.attacker_reputation, end_reputation.attacker_pair_count,
+        end_reputation.target_reputation, end_reputation.target_pair_count,
     )?;
     writeln!(
         writer,
