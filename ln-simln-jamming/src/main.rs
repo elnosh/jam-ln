@@ -308,6 +308,7 @@ async fn main() -> Result<(), BoxError> {
 
     let snapshot = revenue_interceptor.get_revenue_difference().await;
     write_simulation_summary(
+        &cli,
         results_dir,
         &snapshot,
         &start_reputation,
@@ -357,6 +358,7 @@ fn check_reputation_status(cli: &Cli, status: &NetworkReputation) -> Result<(), 
 
 #[allow(clippy::too_many_arguments)]
 fn write_simulation_summary(
+    cli: &Cli,
     data_dir: PathBuf,
     revenue: &RevenueSnapshot,
     start_reputation: &NetworkReputation,
@@ -396,7 +398,11 @@ fn write_simulation_summary(
             revenue.peacetime_revenue_msat - revenue.simulation_revenue_msat,
         )?;
     }
-
+    writeln!(
+        writer,
+        "Attacker bootstrapped reputation for: {} seconds",
+        cli.attacker_bootstrap.unwrap_or(Duration::ZERO).as_secs(),
+    )?;
     writeln!(
         writer,
         "Attacker start reputation (pairs): {}/{}",
