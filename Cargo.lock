@@ -2500,7 +2500,7 @@ dependencies = [
 [[package]]
 name = "sim-cli"
 version = "0.1.1"
-source = "git+https://github.com/bitcoin-dev-project/sim-ln?rev=2bdd675c7484c1d7491b095ae62cb7597514d7b6#2bdd675c7484c1d7491b095ae62cb7597514d7b6"
+source = "git+https://github.com/bitcoin-dev-project/sim-ln?rev=ec1aa36210d3ee5c67ed56363602b09c4978153d#ec1aa36210d3ee5c67ed56363602b09c4978153d"
 dependencies = [
  "anyhow",
  "bitcoin 0.30.2",
@@ -2524,7 +2524,7 @@ dependencies = [
 [[package]]
 name = "simln-lib"
 version = "0.1.1"
-source = "git+https://github.com/bitcoin-dev-project/sim-ln?rev=2bdd675c7484c1d7491b095ae62cb7597514d7b6#2bdd675c7484c1d7491b095ae62cb7597514d7b6"
+source = "git+https://github.com/bitcoin-dev-project/sim-ln?rev=ec1aa36210d3ee5c67ed56363602b09c4978153d#ec1aa36210d3ee5c67ed56363602b09c4978153d"
 dependencies = [
  "anyhow",
  "async-trait",

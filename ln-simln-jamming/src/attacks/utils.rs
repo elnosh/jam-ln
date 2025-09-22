@@ -440,7 +440,7 @@ mod tests {
             let channels = edges
                 .clone()
                 .into_iter()
-                .map(SimulatedChannel::from)
+                .map(|c| SimulatedChannel::new(c.capacity_msat, c.scid, c.node_1, c.node_2, false))
                 .collect::<Vec<SimulatedChannel>>();
 
             Arc::new(populate_network_graph(channels, Arc::clone(&clock)).unwrap())
