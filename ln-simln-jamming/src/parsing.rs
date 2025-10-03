@@ -386,7 +386,8 @@ where
                 .find(|a| a.0 == "25")
                 .ok_or("Required attacker sender with alias 25 not found")?;
 
-            let sanity_check_node = ("69".to_string(), find_pubkey_by_alias("69", &sim_network)?);
+            let honest_sender = ("69".to_string(), find_pubkey_by_alias("69", &sim_network)?);
+            let honest_receiver = ("5".to_string(), find_pubkey_by_alias("5", &sim_network)?);
 
             // Channel with target's peer that will be jammed.
             let target_peer_pubkey = PublicKey::from_str(
@@ -402,7 +403,8 @@ where
                 simulation.target.1,
                 attacker_sender.clone(),
                 attacker_pubkey_1.clone(),
-                sanity_check_node,
+                honest_sender,
+                honest_receiver,
                 channel_to_jam,
                 Arc::clone(&reputation_monitor),
                 Arc::clone(&channel_jammer),
@@ -441,8 +443,7 @@ fn network_graph(
 
 impl Cli {
     pub fn validate(&self) -> Result<ForwardManagerParams, BoxError> {
-        //if self.target_reputation_percent == 0 || self.target_reputation_percent > 100 {
-        if self.target_reputation_percent > 100 {
+        if self.target_reputation_percent == 0 || self.target_reputation_percent > 100 {
             return Err(format!(
                 "target reputation percent {} must be in (0;100]",
                 self.target_reputation_percent

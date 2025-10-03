@@ -15,7 +15,6 @@ use simln_lib::{
     sim_node::{CustomRecords, ForwardingError, InterceptRequest, SimGraph, SimNode, WrappedLog},
     LightningNode, PaymentOutcome,
 };
-use std::str::FromStr;
 use std::{
     collections::{HashMap, HashSet},
     sync::Arc,
@@ -43,7 +42,10 @@ where
     target_pubkey: PublicKey,
     attacker_sender: (String, PublicKey),
     attacker_receiver: (String, PublicKey),
-    sanity_check_node: (String, PublicKey),
+    // honest sender and receiver are used after jamming the target channel to make an "honest"
+    // payment through the target channel and check that it fails.
+    honest_sender: (String, PublicKey),
+    honest_receiver: (String, PublicKey),
     target_channels: HashMap<u64, PublicKey>,
     channel_to_jam: (PublicKey, u64),
     reputation_monitor: Arc<R>,
@@ -69,7 +71,8 @@ where
         target_pubkey: PublicKey,
         attacker_sender: (String, PublicKey),
         attacker_receiver: (String, PublicKey),
-        sanity_check_node: (String, PublicKey),
+        honest_sender: (String, PublicKey),
+        honest_receiver: (String, PublicKey),
         channel_to_jam: (PublicKey, u64),
         reputation_monitor: Arc<R>,
         channel_jammer: Arc<J>,
@@ -80,7 +83,8 @@ where
             target_pubkey,
             attacker_sender,
             attacker_receiver,
-            sanity_check_node,
+            honest_sender,
+            honest_receiver,
             target_channels: HashMap::from_iter(network.iter().filter_map(|channel| {
                 if channel.node_1.pubkey == target_pubkey {
                     Some((channel.scid.into(), channel.node_2.pubkey))
@@ -121,7 +125,8 @@ where
             hops,
             network_graph: &self.network_graph,
             // Build reputation for this amount which is slightly above the liquidity available in
-            // the protected bucket of the channel we are trying to jam.
+            // the protected bucket of the channel we are trying to jam. Note that this is a
+            // specific value set based on the target channel used.
             htlcs: vec![900_000_000; 1],
             target_channel,
             reputation_monitor: Arc::clone(&self.reputation_monitor),
@@ -166,15 +171,16 @@ where
         // So that a subsequent honest payment going to an honest receiver can't use the channel
         // even if it has reputation because all protected resources are taken.
         let payment_hash = PaymentHash(rand::random());
+        self.jamming_payments.lock().await.insert(payment_hash);
         if let Err(e) = attacker_node_sender
             .lock()
             .await
             .send_to_route(route, payment_hash, None)
             .await
         {
+            self.jamming_payments.lock().await.remove(&payment_hash);
             return Err(e.to_string().into());
         }
-        self.jamming_payments.lock().await.insert(payment_hash);
 
         Ok(())
     }
@@ -192,9 +198,31 @@ where
             .iter()
             .find(|chan| self.attacker_receiver.1 == *chan.1)
             .ok_or(format!(
-                "Target does not have a channel with {}",
+                "Target does not have a channel with attacker receiver {}",
                 self.attacker_receiver.1
             ))?;
+
+        // Validate that honest receiver has channel with target.
+        self.target_channels
+            .iter()
+            .find(|chan| self.honest_receiver.1 == *chan.1)
+            .ok_or(format!(
+                "Target does not have a channel with honest receiver {}",
+                self.honest_receiver.1
+            ))?;
+
+        // Validate that our channel that we want to jam is part of the target's channel list.
+        let target_peer_pubkey =
+            self.target_channels
+                .get(&self.channel_to_jam.1)
+                .ok_or(format!(
+                    "channel {} to jam is not part of target's channels",
+                    self.channel_to_jam.1
+                ))?;
+
+        if *target_peer_pubkey != self.channel_to_jam.0 {
+            return Err("peer in channel to jam does not match".into());
+        }
 
         Ok(NetworkSetup {
             general_jammed_nodes: vec![],
@@ -253,6 +281,67 @@ where
         // calculation of cost of these.
         // - With sufficient reputation, slow jam protected resources by holding payment for the
         // entire expiry time.
+
+        // Before running attack, make an "honest" payment over route with our target channel to
+        // jam. At this point it should succeed. We then check that after jamming the channel, a
+        // payment over this same route should fail.
+        let test_hops = vec![
+            self.channel_to_jam.0,
+            self.target_pubkey,
+            self.honest_receiver.1,
+        ];
+
+        let sender = attacker_nodes.get(&self.honest_sender.0).ok_or(format!(
+            "node {} not found in attacker nodes list",
+            self.honest_sender.0
+        ))?;
+
+        let check_payment = async |expect_succeed: bool| -> Result<(), BoxError> {
+            let sanity_check_route = build_custom_route(
+                &self.honest_sender.1,
+                100_000,
+                &test_hops,
+                &self.network_graph,
+            )
+            .map_err(|e| e.err)?;
+
+            let payment_hash = PaymentHash(rand::random());
+            if let Err(e) = sender
+                .lock()
+                .await
+                .send_to_route(sanity_check_route, payment_hash, None)
+                .await
+            {
+                return Err(e.to_string().into());
+            }
+
+            let payment_result = sender
+                .lock()
+                .await
+                .track_payment(&payment_hash, shutdown_listener.clone())
+                .await?;
+
+            match payment_result.payment_outcome {
+                PaymentOutcome::Success => {
+                    if expect_succeed {
+                        log::info!("Test payment before jamming the channel succeeded as expected");
+                    } else {
+                        return Err("Test payment after jamming the channel did not fail".into());
+                    }
+                }
+                _ => {
+                    if expect_succeed {
+                        return Err("Test payment before jamming failed.".into());
+                    } else {
+                        log::info!("Test payment after jamming the channel failed as expected.");
+                    }
+                }
+            }
+            Ok(())
+        };
+
+        check_payment(true).await?;
+
         let _ = self.build_reputation(&attacker_nodes).await?;
 
         self.channel_jammer
@@ -266,53 +355,12 @@ where
         // After building reputation and jamming general resources, jam protected resources.
         self.slow_jam_channel(&attacker_nodes).await?;
 
-        // Receiver of an honest payment
-        let receiver_pubkey = PublicKey::from_str(
-            "03ae641aa89c4d2c0034b31bad23a4f80f841d593ddd52f7f35cf7896d0ef8a594",
-        )?;
-        // With protected resources jammed, try making a test payment and check that it fails.
-        let test_hops = vec![self.channel_to_jam.0, self.target_pubkey, receiver_pubkey];
-        let sanity_check_route = build_custom_route(
-            &self.sanity_check_node.1,
-            100_000,
-            &test_hops,
-            &self.network_graph,
-        )
-        .map_err(|e| e.err)?;
-
-        let sender = attacker_nodes
-            .get(&self.sanity_check_node.0)
-            .ok_or(format!(
-                "node {} not found in attacker nodes list",
-                self.sanity_check_node.0
-            ))?;
-
         // Wait for signal that our jamming payment is being held to then send our test payment to
         // check it fails.
         self.payment_trigger.1.clone().await;
 
-        let payment_hash = PaymentHash(rand::random());
-        if let Err(e) = sender
-            .lock()
-            .await
-            .send_to_route(sanity_check_route, payment_hash, None)
-            .await
-        {
-            return Err(e.to_string().into());
-        }
-
-        let payment_result = sender
-            .lock()
-            .await
-            .track_payment(&payment_hash, shutdown_listener)
-            .await?;
-
-        match payment_result.payment_outcome {
-            PaymentOutcome::Success => {
-                return Err("Test payment after jamming the channel did not fail".into());
-            }
-            _ => log::info!("Sanity check payment failed as expected."),
-        }
+        // With protected resources jammed, check that test payment fails.
+        check_payment(false).await?;
 
         // Return when we are finished holding the payment.
         loop {
