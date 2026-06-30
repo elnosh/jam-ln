@@ -8,7 +8,7 @@ use crate::revenue_interceptor::{PeacetimeRevenueMonitor, RevenueEvent};
 use crate::BoxError;
 use bitcoin::secp256k1::PublicKey;
 use clap::{Parser, ValueEnum};
-use csv::{ReaderBuilder, StringRecord};
+use csv::StringRecord;
 use humantime::Duration as HumanDuration;
 use lightning::routing::gossip::NetworkGraph;
 use ln_resource_mgr::forward_manager::ForwardManagerParams;
@@ -28,7 +28,7 @@ use std::str::FromStr;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::runtime::Handle;
-use tokio::task::{self, JoinSet};
+use tokio::task::JoinSet;
 
 /// Default percent of good reputation pairs the target requires.
 pub const DEFAULT_TARGET_REP_PERCENT: &str = "50";
@@ -689,68 +689,25 @@ pub async fn history_from_file(
     file_path: &PathBuf,
     filter_duration: Option<Duration>,
 ) -> Result<Vec<BootstrapForward>, BoxError> {
-    let num_chunks = Handle::current().metrics().num_workers().div_ceil(2);
-    let breakpoints = calc_file_chunks(file_path, num_chunks as u8)?;
-
     let file = File::open(file_path)?;
-    let file_size = file.metadata()?.len();
-    let filter_cutoff = {
-        if let Some(duration) = filter_duration {
-            let reader = BufReader::new(file);
-            let mut csv_reader = csv::Reader::from_reader(reader);
-            let mut first_record = StringRecord::new();
-            csv_reader.read_record(&mut first_record)?;
-            let incoming_add_ts: u64 = first_record[4].parse()?;
-            Some(incoming_add_ts.add(duration.as_nanos() as u64))
-        } else {
-            None
-        }
-    };
+    let mut csv_reader = csv::Reader::from_reader(BufReader::new(file));
 
-    let mut tasks: Vec<tokio::task::JoinHandle<Result<Vec<BootstrapForward>, BoxError>>> =
-        Vec::with_capacity(num_chunks);
-
-    for i in 0..breakpoints.len() - 1 {
-        let start = breakpoints[i];
-        let end = if i == num_chunks - 1 {
-            file_size
-        } else {
-            breakpoints[i + 1]
-        };
-        let path_clone = file_path.clone();
-        tasks.push(task::spawn(async move {
-            let mut file = File::open(path_clone)?;
-            file.seek(std::io::SeekFrom::Start(start))?;
-            let reader = BufReader::new(file).take(end - start);
-
-            let mut csv_reader = if i == 0 {
-                csv::Reader::from_reader(reader)
-            } else {
-                ReaderBuilder::new().has_headers(false).from_reader(reader)
-            };
-
-            let mut forwards = Vec::new();
-            for result in csv_reader.deserialize() {
-                let forward: BootstrapForward = result?;
-
-                // If we're filtering cut off any htlc that was in flight at the cutoff point.
-                if let Some(cutoff) = filter_cutoff {
-                    if forward.added_ns > cutoff || forward.settled_ns > cutoff {
-                        break;
-                    }
-                }
-
-                forwards.push(forward);
-            }
-
-            Ok(forwards)
-        }));
-    }
-
+    // The cutoff is the first forward's added_ns plus the filter duration. The file is ordered by
+    // timestamp, so we can stop at the first forward added or settled after the cutoff.
+    let mut filter_cutoff: Option<u64> = None;
     let mut forwards = Vec::new();
-    for task in tasks {
-        let task_forwards = task.await??;
-        forwards.extend_from_slice(&task_forwards);
+    for result in csv_reader.deserialize() {
+        let forward: BootstrapForward = result?;
+
+        if let Some(duration) = filter_duration {
+            let cutoff = *filter_cutoff
+                .get_or_insert_with(|| forward.added_ns.add(duration.as_nanos() as u64));
+            if forward.added_ns > cutoff || forward.settled_ns > cutoff {
+                break;
+            }
+        }
+
+        forwards.push(forward);
     }
 
     Ok(forwards)
