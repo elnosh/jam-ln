@@ -411,14 +411,18 @@ where
         // With protected resources jammed, check that test payment fails.
         check_payment(false).await?;
 
-        // Return when we are finished holding the payment.
+        // Wait until the held jamming payment resolves - its interceptor removes it from the set -
+        // or bail out early on shutdown. The lock is scoped to the emptiness check so the guard is
+        // never held across the sleep below.
         loop {
-            let jamming_payments_lock = self.jamming_payments.lock().await;
-            if jamming_payments_lock.is_empty() {
+            if self.jamming_payments.lock().await.is_empty() {
                 break;
             }
 
-            self.clock.sleep(Duration::from_secs(60 * 5)).await;
+            select! {
+                _ = shutdown_listener.clone() => break,
+                _ = self.clock.sleep(Duration::from_secs(60 * 5)) => {},
+            }
         }
 
         Ok(())
