@@ -300,16 +300,20 @@ where
 
             self.payment_trigger.0.trigger();
 
-            // If this is one of our jamming payments, hold it
-            select! {
-                _ = req.shutdown_listener.clone() => Ok(Err(ForwardingError::InterceptorError("shutdown signal received".to_string()))),
-                _ = self.clock.sleep(hold_time) => {
-                    self.jamming_payments.lock().await.remove(&req.payment_hash);
-                    Ok(Err(ForwardingError::InterceptorError(
-                        "failing from jamming interceptor".into(),
-                    )))
-                }
-            }
+            // Hold this jamming payment until the hold time elapses or we shut down. Either way,
+            // drop it from the tracked set afterwards so `run_attack`'s wait loop can terminate:
+            // leaving a shutdown-cancelled payment behind would make that loop spin forever.
+            let result = select! {
+                _ = req.shutdown_listener.clone() => Ok(Err(ForwardingError::InterceptorError(
+                    "shutdown signal received".to_string(),
+                ))),
+                _ = self.clock.sleep(hold_time) => Ok(Err(ForwardingError::InterceptorError(
+                    "failing from jamming interceptor".into(),
+                ))),
+            };
+
+            self.jamming_payments.lock().await.remove(&req.payment_hash);
+            result
         }
     }
 
