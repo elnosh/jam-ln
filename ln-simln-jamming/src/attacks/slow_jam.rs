@@ -300,16 +300,20 @@ where
 
             self.payment_trigger.0.trigger();
 
-            // If this is one of our jamming payments, hold it
-            select! {
-                _ = req.shutdown_listener.clone() => Ok(Err(ForwardingError::InterceptorError("shutdown signal received".to_string()))),
-                _ = self.clock.sleep(hold_time) => {
-                    self.jamming_payments.lock().await.remove(&req.payment_hash);
-                    Ok(Err(ForwardingError::InterceptorError(
-                        "failing from jamming interceptor".into(),
-                    )))
-                }
-            }
+            // Hold this jamming payment until the hold time elapses or we shut down. Either way,
+            // drop it from the tracked set afterwards so `run_attack`'s wait loop can terminate:
+            // leaving a shutdown-cancelled payment behind would make that loop spin forever.
+            let result = select! {
+                _ = req.shutdown_listener.clone() => Ok(Err(ForwardingError::InterceptorError(
+                    "shutdown signal received".to_string(),
+                ))),
+                _ = self.clock.sleep(hold_time) => Ok(Err(ForwardingError::InterceptorError(
+                    "failing from jamming interceptor".into(),
+                ))),
+            };
+
+            self.jamming_payments.lock().await.remove(&req.payment_hash);
+            result
         }
     }
 
@@ -407,14 +411,18 @@ where
         // With protected resources jammed, check that test payment fails.
         check_payment(false).await?;
 
-        // Return when we are finished holding the payment.
+        // Wait until the held jamming payment resolves - its interceptor removes it from the set -
+        // or bail out early on shutdown. The lock is scoped to the emptiness check so the guard is
+        // never held across the sleep below.
         loop {
-            let jamming_payments_lock = self.jamming_payments.lock().await;
-            if jamming_payments_lock.is_empty() {
+            if self.jamming_payments.lock().await.is_empty() {
                 break;
             }
 
-            self.clock.sleep(Duration::from_secs(60 * 5)).await;
+            select! {
+                _ = shutdown_listener.clone() => break,
+                _ = self.clock.sleep(Duration::from_secs(60 * 5)) => {},
+            }
         }
 
         Ok(())
