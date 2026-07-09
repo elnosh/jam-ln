@@ -8,18 +8,19 @@ use ln_simln_jamming::parsing::{
     parse_duration, AttackType, NetworkParams, NetworkType, ReputationParams,
 };
 use ln_simln_jamming::reputation_interceptor::{BootstrapForward, ReputationInterceptor};
-use ln_simln_jamming::{BoxError, ACCOUNTABLE_TYPE, UPGRADABLE_TYPE};
+use ln_simln_jamming::{BoxError, ACCOUNTABLE_TYPE, SIM_SEED, UPGRADABLE_TYPE};
 use log::LevelFilter;
 use sim_cli::parsing::{create_simulation_with_network, SimParams};
 use simln_lib::batched_writer::BatchedWriter;
 use simln_lib::clock::{Clock, SimulationClock};
 use simln_lib::latency_interceptor::LatencyIntercepor;
+use simln_lib::runtime::block_on_virtual_time;
 use simln_lib::sim_node::CustomRecords;
 use simln_lib::SimulationCfg;
 use simple_logger::SimpleLogger;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::{Duration, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::sync::Mutex;
 use tokio_util::task::TaskTracker;
 
@@ -43,8 +44,7 @@ struct Cli {
     pub attack_type: Option<AttackType>,
 }
 
-#[tokio::main]
-async fn main() -> Result<(), BoxError> {
+fn main() -> Result<(), BoxError> {
     SimpleLogger::new()
         .with_level(LevelFilter::Debug)
         // Lower logging from sim-ln so that we can focus on our own logs.
@@ -57,13 +57,19 @@ async fn main() -> Result<(), BoxError> {
 
     let cli = Cli::parse();
 
+    let start_time = SystemTime::now();
+    block_on_virtual_time(start_time, |clock| run(clock, cli))??;
+
+    Ok(())
+}
+
+async fn run(clock: Arc<SimulationClock>, cli: Cli) -> Result<(), BoxError> {
     let network = NetworkType::new(&cli.network, cli.attack_type, None)?;
     if matches!(network, NetworkType::BootstrapAttackTime(_, _, _)) {
         return Err("cannot run forward builder in bootstrap mode".into());
     }
 
     let sim_network = network.active_network();
-    let clock = Arc::new(SimulationClock::new(1000)?);
     let tasks = TaskTracker::new();
 
     // Create a reputation interceptor without any bootstrap (since here we're creating the
@@ -87,14 +93,14 @@ async fn main() -> Result<(), BoxError> {
                 .to_string(),
         )?))),
     )?);
-    let latency_interceptor = Arc::new(LatencyIntercepor::new_poisson(300.0)?);
+    let latency_interceptor = Arc::new(LatencyIntercepor::new_poisson(300.0, Some(SIM_SEED))?);
 
     let sim_cfg = SimulationCfg::new(
         Some(cli.duration.as_secs() as u32),
         3_800_000,
         2.0,
         None,
-        Some(13995354354227336701),
+        Some(SIM_SEED),
     );
 
     let exclude_pubkeys = [network.target().1]

@@ -3,7 +3,7 @@ use std::{
     fs::{File, OpenOptions},
     io::Write,
     sync::Arc,
-    time::Duration,
+    time::{Duration, SystemTime},
 };
 
 use bitcoin::secp256k1::PublicKey;
@@ -22,6 +22,7 @@ use ln_simln_jamming::{
 };
 use log::LevelFilter;
 use simln_lib::clock::SimulationClock;
+use simln_lib::runtime::block_on_virtual_time;
 use simple_logger::SimpleLogger;
 
 #[derive(Parser)]
@@ -43,8 +44,7 @@ struct Cli {
     pub attacker_bootstrap: Option<Duration>,
 }
 
-#[tokio::main]
-async fn main() -> Result<(), BoxError> {
+fn main() -> Result<(), BoxError> {
     SimpleLogger::new()
         .with_level(LevelFilter::Debug)
         .with_module_level("simln_lib::sim_node", LevelFilter::Debug)
@@ -52,6 +52,14 @@ async fn main() -> Result<(), BoxError> {
         .unwrap();
 
     let cli = Cli::parse();
+
+    let start_time = SystemTime::now();
+    block_on_virtual_time(start_time, |clock| run(clock, cli))??;
+
+    Ok(())
+}
+
+async fn run(clock: Arc<SimulationClock>, cli: Cli) -> Result<(), BoxError> {
     let forward_params: ForwardManagerParams = cli.reputation_params.into();
 
     let network = NetworkType::new(&cli.network, cli.attack_type, cli.attacker_bootstrap)?;
@@ -114,7 +122,6 @@ async fn main() -> Result<(), BoxError> {
         (bootstrap_records, 0)
     };
 
-    let clock = Arc::new(SimulationClock::new(1)?);
     let reputation_clock = Arc::clone(&clock);
     let mut reputation_interceptor: ReputationInterceptor<BatchForwardWriter, ForwardManager> =
         ReputationInterceptor::new_for_network(
