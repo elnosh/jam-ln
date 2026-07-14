@@ -3,6 +3,10 @@ name = "ln-simln-jamming"
 version = "0.1.0"
 edition = "2021"
 
+[features]
+default = []
+ldk-resource-manager = []
+
 [[bin]]
 name = "reputation-builder"
 path = "src/bin/reputation_builder.rs"
